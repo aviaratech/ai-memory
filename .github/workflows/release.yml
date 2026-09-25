@@ -243,9 +243,25 @@ jobs:
             elif grep -q 'E404' "$release_dir/$label-registry.err"; then
               # Publishing an archive path exposes it in public _from/_resolved metadata.
               npm publish --workspace "$package" --access public --provenance
-              npm view "$package@$RELEASE_VERSION" dist.integrity --json > "$release_dir/$label-published.json"
-              existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-published.json")"
-              [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Published integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
+              # npm may accept a publish before its new version is readable.
+              for attempt in {1..25}; do
+                if npm view "$package@$RELEASE_VERSION" dist.integrity --json --prefer-online \
+                  > "$release_dir/$label-published.json" 2> "$release_dir/$label-published.err"; then
+                  existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-published.json")"
+                  [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Published integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
+                  break
+                fi
+                if ! grep -q '^npm error code E404$' "$release_dir/$label-published.err"; then
+                  cat "$release_dir/$label-published.err"
+                  exit 1
+                fi
+                if (( attempt == 25 )); then
+                  echo "Published $package@$RELEASE_VERSION is still absent after 25 reads and 120 seconds" >&2
+                  exit 1
+                fi
+                echo "Waiting for npm visibility of $package@$RELEASE_VERSION ($attempt/25)" >&2
+                sleep 5
+              done
             else
               cat "$release_dir/$label-registry.err"
               exit 1
