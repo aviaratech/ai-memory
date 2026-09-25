@@ -229,7 +229,7 @@ jobs:
           [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Reserved tag does not match reviewed source'; exit 1; }
           gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
           node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz" preflight
-      - name: Publish exact archives with npm OIDC
+      - name: Publish checked workspaces with npm OIDC
         shell: bash
         run: |
           set -euo pipefail
@@ -241,7 +241,8 @@ jobs:
               existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-registry.json")"
               [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Registry integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
             elif grep -q 'E404' "$release_dir/$label-registry.err"; then
-              npm publish "$release_dir/$archive" --access public --provenance
+              # Publishing an archive path exposes it in public _from/_resolved metadata.
+              npm publish --workspace "$package" --access public --provenance
               npm view "$package@$RELEASE_VERSION" dist.integrity --json > "$release_dir/$label-published.json"
               existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-published.json")"
               [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Published integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }

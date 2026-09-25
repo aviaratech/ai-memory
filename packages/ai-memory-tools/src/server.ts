@@ -59,7 +59,7 @@ import {
 
 export const server = new McpServer({
   name: 'ai-memory',
-  version: '0.1.0',
+  version: '0.1.1',
 });
 
 let startupInitialization: Promise<void> = Promise.resolve();

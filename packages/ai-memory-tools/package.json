@@ -1,6 +1,6 @@
 {
   "name": "@aviaratech/ai-memory-tools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP, ingestion, health, evaluation and operations for ai-memory",
   "license": "MIT",
   "repository": {
@@ -67,7 +67,7 @@
     "test:search-eval": "node dist/eval/search-eval.js"
   },
   "dependencies": {
-    "@aviaratech/ai-memory": "0.1.0",
+    "@aviaratech/ai-memory": "0.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "pg": "^8.21.0",
     "zod": "^4.4.3"

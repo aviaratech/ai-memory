@@ -25,14 +25,14 @@ For a versioned npm installation, create a separate local directory and install 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact @aviaratech/ai-memory-tools@0.1.0
+npm install --save-exact @aviaratech/ai-memory-tools@0.1.1
 ```
 
-The installed package provides `node_modules/@aviaratech/ai-memory-tools/dist/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. The optional plugin is distributed as `aviaratech-ai-memory-plugin-0.1.0.tgz` on the matching [GitHub release](https://github.com/aviaratech/ai-memory/releases/tag/v0.1.0). After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
+The installed package provides `node_modules/@aviaratech/ai-memory-tools/dist/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. The optional plugin is distributed as `aviaratech-ai-memory-plugin-0.1.1.tgz` on the matching [GitHub release](https://github.com/aviaratech/ai-memory/releases/tag/v0.1.1). After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
 
 ```sh
 mkdir ai-memory-plugin
-tar -xzf aviaratech-ai-memory-plugin-0.1.0.tgz -C ai-memory-plugin --strip-components=1
+tar -xzf aviaratech-ai-memory-plugin-0.1.1.tgz -C ai-memory-plugin --strip-components=1
 ```
 
 The archive includes the bundled MCP launcher, migrations, license, and third-party notices.
