@@ -1,0 +1,15 @@
+{
+  "expected": {
+    "branch": "feature/environment-dirty",
+    "recentCommitsLength": 2,
+    "uncommittedFiles": 2,
+    "workspaceDirty": true
+  },
+  "scenario": {
+    "branch": "feature/environment-dirty",
+    "commitMessages": ["initial dirty baseline", "dirty scenario setup"],
+    "detachedHead": false,
+    "stagedFiles": 1,
+    "unstagedFiles": 1
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "expectedOrient": {
+    "orientation": {
+      "priorSession": {
+        "snapshot": {
+          "snapshotJson": {
+            "next_actions": ["Compare orient snapshot against expected state model."],
+            "open_questions": ["Do we need additional stateModel fixture variants?"],
+            "x_state_model": {
+              "assumptions": ["memory_orient remains available in local mode"],
+              "next_decision": "expand retrieval fixture coverage",
+              "strategy_confidence": "medium"
+            }
+          }
+        }
+      }
+    }
+  },
+  "flush": {
+    "nextActions": ["Compare orient snapshot against expected state model."],
+    "openQuestions": ["Do we need additional stateModel fixture variants?"],
+    "stateModel": {
+      "assumptions": ["memory_orient remains available in local mode"],
+      "next_decision": "expand retrieval fixture coverage",
+      "strategy_confidence": "medium"
+    },
+    "summary": "Continuity flush with explicit state model payload."
+  }
+}

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# SessionStart hook for ai-memory plugin
+# Uses the bundled plugin MCP server when available, falling back to ai-memory-mcp
+# for local development. Emits one bounded continuity context.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-server.bundle.js"
+
+run_ai_memory_hook() {
+  if [ -f "$BUNDLED_SERVER" ]; then
+    node "$BUNDLED_SERVER" "$@"
+    return $?
+  fi
+
+  if command -v ai-memory-mcp >/dev/null 2>&1; then
+    ai-memory-mcp "$@"
+    return $?
+  fi
+
+  return 127
+}
+
+# The bundled hook owner emits the complete bounded host envelope.
+# Capture output so a failed process cannot leave a partial envelope on stdout.
+if [ -f "$BUNDLED_SERVER" ] || command -v ai-memory-mcp >/dev/null 2>&1; then
+  if output=$(run_ai_memory_hook hook:session-start 2>/dev/null); then
+    printf '%s\n' "$output"
+    exit 0
+  fi
+  warning='ai-memory: hook failed; use memory tools to diagnose startup'
+else
+  warning='ai-memory: no bundled MCP server and ai-memory-mcp not on PATH'
+fi
+
+# Static, bounded fallback also works when Node itself is unavailable.
+if [ -z "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$warning"
+else
+  printf '{"additional_context":"%s"}\n' "$warning"
+fi
+exit 0

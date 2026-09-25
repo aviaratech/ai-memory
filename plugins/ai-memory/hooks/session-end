@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# SessionEnd hook for ai-memory plugin
+# Uses the bundled plugin MCP server when available, falling back to ai-memory-mcp
+# for local development. Never blocks shutdown, always emits valid hook JSON,
+# and surfaces distinguishable warnings on stderr.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-server.bundle.js"
+
+emit_hook_json() {
+  printf '{\n  "continue": true,\n  "suppressOutput": true\n}\n'
+}
+
+forward_child_output() {
+  local output="$1"
+  if [ -n "$output" ]; then
+    printf '%s' "$output" >&2
+    case "$output" in
+      *$'\n') ;;
+      *) printf '\n' >&2 ;;
+    esac
+  fi
+}
+
+run_session_end_hook() {
+  if [ -f "$BUNDLED_SERVER" ]; then
+    node "$BUNDLED_SERVER" hook:session-end
+  elif command -v ai-memory-mcp >/dev/null 2>&1; then
+    ai-memory-mcp hook:session-end
+  else
+    echo "[ai-memory] session-end skipped: no bundled MCP server and ai-memory-mcp not on PATH" >&2
+    return 0
+  fi
+}
+
+if hook_output="$(run_session_end_hook 2>&1)"; then
+  forward_child_output "$hook_output"
+else
+  hook_status=$?
+  forward_child_output "$hook_output"
+  echo "[ai-memory] session-end hook failed (exit $hook_status)" >&2
+fi
+
+emit_hook_json
+
+exit 0

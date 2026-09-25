@@ -1,0 +1,75 @@
+{
+  "name": "@aviaratech/ai-memory-tools",
+  "version": "0.1.0",
+  "description": "MCP, ingestion, health, evaluation and operations for ai-memory",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aviaratech/ai-memory.git",
+    "directory": "packages/ai-memory-tools"
+  },
+  "bin": {
+    "ai-memory-mcp": "./dist/server.js"
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "scripts/backup-db.sh",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/stage-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "backfill:embeddings": "node dist/scripts/backfill-embeddings.js",
+    "backfill:patch-snapshots": "node dist/backfill-patch-snapshots.js",
+    "backup:install": "node dist/backup-launchd-agent.js install",
+    "backup:run-once": "node dist/backup-launchd-agent.js run-once",
+    "backup:status": "node dist/backup-launchd-agent.js status",
+    "backup:check": "node dist/disaster-recovery.js status",
+    "backup:uninstall": "node dist/backup-launchd-agent.js uninstall",
+    "restore": "node dist/disaster-recovery.js restore",
+    "codex:bootstrap": "node dist/codexConnectivity.js bootstrap",
+    "codex:doctor": "node dist/codexConnectivity.js doctor",
+    "codex:ensure-cli": "node dist/codexConnectivity.js ensure-cli",
+    "codex:launchd:install": "node dist/codex-launchd-agent.js install",
+    "codex:launchd:run-once": "node dist/codex-launchd-agent.js run-once",
+    "codex:launchd:status": "node dist/codex-launchd-agent.js status",
+    "codex:launchd:uninstall": "node dist/codex-launchd-agent.js uninstall",
+    "codex:mcp:http:install": "node dist/codex-http-launchd-agent.js install",
+    "codex:mcp:http:status": "node dist/codex-http-launchd-agent.js status",
+    "codex:mcp:http:uninstall": "node dist/codex-http-launchd-agent.js uninstall",
+    "eval": "node dist/eval/experiment-harness.js",
+    "failures:resolve-known": "node dist/failures-resolve-known.js",
+    "health": "node dist/health-report.js",
+    "hook:session-end": "node dist/ingestion/ingest-claude-session-end-hook.js",
+    "hook:session-start": "node dist/ingestion/check-session-start-hook.js --hook",
+    "ingest:auto:load": "node dist/ingestion/auto-session-ingest.js",
+    "ingest:codex": "node dist/ingestion/ingest-codex-session.js --dry-run --latest",
+    "ingest:codex:launchd": "node dist/ingestion/ingest-codex-launchd.js --dry-run",
+    "init": "node dist/init-db.js",
+    "mcp": "node dist/server.js",
+    "pg:ensure": "node dist/ensure-postgres.js --start",
+    "pg:status": "node dist/ensure-postgres.js --status",
+    "smoke": "node dist/smoke-ingest.js",
+    "test:search-eval": "node dist/eval/search-eval.js"
+  },
+  "dependencies": {
+    "@aviaratech/ai-memory": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pg": "^8.21.0",
+    "zod": "^4.4.3"
+  }
+}

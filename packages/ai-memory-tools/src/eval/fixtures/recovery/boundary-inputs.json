@@ -1,0 +1,94 @@
+{
+  "identity": [
+    {
+      "id": "I01",
+      "steps": [
+        {
+          "operation": "memory_flush",
+          "args": {
+            "agent": "codex",
+            "sessionId": "fixture-codex-session-a",
+            "project": "fixture/recovery",
+            "task": "fixture-logical-task-export",
+            "summary": "Checkpoint A: prepare an offline archive and retain the upload hold.",
+            "nextActions": [
+              "Verify the local manifest checksum."
+            ],
+            "contextNeeded": [
+              "Customer review is pending; do not upload."
+            ],
+            "openQuestions": [
+              "Has the customer accepted the review?"
+            ]
+          }
+        },
+        {
+          "operation": "memory_flush",
+          "args": {
+            "agent": "claude-code",
+            "sessionId": "fixture-claude-session-b",
+            "project": "fixture/recovery",
+            "task": "fixture-logical-task-export",
+            "summary": "Checkpoint B: verify checksum and retain the upload hold while customer review is pending.",
+            "nextActions": [
+              "Verify the local manifest checksum."
+            ],
+            "contextNeeded": [
+              "Customer review is pending; do not upload."
+            ],
+            "openQuestions": [
+              "Has the customer accepted the review?"
+            ]
+          }
+        },
+        {
+          "operation": "memory_flush",
+          "args": {
+            "agent": "grok-build",
+            "sessionId": "fixture-worker-w",
+            "project": "fixture/recovery",
+            "task": "fixture-unrelated-task",
+            "summary": "Worker W: unrelated index complete.",
+            "nextActions": [
+              "Verify the local manifest checksum."
+            ],
+            "contextNeeded": [
+              "Customer review is pending; do not upload."
+            ],
+            "openQuestions": [
+              "Has the customer accepted the review?"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "failureCases": [
+    {
+      "id": "E07",
+      "records": [
+        {
+          "id": 1,
+          "content": "Old decision: replay uses a ten-minute window.",
+          "createdAt": "2025-01-01T00:00:00.000Z",
+          "updatedAt": "2025-01-01T00:00:00.000Z",
+          "status": "superseded",
+          "evidenceRefs": [
+            "https://example.invalid/evidence/archive-window-old"
+          ]
+        },
+        {
+          "id": 2,
+          "content": "Accepted correction: replay uses a thirty-minute window and still verifies checksum.",
+          "createdAt": "2025-01-02T00:00:00.000Z",
+          "updatedAt": "2025-01-02T00:00:00.000Z",
+          "status": "active",
+          "supersedesId": 1,
+          "evidenceRefs": [
+            "https://example.invalid/evidence/archive-window-correction"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "id": "A01",
+      "prompt": "Resume the exact archive export task checkpoint. Which session and checkpoint control, and what upload hold remains?",
+      "expected": {
+        "sourceProject": "fixture/recovery",
+        "sourceTask": "fixture-logical-task-export",
+        "sourceSession": "fixture-claude-session-b",
+        "summaryContains": "Checkpoint B:"
+      }
+    },
+    {
+      "id": "A02",
+      "prompt": "What approved catalog preview copyediting rule came from fictional issue 4821? Distinguish it from measurement and retired workflow notes.",
+      "firstSearchArgs": {
+        "project": "fixture/recovery",
+        "query": "approved catalog preview copyediting rule issue 4821",
+        "limit": 5,
+        "includeEmbedding": false
+      },
+      "expected": {
+        "sourceMemoryKey": "fixture:recovery:policy-delivered",
+        "evidenceRef": "https://example.invalid/fixture-org/fixture-repo/issues/4821"
+      }
+    },
+    {
+      "id": "A03",
+      "prompt": "The customer review is pending. May the archive be uploaded?",
+      "expected": {
+        "sourceMemoryKey": "fixture:recovery:implicit-export-constraint",
+        "evidenceRef": "https://example.invalid/evidence/archive-review-hold"
+      }
+    },
+    {
+      "id": "A04",
+      "prompt": "What is the current archive replay window, and which historical checksum rule still applies?",
+      "expected": {
+        "sourceMemoryKey": "fixture:recovery:corrected-window",
+        "evidenceRef": "https://example.invalid/evidence/archive-window-correction"
+      }
+    },
+    {
+      "id": "A05",
+      "prompt": "Does the source merge permit activating the installation?",
+      "expected": {
+        "sourceMemoryKey": "fixture:recovery:late-activation-condition",
+        "evidenceRef": "https://example.invalid/evidence/activation-approval"
+      }
+    },
+    {
+      "id": "A06",
+      "prompt": "Find the zephyr bathysphere vitrification decision in this project. If absent, state that it was not found.",
+      "expected": {}
+    },
+    {
+      "id": "A07",
+      "prompt": "Recover the latest archive rule during the disposable database lock; report retrieval failure without inventing authority.",
+      "expected": {}
+    },
+    {
+      "id": "A08",
+      "prompt": "Can a foreign project memory be used as authority for this archive?",
+      "expected": {}
+    }
+  ]
+}

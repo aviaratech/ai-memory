@@ -1,0 +1,9 @@
+node_modules/
+dist/
+plugins/ai-memory/migrations/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+*.dump

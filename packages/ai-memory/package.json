@@ -1,0 +1,42 @@
+{
+  "name": "@aviaratech/ai-memory",
+  "version": "0.1.0",
+  "description": "Durable local PostgreSQL memory engine for AI agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aviaratech/ai-memory.git",
+    "directory": "packages/ai-memory"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "default": "./dist/internal.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "retention:purge": "node dist/retention-purge.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "node-pg-migrate": "8.0.4",
+    "pg": "^8.21.0",
+    "zod": "^4.4.3"
+  }
+}

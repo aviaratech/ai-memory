@@ -1,0 +1,48 @@
+{
+  "append_events": [
+    {
+      "summary": "Smoke contract fixture event.",
+      "ts": "2026-01-01T00:00:00.000Z",
+      "type": "checkpoint"
+    }
+  ],
+  "artifacts": [],
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "delta_id": "delta-smoke-feature-work-fixture",
+  "produced_by": {
+    "agent": "smoke-fixture",
+    "model": "gpt-5.3-codex-smoke"
+  },
+  "schema_version": "memory_delta@0.1",
+  "session_id": "sess-smoke-feature-work-fixture",
+  "snapshot": {
+    "mode": "replace",
+    "value": {
+      "anchors": {
+        "focus_paths": ["packages/ai-memory/src/smoke-ingest.ts"]
+      },
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "goal": "Smoke fixture snapshot baseline",
+      "next_actions": [],
+      "open_questions": [],
+      "plan": [],
+      "progress": {
+        "blockers": [],
+        "completed": [],
+        "in_flight": []
+      },
+      "snapshot_id": "snap-smoke-feature-work-fixture"
+    }
+  },
+  "telemetry": {
+    "pack_chars_total_budget": 160,
+    "pack_chars_total_seen": 100,
+    "pack_used_id": "pack-smoke-feature-work-fixture",
+    "uncertainty": "low"
+  },
+  "tenancy": {
+    "org_id": "example",
+    "repo_id": "example/catalog",
+    "user_id": "smoke-user"
+  }
+}

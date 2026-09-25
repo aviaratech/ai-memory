@@ -1,0 +1,113 @@
+{
+  "memories": [
+    {
+      "category": "convention",
+      "confidence": 0.9,
+      "content": "Decision primary-cross-harness-memory-2026-09-08: ai-memory is the provider-neutral continuity layer. Codex, Claude Code, and Grok Build recover source-attributed work through the same service; GitHub remains the work-tracking authority.",
+      "evidenceRefs": ["https://example.invalid/issues/42"],
+      "memoryKey": "example/docs:issue-42:primary-cross-harness-decision",
+      "source": "codex-session-end",
+      "tags": ["codex-session-end", "cross-harness", "issue-42", "provider-neutral"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.84,
+      "content": "Earlier decision: an explicit session id resumes the intended lead checkpoint after a task restart; project-latest startup context is background only.",
+      "evidenceRefs": ["https://example.invalid/issues/42"],
+      "memoryKey": "example/docs:issue-42:lead-session-resume",
+      "source": "claude-session-end",
+      "tags": ["claude-session-end", "lead", "session-resume", "task-restart"]
+    },
+    {
+      "category": "convention",
+      "confidence": 0.82,
+      "content": "Grok Build SessionEnd export is bounded to source-attributed user and assistant excerpts, stable turn identities, event time, and a session evidence reference; it does not claim a full raw transcript import.",
+      "evidenceRefs": ["grok://session/redacted-replay"],
+      "memoryKey": "example/docs:issue-42:grok-bounded-export",
+      "source": "grok-session-end",
+      "tags": ["bounded", "grok-session-end", "incremental", "source-attributed"]
+    },
+    {
+      "category": "convention",
+      "confidence": 0.7,
+      "content": "Historical but still valid: recover the source-linked memory key and evidence reference before acting on an older cross-harness decision.",
+      "evidenceRefs": ["https://example.invalid/issues/42"],
+      "memoryKey": "example/docs:historical-valid-source-recovery",
+      "source": "legacy-import",
+      "tags": ["historical", "still-valid", "source-recovery"]
+    },
+    {
+      "category": "preference",
+      "confidence": 0.5,
+      "content": "Historical policy: send a five-minute heartbeat for every unchanged task.",
+      "evidenceRefs": ["https://example.invalid/issues/42"],
+      "memoryKey": "example/docs:historical-five-minute-heartbeat",
+      "source": "legacy-import",
+      "status": "superseded",
+      "tags": ["historical", "superseded"]
+    },
+    {
+      "category": "convention",
+      "confidence": 0.9,
+      "content": "Foreign project control: lunar-orbit telemetry uses a separate project and must never be returned for ai-memory continuity work.",
+      "fixtureProjectScope": "other",
+      "memoryKey": "foreign-project:lunar-orbit-telemetry",
+      "source": "foreign-project-fixture",
+      "tags": ["foreign-project", "lunar-orbit"]
+    }
+  ],
+  "queries": [
+    {
+      "expectedEvidenceRefs": ["https://example.invalid/issues/42"],
+      "expectedSource": "codex-session-end",
+      "expectedTopK": ["example/docs:issue-42:primary-cross-harness-decision"],
+      "k": 3,
+      "query": "primary-cross-harness-memory-2026-09-08"
+    },
+    {
+      "expectedEvidenceRefs": ["https://example.invalid/issues/42"],
+      "expectedSource": "codex-session-end",
+      "expectedTopK": ["example/docs:issue-42:primary-cross-harness-decision"],
+      "k": 3,
+      "query": "where do Codex Claude Code and Grok Build recover shared work history"
+    },
+    {
+      "expectedEvidenceRefs": ["https://example.invalid/issues/42"],
+      "expectedSource": "claude-session-end",
+      "expectedTopK": ["example/docs:issue-42:lead-session-resume"],
+      "k": 3,
+      "query": "recover the correct lead checkpoint after a worker flush and task restart"
+    },
+    {
+      "expectedEvidenceRefs": ["grok://session/redacted-replay"],
+      "expectedSource": "grok-session-end",
+      "expectedTopK": ["example/docs:issue-42:grok-bounded-export"],
+      "k": 3,
+      "query": "Grok Build SessionEnd bounded excerpts and session evidence"
+    },
+    {
+      "expectedEvidenceRefs": ["https://example.invalid/issues/42"],
+      "expectedSource": "codex-session-end",
+      "expectedTopK": ["example/docs:issue-42:primary-cross-harness-decision"],
+      "k": 3,
+      "query": "https://example.invalid/issues/42 provider neutral continuity"
+    },
+    {
+      "expectedTopK": [],
+      "k": 3,
+      "query": "five minute heartbeat every unchanged"
+    },
+    {
+      "expectedEvidenceRefs": ["https://example.invalid/issues/42"],
+      "expectedSource": "legacy-import",
+      "expectedTopK": ["example/docs:historical-valid-source-recovery"],
+      "k": 3,
+      "query": "historical but still valid source linked recovery evidence"
+    },
+    {
+      "expectedTopK": [],
+      "k": 3,
+      "query": "foreign lunar-orbit telemetry"
+    }
+  ]
+}

@@ -1,0 +1,285 @@
+# Enable AI_MEMORY_RELEASE_ENABLED only after both npm packages exist, trusted
+# publishers are configured, and public-release has required reviewers.
+name: Publish reviewed release
+run-name: Release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Reviewed package version
+        required: true
+        type: string
+      source_sha:
+        description: Reviewed main commit SHA
+        required: true
+        type: string
+      core_sha256:
+        description: Reviewed core archive SHA-256
+        required: true
+        type: string
+      tools_sha256:
+        description: Reviewed tools archive SHA-256
+        required: true
+        type: string
+      plugin_sha256:
+        description: Reviewed plugin archive SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-memory-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'aviaratech/ai-memory' &&
+      github.ref == 'refs/heads/main' &&
+      vars.AI_MEMORY_RELEASE_ENABLED == 'true'
+    environment: public-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ci_memory
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: ai_memory_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_memory -d ai_memory_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CORE_SHA256: ${{ inputs.core_sha256 }}
+      TOOLS_SHA256: ${{ inputs.tools_sha256 }}
+      PLUGIN_SHA256: ${{ inputs.plugin_sha256 }}
+    steps:
+      - name: Check out reviewed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Validate reviewed source and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          for digest in "$CORE_SHA256" "$TOOLS_SHA256" "$PLUGIN_SHA256"; do
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          done
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = [
+            ['packages/ai-memory/package.json', '@aviaratech/ai-memory'],
+            ['packages/ai-memory-tools/package.json', '@aviaratech/ai-memory-tools'],
+            ['plugins/ai-memory/package.json', '@aviaratech/ai-memory-plugin'],
+          ];
+          for (const [path, name] of expected) {
+            const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+            if (pkg.name !== name || pkg.version !== process.env.RELEASE_VERSION) {
+              throw new Error(`Unexpected name/version in ${path}`);
+            }
+          }
+          NODE
+      - name: Install pinned npm and dependencies
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = 11.19.0
+          npm ci
+      - name: Install pinned Betterleaks
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/betterleaks/betterleaks/releases/download/v1.8.1/betterleaks_1.8.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/betterleaks.tar.gz"
+          printf '%s  %s\n' 'efa407244e1ea8e35f582b8a42becdeac08bdead04f68eb752adda722d583c2a' "$RUNNER_TEMP/betterleaks.tar.gz" \
+            | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/betterleaks.tar.gz" -C "$RUNNER_TEMP" betterleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Check source and disclosure boundary
+        run: |
+          npm run scan:secrets
+          npm run scan:secrets:probe
+          npm run checks
+      - name: Check disposable PostgreSQL integration
+        run: npm run test:integration
+        env:
+          AI_MEMORY_DATABASE_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_ci
+          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_ci
+      - name: Pack and verify exact reviewed archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          mkdir -p "$release_dir"
+          for item in 'core:@aviaratech/ai-memory' 'tools:@aviaratech/ai-memory-tools' 'plugin:@aviaratech/ai-memory-plugin'; do
+            label="${item%%:*}"
+            package="${item#*:}"
+            npm pack --workspace "$package" --dry-run --json > "$release_dir/$label-dry-run.json"
+            npm pack --workspace "$package" --pack-destination "$release_dir" --json > "$release_dir/$label-pack.json"
+            node -e '
+              const fs = require("node:fs");
+              const [dry, packed] = process.argv.slice(1).map(path => JSON.parse(fs.readFileSync(path, "utf8"))[0]);
+              const paths = item => item.files.map(file => file.path).sort().join("\n");
+              if (paths(dry) !== paths(packed)) throw new Error("npm pack inventory mismatch");
+            ' "$release_dir/$label-dry-run.json" "$release_dir/$label-pack.json"
+          done
+          printf '%s  %s\n' "$CORE_SHA256" "$release_dir/aviaratech-ai-memory-$RELEASE_VERSION.tgz" \
+            "$TOOLS_SHA256" "$release_dir/aviaratech-ai-memory-tools-$RELEASE_VERSION.tgz" \
+            "$PLUGIN_SHA256" "$release_dir/aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz" \
+            | sha256sum --check --status
+          for label in core tools plugin; do
+            archive="$(node -e 'const p = require(process.argv[1])[0]; console.log(p.filename)' "$release_dir/$label-pack.json")"
+            mkdir -p "$release_dir/unpacked/$label"
+            tar -xzf "$release_dir/$archive" -C "$release_dir/unpacked/$label"
+            betterleaks dir "$release_dir/unpacked/$label" --ignore-gitleaks-allow --redact=100 --no-banner --no-color --timeout=120
+          done
+      - name: Require existing npm packages for trusted publishing
+        run: |
+          npm view @aviaratech/ai-memory@latest version --json > /dev/null
+          npm view @aviaratech/ai-memory-tools@latest version --json > /dev/null
+      - name: Preflight registry and GitHub release conflicts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          check_package() {
+            local label="$1" package="$2" local_integrity existing_integrity
+            local_integrity="$(node -e 'const p = require(process.argv[1])[0]; console.log(p.integrity)' "$release_dir/$label-pack.json")"
+            if npm view "$package@$RELEASE_VERSION" dist.integrity --json > "$release_dir/$label-registry.json" 2> "$release_dir/$label-registry.err"; then
+              existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-registry.json")"
+              [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Registry integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
+              printf 'present\n' > "$release_dir/$label-state"
+            elif ! grep -q 'E404' "$release_dir/$label-registry.err"; then
+              cat "$release_dir/$label-registry.err"
+              exit 1
+            else
+              printf 'absent\n' > "$release_dir/$label-state"
+            fi
+          }
+          check_package core @aviaratech/ai-memory
+          check_package tools @aviaratech/ai-memory-tools
+          tag="v$RELEASE_VERSION"
+          archive="aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"
+          [[ -z "$remote_tag" || "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Existing tag points at a different source'; exit 1; }
+          if gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json" 2> "$release_dir/github-release.err"; then
+            [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Existing release has no verified source tag'; exit 1; }
+            state="$(node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" preflight)"
+            if [[ "$state" == published* ]]; then
+              [[ "$(cat "$release_dir/core-state")" == present && "$(cat "$release_dir/tools-state")" == present ]] || {
+                echo 'Published release precedes its reviewed npm package versions'
+                exit 1
+              }
+            fi
+            if [[ "$state" == *' present' ]]; then
+              mkdir -p "$release_dir/preflight"
+              gh release download "$tag" --pattern "$archive" --dir "$release_dir/preflight"
+              printf '%s  %s\n' "$PLUGIN_SHA256" "$release_dir/preflight/$archive" | sha256sum --check --status
+            fi
+          elif ! grep -qx 'release not found' "$release_dir/github-release.err"; then
+            cat "$release_dir/github-release.err"
+            exit 1
+          fi
+      - name: Reserve reviewed tag and draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          tag="v$RELEASE_VERSION"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"
+          if [[ -z "$remote_tag" ]]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$tag" -f "sha=$SOURCE_SHA" > /dev/null
+          else
+            [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Tag changed after preflight'; exit 1; }
+          fi
+          if ! gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json" 2> "$release_dir/github-release.err"; then
+            grep -qx 'release not found' "$release_dir/github-release.err" || { cat "$release_dir/github-release.err"; exit 1; }
+            gh release create "$tag" --draft --verify-tag --target "$SOURCE_SHA" \
+              --title "ai-memory $tag" --notes "Reviewed ai-memory release from $SOURCE_SHA."
+          fi
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"
+          [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Reserved tag does not match reviewed source'; exit 1; }
+          gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
+          node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz" preflight
+      - name: Publish exact archives with npm OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          publish_one() {
+            local label="$1" package="$2" archive="$3" existing_integrity local_integrity
+            local_integrity="$(node -e 'const p = require(process.argv[1])[0]; console.log(p.integrity)' "$release_dir/$label-pack.json")"
+            if npm view "$package@$RELEASE_VERSION" dist.integrity --json > "$release_dir/$label-registry.json" 2> "$release_dir/$label-registry.err"; then
+              existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-registry.json")"
+              [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Registry integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
+            elif grep -q 'E404' "$release_dir/$label-registry.err"; then
+              npm publish "$release_dir/$archive" --access public --provenance
+              npm view "$package@$RELEASE_VERSION" dist.integrity --json > "$release_dir/$label-published.json"
+              existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-published.json")"
+              [[ "$existing_integrity" == "$local_integrity" ]] || { echo "Published integrity mismatch for $package@$RELEASE_VERSION"; exit 1; }
+            else
+              cat "$release_dir/$label-registry.err"
+              exit 1
+            fi
+          }
+          publish_one core @aviaratech/ai-memory "aviaratech-ai-memory-$RELEASE_VERSION.tgz"
+          publish_one tools @aviaratech/ai-memory-tools "aviaratech-ai-memory-tools-$RELEASE_VERSION.tgz"
+      - name: Complete reviewed plugin release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          tag="v$RELEASE_VERSION"
+          archive="aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz"
+          gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"
+          [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Release tag does not match reviewed source'; exit 1; }
+          state="$(node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" preflight)"
+          if [[ "$state" == *' absent' ]]; then
+            gh release upload "$tag" "$release_dir/$archive"
+          fi
+          gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
+          state="$(node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" preflight)"
+          [[ "$state" == *' present' ]]
+          mkdir -p "$release_dir/published"
+          gh release download "$tag" --pattern "$archive" --dir "$release_dir/published"
+          printf '%s  %s\n' "$PLUGIN_SHA256" "$release_dir/published/$archive" | sha256sum --check --status
+          if [[ "$state" == draft* ]]; then
+            gh release edit "$tag" --draft=false
+          fi
+          gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
+          node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" final
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print peeled == "" ? direct : peeled }')"
+          [[ "$remote_tag" == "$SOURCE_SHA" ]]

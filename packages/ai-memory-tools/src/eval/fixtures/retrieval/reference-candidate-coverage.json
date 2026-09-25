@@ -1,0 +1,122 @@
+{
+  "memories": [
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant A.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-1"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant B.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-2"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant C.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-3"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant D.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-4"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant E.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-5"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant F.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-6"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant G.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-7"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant H.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-8"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant I.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-9"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant J.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-10"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant K.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-11"
+    },
+    {
+      "category": "decision",
+      "content": "Issue #7643 unrelated discussion variant L.",
+      "memoryKey": "fixture:reference-coverage:issue7643:clutter-12"
+    },
+    {
+      "category": "decision",
+      "content": "The sampling report counted 7643 evaluations in a histogram bucket.",
+      "memoryKey": "fixture:reference-coverage:measurement"
+    },
+    {
+      "category": "decision",
+      "content": "Issue1846 ledger entry retains original evidence.",
+      "memoryKey": "fixture:reference-coverage:joined-only"
+    },
+    {
+      "category": "decision",
+      "content": "Issue tracking background without a requested identifier.",
+      "memoryKey": "fixture:reference-coverage:partial-match"
+    },
+    {
+      "category": "decision",
+      "content": "This artifact documents the accepted scope.",
+      "evidenceRefs": ["https://example.invalid/fixture/repo/issues/8196"],
+      "memoryKey": "fixture:reference-coverage:evidence-only"
+    },
+    {
+      "category": "decision",
+      "content": "Saved supporting decision.",
+      "memoryKey": "fixture:reference-coverage:issue9364:key-only"
+    }
+  ],
+  "queries": [
+    {
+      "query": "sampling report counted 7643 evaluations histogram bucket",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:measurement"]
+    },
+    {
+      "query": "7643 evaluations were counted in the sampling report histogram bucket",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:measurement"]
+    },
+    {
+      "query": "Issue1846",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:joined-only"]
+    },
+    {
+      "query": "issue8196",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:evidence-only"]
+    },
+    {
+      "query": "issue9364",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:issue9364:key-only"]
+    },
+    {
+      "query": "Recover the current source decision with original approval and precise evidence for issue9364",
+      "k": 5,
+      "expectedTopK": ["fixture:reference-coverage:issue9364:key-only"]
+    }
+  ]
+}

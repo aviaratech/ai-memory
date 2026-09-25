@@ -1,0 +1,70 @@
+{
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "pack_id": "pack-smoke-feature-work-fixture",
+  "pinned": {
+    "constraints": ["smoke-contract-baseline"]
+  },
+  "produced_by": {
+    "agent": "smoke-fixture",
+    "instance_id": "smoke-repo-local"
+  },
+  "schema_version": "context_pack@0.1",
+  "session": {
+    "recent_events": [
+      {
+        "event_id": "smoke-feature-work-context-01",
+        "summary": "Feature work contract fixture loaded.",
+        "ts": "2026-01-01T00:00:00.000Z",
+        "type": "checkpoint"
+      },
+      {
+        "event_id": "smoke-feature-work-context-02",
+        "summary": "Smoke fixture bootstrap prepared.",
+        "ts": "2026-01-01T00:01:00.000Z",
+        "type": "plan_updated"
+      }
+    ],
+    "session_id": "sess-smoke-feature-work-fixture",
+    "snapshot": {
+      "anchors": {
+        "focus_paths": ["packages/ai-memory/src/smoke-ingest.ts"]
+      },
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "goal": "Smoke fixture snapshot baseline",
+      "next_actions": [],
+      "open_questions": [],
+      "plan": [],
+      "progress": {
+        "blockers": [],
+        "completed": [],
+        "in_flight": []
+      },
+      "snapshot_id": "snap-smoke-feature-work-fixture"
+    }
+  },
+  "task": {
+    "description": "Deterministic fixture used by smoke-ingest script.",
+    "title": "Smoke contract fixture baseline",
+    "type": "feature"
+  },
+  "tenancy": {
+    "org_id": "example",
+    "repo_id": "example/catalog",
+    "repo_slug": "example/catalog",
+    "user_id": "smoke-user"
+  },
+  "working_set": {
+    "diffs": [
+      {
+        "label": "smoke fixture baseline"
+      }
+    ],
+    "files": [
+      {
+        "path": "packages/ai-memory/src/smoke-ingest.ts",
+        "purpose": "smoke harness"
+      }
+    ],
+    "notes": ["Deterministic repo-local smoke fixture for synthetic case."]
+  }
+}

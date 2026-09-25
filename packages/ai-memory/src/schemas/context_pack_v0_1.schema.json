@@ -1,0 +1,532 @@
+{
+  "$defs": {
+    "sessionEventDigestV01": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "event_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ts": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": ["plan_updated", "diff_applied", "tests_ran", "review_completed", "checkpoint", "note_added"],
+          "type": "string"
+        }
+      },
+      "required": ["event_id", "ts", "type", "summary"],
+      "type": "object"
+    },
+    "sessionSnapshotV01": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "anchors": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "focus_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "related_links": {
+              "items": {
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x_": {}
+                },
+                "properties": {
+                  "label": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  }
+                },
+                "required": ["label", "url"],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "context_needed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "next_actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plan": {
+          "items": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "done": {
+                "type": "boolean"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "text": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": ["id", "text"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "progress": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "blockers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "completed": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "in_flight": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["completed", "in_flight", "blockers"],
+          "type": "object"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "x_active_goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "x_env_model": {},
+        "x_state_model": {}
+      },
+      "required": [
+        "snapshot_id",
+        "created_at",
+        "goal",
+        "plan",
+        "progress",
+        "open_questions",
+        "next_actions",
+        "anchors"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://example.com/schemas/context_pack_v0_1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x_": {}
+  },
+  "properties": {
+    "budgets": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "max_chars_pinned": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_chars_snapshot": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_chars_total": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_chars_working_set": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_events": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "pack_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "pinned": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "constraints": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "conventions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "safety": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["constraints"],
+      "type": "object"
+    },
+    "produced_by": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "agent": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "instance_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["agent"],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "context_pack@0.1"
+    },
+    "session": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "recent_events": {
+          "items": {
+            "$ref": "#/$defs/sessionEventDigestV01"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/sessionSnapshotV01"
+        }
+      },
+      "required": ["session_id", "snapshot"],
+      "type": "object"
+    },
+    "stats": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "chars_pinned": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chars_snapshot": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chars_total": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chars_working_set": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "events_included": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "task": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": ["label", "url"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "task_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "enum": ["feature", "bugfix", "refactor", "review", "incident", "chore", "research", "unknown"],
+          "type": "string"
+        }
+      },
+      "required": ["type"],
+      "type": "object"
+    },
+    "tenancy": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "org_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "repo_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "repo_slug": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "workflow": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "entity_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_url": {
+          "format": "uri",
+          "type": "string"
+        },
+        "state": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "system": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["system", "entity_type", "entity_id"],
+      "type": "object"
+    },
+    "working_set": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "diffs": {
+          "items": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "revision": {
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x_": {}
+                },
+                "properties": {
+                  "base": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "head": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "unified_diff": {
+                "type": "string"
+              }
+            },
+            "required": ["label"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "excerpt": {
+                "type": "string"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "purpose": {
+                "type": "string"
+              },
+              "revision": {
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x_": {}
+                },
+                "properties": {
+                  "blob_sha": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "commit_sha": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "required": ["path"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "pack_id",
+    "created_at",
+    "produced_by",
+    "tenancy",
+    "task",
+    "pinned",
+    "session",
+    "working_set"
+  ],
+  "title": "Context Pack v0.1",
+  "type": "object"
+}

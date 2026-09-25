@@ -1,0 +1,15 @@
+{
+  "expected": {
+    "branch": null,
+    "recentCommitsLength": 2,
+    "uncommittedFiles": 0,
+    "workspaceDirty": false
+  },
+  "scenario": {
+    "branch": "main",
+    "commitMessages": ["initial detached baseline", "detached middle commit", "detached latest commit"],
+    "detachedHead": true,
+    "stagedFiles": 0,
+    "unstagedFiles": 0
+  }
+}

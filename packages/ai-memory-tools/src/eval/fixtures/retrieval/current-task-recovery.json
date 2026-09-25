@@ -1,0 +1,270 @@
+{
+  "memories": [
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Example issue 4821 delivered a bounded catalog preview and an approved copyediting rule. Independent review accepted the release. The source manuscript and signoff record remain authoritative for later edits.",
+      "evidenceRefs": [
+        "https://example.invalid/fixture-org/fixture-repo/issues/4821",
+        "https://example.invalid/evidence/accepted-policy"
+      ],
+      "memoryKey": "fixture:recovery:policy-delivered",
+      "source": "codex-session-end",
+      "status": "active",
+      "tags": ["issue-4821", "catalog-preview", "accepted"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "The sampling report recorded 4821 catalog previews and 4821 skipped thumbnails. A copyediting label was a histogram bucket. The report did not change the approved editorial rule.",
+      "evidenceRefs": ["https://example.invalid/evidence/sample-count"],
+      "memoryKey": "fixture:recovery:measurement",
+      "source": "grok-session-end",
+      "status": "active",
+      "tags": ["sampling", "evaluation-count"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "An older catalog workflow sent every preview to the same copy desk, including unchanged entries. Its checklist discussed title length and punctuation. The approved rule replaced that workflow; consult current signoff before using historical notes.",
+      "evidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/1934"],
+      "memoryKey": "fixture:recovery:retired-reviewer",
+      "source": "legacy-import",
+      "status": "active",
+      "tags": ["copy-desk", "catalog-preview", "historical"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Example issue 7042 completed a catalog preview redesign. The accepted release shows only the selected entry's citations. Editorial signoff and the original manuscript remain available after the old copy desk queue was retired.",
+      "evidenceRefs": [
+        "https://example.invalid/fixture-org/fixture-repo/issues/7042",
+        "https://example.invalid/evidence/accepted-context"
+      ],
+      "memoryKey": "fixture:recovery:heldout-delivered",
+      "source": "claude-session-end",
+      "status": "active",
+      "tags": ["issue-7042", "selected-citations"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "The inspection counted 7042 preview samples. Selected citations appeared as a sample label, and the count did not authorize a release.",
+      "evidenceRefs": ["https://example.invalid/evidence/heldout-count"],
+      "memoryKey": "fixture:recovery:heldout-measurement",
+      "source": "grok-session-end",
+      "status": "active",
+      "tags": ["sampling"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Archive exports must remain offline while the customer review is pending. Use the local manifest and do not upload the archive or contact the vendor until the review is accepted.",
+      "evidenceRefs": ["https://example.invalid/evidence/archive-review-hold"],
+      "memoryKey": "fixture:recovery:implicit-export-constraint",
+      "source": "claude-session-end",
+      "status": "active",
+      "tags": ["archive", "export", "offline"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Correction: archive replay now uses a thirty-minute window. This replaces the old ten-minute replay window; the correction does not authorize uploading artifacts.",
+      "evidenceRefs": ["https://example.invalid/evidence/archive-window-correction"],
+      "memoryKey": "fixture:recovery:corrected-window",
+      "source": "codex-session-end",
+      "status": "active",
+      "tags": ["archive", "replay", "window", "correction"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Old decision: archive replay uses a ten-minute window.",
+      "evidenceRefs": ["https://example.invalid/evidence/archive-window-old"],
+      "memoryKey": "fixture:recovery:superseded-window",
+      "source": "legacy-import",
+      "status": "superseded",
+      "tags": ["archive", "replay", "window"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Historical guidance remains valid: verify the archive manifest checksum before replay. Later replay-window corrections did not retire the checksum requirement.",
+      "evidenceRefs": ["https://example.invalid/evidence/archive-checksum"],
+      "memoryKey": "fixture:recovery:valid-history",
+      "source": "legacy-import",
+      "status": "active",
+      "tags": ["archive", "manifest", "checksum", "still-valid"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Archive export notes describe page layout, example field names, and the order of read-only checks. The first draft recorded sample dimensions and headings. These notes provide historical background for the recovery operator and do not determine whether a change can be activated. Do not activate the installation unless the operator approves the exact release and the recorded rollback check passes; a successful source merge alone does not authorize activation.",
+      "evidenceRefs": [
+        "https://example.invalid/evidence/layout",
+        "https://example.invalid/evidence/headings",
+        "https://example.invalid/evidence/activation-approval"
+      ],
+      "memoryKey": "fixture:recovery:late-activation-condition",
+      "source": "claude-session-end",
+      "status": "active",
+      "tags": ["installation", "activation", "approval"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Contested proposal: archive replay should use a sixty-minute window. This proposal conflicts with the accepted thirty-minute correction and has not been approved.",
+      "evidenceRefs": ["https://example.invalid/evidence/archive-window-dispute"],
+      "memoryKey": "fixture:recovery:contested-window",
+      "source": "grok-session-end",
+      "status": "contested",
+      "tags": ["archive", "replay", "window", "contested"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Foreign project control: zephyr bathysphere vitrification guidance belongs exclusively to another repository.",
+      "evidenceRefs": ["https://example.invalid/evidence/foreign-only"],
+      "memoryKey": "fixture:recovery:foreign-only",
+      "source": "foreign-project-fixture",
+      "status": "active",
+      "tags": ["zephyr", "bathysphere", "vitrification"],
+      "fixtureProjectScope": "other"
+    },
+    {
+      "category": "decision",
+      "confidence": 0.85,
+      "content": "Example issue 4821 catalog preview rule applies to a different collection only.",
+      "evidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"],
+      "memoryKey": "fixture:recovery:foreign-policy",
+      "source": "foreign-project-fixture",
+      "status": "active",
+      "tags": ["issue-4821", "catalog-preview", "copy-desk"],
+      "fixtureProjectScope": "other"
+    }
+  ],
+  "queries": [
+    {
+      "query": "4821 bounded catalog preview approved rule",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "Example issue 4821 accepted catalog release",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "issue #4821 delivered copyediting rule",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "issue-4821 accepted preview",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "https://example.invalid/fixture-org/fixture-repo/issues/4821 completed catalog rule",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "4821",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:policy-delivered"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/4821"]
+    },
+    {
+      "query": "What changed when the catalog preview retired its copy desk queue?",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:heldout-delivered"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/7042"]
+    },
+    {
+      "query": "7042 selected citations catalog preview",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:heldout-delivered"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/7042"]
+    },
+    {
+      "query": "Issue7042 accepted editorial signoff",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:heldout-delivered"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/fixture-org/fixture-repo/issues/7042"]
+    },
+    {
+      "query": "Prepare the archive export for the customer review",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:implicit-export-constraint"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/archive-review-hold"]
+    },
+    {
+      "query": "Package the archive using its local manifest",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:implicit-export-constraint"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/archive-review-hold"]
+    },
+    {
+      "query": "What is the corrected archive replay window?",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:corrected-window"],
+      "expectedSource": "codex-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/archive-window-correction"]
+    },
+    {
+      "query": "Which older archive checksum requirement still applies?",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:valid-history"],
+      "expectedSource": "legacy-import",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/archive-checksum"]
+    },
+    {
+      "query": "When may the installation be activated?",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:late-activation-condition"],
+      "expectedSource": "claude-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/activation-approval"]
+    },
+    {
+      "query": "What is disputed about the sixty-minute archive replay window?",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:contested-window"],
+      "expectedSource": "grok-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/archive-window-dispute"]
+    },
+    {
+      "query": "quasar thermocline xylophonic",
+      "k": 5,
+      "expectedTopK": []
+    },
+    {
+      "query": "zephyr bathysphere vitrification",
+      "k": 5,
+      "expectedTopK": []
+    },
+    {
+      "query": "sampling report 4821 previews histogram bucket",
+      "k": 5,
+      "expectedTopK": ["fixture:recovery:measurement"],
+      "expectedSource": "grok-session-end",
+      "expectedEvidenceRefs": ["https://example.invalid/evidence/sample-count"]
+    }
+  ]
+}

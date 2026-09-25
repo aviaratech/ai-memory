@@ -1,0 +1,416 @@
+{
+  "memories": [
+    {
+      "category": "convention",
+      "content": "Catalog convention: imported titles use sentence case while preserving proper names.",
+      "id": "conv-catalog-titles",
+      "tags": ["catalog", "titles", "import"]
+    },
+    {
+      "category": "convention",
+      "content": "Citation convention: list author, year, and title in that order, followed by a source URL when available.",
+      "id": "conv-citation-format",
+      "tags": ["citations", "format", "source"]
+    },
+    {
+      "category": "convention",
+      "content": "Catalog convention: normalize Unicode before sorting titles, while keeping original spelling for display.",
+      "id": "conv-unicode-sort",
+      "tags": ["catalog", "unicode", "sorting"]
+    },
+    {
+      "category": "convention",
+      "content": "Map export convention: declare coordinate units and projection in metadata; reject an export with missing units.",
+      "id": "conv-map-units",
+      "tags": ["maps", "units", "projection"]
+    },
+    {
+      "category": "convention",
+      "content": "CSV export convention: declare column order in the schema instead of inferring it from the first data row.",
+      "id": "conv-csv-columns",
+      "tags": ["csv", "schema", "columns"]
+    },
+    {
+      "category": "convention",
+      "content": "Markdown convention: heading extraction ignores fenced code blocks and retains nested heading depth.",
+      "id": "conv-markdown-fences",
+      "tags": ["markdown", "headings", "fences"]
+    },
+    {
+      "category": "architecture",
+      "content": "Catalog architecture: the search index owns text queries while the asset store owns uploaded binaries. Records link by document ID.",
+      "id": "arch-catalog-index-assets",
+      "tags": ["catalog", "search-index", "asset-store"]
+    },
+    {
+      "category": "architecture",
+      "content": "Catalog architecture: an input adapter normalizes author names before validation; canonical values persist in catalog records.",
+      "id": "arch-input-normalization",
+      "tags": ["catalog", "input-adapter", "normalization"]
+    },
+    {
+      "category": "architecture",
+      "content": "Catalog architecture: publishing flows through ingest, normalize, index, and publish stages. Each stage emits a typed record.",
+      "id": "arch-catalog-pipeline",
+      "tags": ["catalog", "pipeline", "publishing"]
+    },
+    {
+      "category": "architecture",
+      "content": "Citation architecture: when an external source is unavailable, display a cached reference with a visible stale marker.",
+      "id": "arch-cached-citations",
+      "tags": ["citations", "cache", "fallback"]
+    },
+    {
+      "category": "architecture",
+      "content": "Architecture decision: a memory service uses PostgreSQL full-text search for retrieval. Its indexed document combines content, project, and category fields.",
+      "id": "arch-memory-search",
+      "tags": ["ai-memory", "full-text-search", "mcp", "postgres"]
+    },
+    {
+      "category": "preference",
+      "content": "Editorial preference: preview page layout before publishing a catalog update.",
+      "id": "pref-preview-layout",
+      "tags": ["preview", "layout", "publishing"]
+    },
+    {
+      "category": "preference",
+      "content": "Editorial preference: use a publication tool that records release notes and version numbers.",
+      "id": "pref-publish-tool",
+      "tags": ["publication", "release-notes", "version"]
+    },
+    {
+      "category": "preference",
+      "content": "Editorial preference: reviewers check citation links before approving catalog entries.",
+      "id": "pref-citation-review",
+      "tags": ["review", "citations", "approval"]
+    },
+    {
+      "category": "preference",
+      "content": "Editorial preference: ask an independent curator to verify complex catalog metadata.",
+      "id": "pref-independent-curator",
+      "tags": ["curator", "metadata", "review"]
+    },
+    {
+      "category": "preference",
+      "content": "Editorial preference: record durable catalog decisions and evidence references for future editors.",
+      "id": "pref-record-decisions",
+      "tags": ["catalog", "decisions", "evidence"]
+    },
+    {
+      "category": "bugfix",
+      "content": "Root cause: a multi-word search returned no results because an AND query required all terms in one memory. A literal phrase fallback also missed paraphrases.",
+      "id": "root-search-zero-results",
+      "tags": ["ai-memory", "postgres", "search", "tsquery", "zero-results"]
+    },
+    {
+      "category": "bugfix",
+      "content": "Root cause: a page cursor was encoded before stable title sorting, so entries repeated across catalog pages. Encode the cursor after sorting.",
+      "id": "root-pagination-cursor",
+      "tags": ["catalog", "pagination", "cursor"]
+    },
+    {
+      "category": "bugfix",
+      "content": "Root cause: a missing locale selected the wrong date format on exhibit cards. Require an explicit locale before rendering dates.",
+      "id": "root-locale-date",
+      "tags": ["exhibits", "locale", "dates"]
+    },
+    {
+      "category": "convention",
+      "content": "Convention: reversal-aware retrieval ranking should down-weight author track record reversals while preserving comparable memories from authors without enough prior reversals.",
+      "id": "conv-reversal-ranking-stable",
+      "source": "stable-reversal-eval-author",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Convention: reversal-aware retrieval ranking should down-weight author track record reversals while preserving comparable memories from authors without enough prior reversals.",
+      "id": "conv-reversal-ranking-volatile",
+      "source": "volatile-reversal-eval-author",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 1.",
+      "id": "conv-reversal-prior-01",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 2.",
+      "id": "conv-reversal-prior-02",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 3.",
+      "id": "conv-reversal-prior-03",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 4.",
+      "id": "conv-reversal-prior-04",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 5.",
+      "id": "conv-reversal-prior-05",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 6.",
+      "id": "conv-reversal-prior-06",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 7.",
+      "id": "conv-reversal-prior-07",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 8.",
+      "id": "conv-reversal-prior-08",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 9.",
+      "id": "conv-reversal-prior-09",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    },
+    {
+      "category": "convention",
+      "content": "Superseded convention fixture for reversal-aware retrieval prior 10.",
+      "id": "conv-reversal-prior-10",
+      "source": "volatile-reversal-eval-author",
+      "status": "superseded",
+      "tags": ["ai-memory", "retrieval-ranking", "reversal-aware"]
+    }
+  ],
+  "queries": [
+    {
+      "expectedMemoryIds": ["conv-catalog-titles"],
+      "id": "q-catalog-titles",
+      "query": "catalog imported title sentence case proper names",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["conv-citation-format"],
+      "id": "q-citation-format",
+      "query": "citation author year title source URL format",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["conv-unicode-sort"],
+      "id": "q-unicode-sort",
+      "query": "normalize Unicode before sorting catalog titles",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["conv-map-units"],
+      "id": "q-map-units",
+      "query": "map export coordinate units projection metadata",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["conv-csv-columns"],
+      "id": "q-csv-columns",
+      "query": "CSV schema column order export",
+      "testCategory": "convention"
+    },
+    {
+      "expectedBefore": [
+        {
+          "after": "conv-reversal-ranking-volatile",
+          "before": "conv-reversal-ranking-stable"
+        }
+      ],
+      "expectedMemoryIds": ["conv-reversal-ranking-stable"],
+      "id": "q-reversal-aware-ranking",
+      "query": "reversal aware retrieval ranking author track record",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["conv-markdown-fences"],
+      "id": "q-markdown-fences",
+      "query": "markdown heading extraction fenced code nested depth",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["arch-catalog-index-assets"],
+      "id": "q-catalog-index-assets",
+      "query": "catalog search index asset store ownership",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["arch-input-normalization"],
+      "id": "q-input-normalization",
+      "query": "input adapter author name normalization validation",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["arch-catalog-pipeline"],
+      "id": "q-catalog-pipeline",
+      "query": "catalog publishing ingest normalize index stages",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["arch-cached-citations"],
+      "id": "q-cached-citations",
+      "query": "citation lookup unavailable cached stale reference",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["arch-memory-search"],
+      "id": "q-memory-search-impl",
+      "query": "memory search PostgreSQL full-text",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["arch-catalog-index-assets", "arch-catalog-pipeline"],
+      "id": "q-catalog-architecture-broad",
+      "query": "how is catalog search and publishing organized",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["pref-preview-layout"],
+      "id": "q-preview-layout",
+      "query": "preview page layout before catalog publishing",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["pref-publish-tool"],
+      "id": "q-publish-tool",
+      "query": "publication tool release notes version",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["pref-citation-review"],
+      "id": "q-citation-review",
+      "query": "review citation links before approving catalog entries",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["pref-independent-curator"],
+      "id": "q-independent-curator",
+      "query": "independent curator verify complex metadata",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["pref-record-decisions"],
+      "id": "q-record-decisions",
+      "query": "record durable catalog decisions evidence references",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["pref-preview-layout", "pref-publish-tool"],
+      "id": "q-editorial-workflow-broad",
+      "query": "editorial preview publication release notes",
+      "testCategory": "preference"
+    },
+    {
+      "expectedMemoryIds": ["root-search-zero-results"],
+      "id": "q-search-zero-results",
+      "query": "search returns zero results tsquery",
+      "testCategory": "root-cause"
+    },
+    {
+      "expectedMemoryIds": ["root-pagination-cursor"],
+      "id": "q-pagination-cursor",
+      "query": "catalog page cursor duplicate entries stable title sorting",
+      "testCategory": "root-cause"
+    },
+    {
+      "expectedMemoryIds": ["root-locale-date"],
+      "id": "q-locale-date",
+      "query": "missing locale wrong date format exhibit cards",
+      "testCategory": "root-cause"
+    },
+    {
+      "expectedMemoryIds": ["root-pagination-cursor", "root-locale-date"],
+      "id": "q-catalog-defects",
+      "query": "catalog pagination and exhibit date formatting defects",
+      "testCategory": "root-cause"
+    },
+    {
+      "expectedMemoryIds": ["root-search-zero-results"],
+      "id": "q-memory-retrieval-failure",
+      "query": "memory retrieval failure AND semantics",
+      "testCategory": "root-cause"
+    },
+    {
+      "expectedMemoryIds": ["conv-catalog-titles", "pref-publish-tool", "pref-preview-layout"],
+      "id": "q-catalog-conventions",
+      "query": "catalog title convention preview publishing preference",
+      "testCategory": "convention"
+    },
+    {
+      "expectedMemoryIds": ["arch-catalog-index-assets", "conv-unicode-sort"],
+      "id": "q-catalog-indexing",
+      "query": "catalog title sorting and search index records",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["pref-record-decisions", "arch-memory-search"],
+      "id": "q-memory-evidence",
+      "query": "memory search and evidence recording for future editors",
+      "testCategory": "architecture"
+    },
+    {
+      "excludedMemoryIds": ["conv-citation-format"],
+      "expectedMemoryIds": ["conv-catalog-titles"],
+      "id": "q-precision-titles",
+      "query": "catalog imported titles proper names",
+      "testCategory": "convention"
+    },
+    {
+      "excludedMemoryIds": ["root-pagination-cursor"],
+      "expectedMemoryIds": ["root-locale-date"],
+      "id": "q-precision-locale",
+      "query": "explicit locale exhibit date format",
+      "testCategory": "root-cause"
+    },
+    {
+      "excludedMemoryIds": ["arch-input-normalization"],
+      "expectedMemoryIds": ["arch-catalog-index-assets"],
+      "id": "q-precision-index",
+      "query": "catalog search index text queries",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["conv-map-units", "arch-cached-citations"],
+      "id": "q-multi-map-citations",
+      "query": "map export metadata and citation fallback",
+      "testCategory": "architecture"
+    },
+    {
+      "expectedMemoryIds": ["pref-citation-review", "pref-publish-tool"],
+      "id": "q-multi-publication-review",
+      "query": "catalog publication review citation links",
+      "testCategory": "preference"
+    }
+  ],
+  "version": "1.0"
+}

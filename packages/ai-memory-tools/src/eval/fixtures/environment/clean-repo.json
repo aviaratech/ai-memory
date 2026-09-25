@@ -1,0 +1,15 @@
+{
+  "expected": {
+    "branch": "main",
+    "recentCommitsLength": 2,
+    "uncommittedFiles": 0,
+    "workspaceDirty": false
+  },
+  "scenario": {
+    "branch": "main",
+    "commitMessages": ["initial clean commit", "second clean commit"],
+    "detachedHead": false,
+    "stagedFiles": 0,
+    "unstagedFiles": 0
+  }
+}

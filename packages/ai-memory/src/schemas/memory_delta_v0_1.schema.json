@@ -1,0 +1,442 @@
+{
+  "$defs": {
+    "sessionSnapshotV01": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "anchors": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "focus_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "related_links": {
+              "items": {
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x_": {}
+                },
+                "properties": {
+                  "label": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  }
+                },
+                "required": ["label", "url"],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "context_needed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "next_actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plan": {
+          "items": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "done": {
+                "type": "boolean"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "text": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": ["id", "text"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "progress": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "blockers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "completed": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "in_flight": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["completed", "in_flight", "blockers"],
+          "type": "object"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "x_active_goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "x_env_model": {},
+        "x_state_model": {}
+      },
+      "required": [
+        "snapshot_id",
+        "created_at",
+        "goal",
+        "plan",
+        "progress",
+        "open_questions",
+        "next_actions",
+        "anchors"
+      ],
+      "type": "object"
+    },
+    "snapshotPatchV01": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "ops": {
+          "items": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "const": "remove"
+                    }
+                  }
+                },
+                "then": {
+                  "not": {
+                    "required": ["value"]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "enum": ["set", "add"]
+                    }
+                  }
+                },
+                "then": {
+                  "required": ["value"]
+                }
+              }
+            ],
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "op": {
+                "enum": ["set", "add", "remove"],
+                "type": "string"
+              },
+              "path": {
+                "pattern": "^/",
+                "type": "string"
+              },
+              "value": {}
+            },
+            "required": ["op", "path"],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": ["ops"],
+      "type": "object"
+    }
+  },
+  "$id": "https://example.com/schemas/memory_delta_v0_1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x_": {}
+  },
+  "properties": {
+    "append_events": {
+      "items": {
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x_": {}
+        },
+        "properties": {
+          "payload_ref": {
+            "type": "string"
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "enum": ["plan_updated", "diff_applied", "tests_ran", "review_completed", "checkpoint", "note_added"],
+            "type": "string"
+          }
+        },
+        "required": ["type", "summary"],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x_": {}
+        },
+        "properties": {
+          "content_markdown": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": ["plan", "adr", "runbook", "summary", "note"],
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": ["kind", "title", "content_markdown"],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "delta_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "produced_by": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "agent": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": ["agent"],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "memory_delta@0.1"
+    },
+    "session_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "snapshot": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "replace"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/sessionSnapshotV01"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "patch"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/snapshotPatchV01"
+              }
+            }
+          }
+        }
+      ],
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "mode": {
+          "enum": ["replace", "patch"],
+          "type": "string"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sessionSnapshotV01"
+            },
+            {
+              "$ref": "#/$defs/snapshotPatchV01"
+            }
+          ]
+        }
+      },
+      "required": ["mode", "value"],
+      "type": "object"
+    },
+    "telemetry": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "pack_chars_total_budget": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pack_chars_total_seen": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pack_used_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "uncertainty": {
+          "enum": ["low", "medium", "high"],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "tenancy": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "org_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "repo_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "workflow": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "entity_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_url": {
+          "format": "uri",
+          "type": "string"
+        },
+        "state": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "system": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["system", "entity_type", "entity_id"],
+      "type": "object"
+    }
+  },
+  "required": ["schema_version", "delta_id", "created_at", "produced_by", "tenancy", "session_id", "snapshot"],
+  "title": "Memory Delta v0.1",
+  "type": "object"
+}

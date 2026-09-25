@@ -1,0 +1,74 @@
+{
+  "memories": [
+    {
+      "category": "convention",
+      "confidence": 0.86,
+      "content": "Always run npm run checks:branch:fix before implementation work to keep branch validation deterministic.",
+      "memoryKey": "exp-ret:exact-checks",
+      "tags": ["workflow", "checks", "branch"]
+    },
+    {
+      "category": "convention",
+      "confidence": 0.82,
+      "content": "Before architecture changes, search durable memory for prior decisions, conventions, and root causes.",
+      "memoryKey": "exp-ret:semantic-search",
+      "tags": ["memory", "retrieval", "architecture"]
+    },
+    {
+      "category": "decision",
+      "confidence": 0.79,
+      "content": "Calibration scorecard metrics should be tracked consistently in fixture-driven evaluation reports.",
+      "memoryKey": "exp-ret:tag-calibration",
+      "tags": ["calibration", "metrics", "scorecard"]
+    },
+    {
+      "category": "root-cause",
+      "confidence": 0.88,
+      "content": "Root cause: local environment probe can return detached HEAD when repository history is checked out at prior commit.",
+      "memoryKey": "exp-ret:category-detached-head",
+      "tags": ["environment", "git", "detached-head"]
+    },
+    {
+      "category": "convention",
+      "confidence": 0.74,
+      "content": "Use fixture-specific project scopes for eval seeding to avoid cross-suite contamination.",
+      "memoryKey": "exp-ret:noise-fixtures",
+      "tags": ["fixtures", "scope"]
+    },
+    {
+      "category": "preference",
+      "confidence": 0.7,
+      "content": "Prefer concise handoff summaries that include explicit validation outcomes and report links.",
+      "memoryKey": "exp-ret:noise-handoff",
+      "tags": ["handoff", "summary"]
+    }
+  ],
+  "queries": [
+    {
+      "expectedTopK": ["exp-ret:exact-checks"],
+      "k": 3,
+      "query": "checks:branch:fix before implementation work"
+    },
+    {
+      "expectedTopK": ["exp-ret:semantic-search"],
+      "k": 3,
+      "query": "search prior memory before architecture decisions"
+    },
+    {
+      "expectedTopK": ["exp-ret:tag-calibration"],
+      "k": 3,
+      "query": "calibration scorecard metrics retrieval"
+    },
+    {
+      "category": "root-cause",
+      "expectedTopK": ["exp-ret:category-detached-head"],
+      "k": 3,
+      "query": "detached head environment probe root cause"
+    },
+    {
+      "expectedTopK": [],
+      "k": 3,
+      "query": "volcanic eruption telemetry from lunar orbit"
+    }
+  ]
+}

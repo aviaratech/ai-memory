@@ -1,0 +1,11 @@
+{
+  "name": "ai-memory",
+  "description": "Durable local memory for AI agents",
+  "envKeys": [
+    { "key": "AI_MEMORY_DATABASE_URL" },
+    { "key": "AI_MEMORY_EMBEDDING_API_KEY" },
+    { "key": "AI_MEMORY_EMBEDDING_MODEL" },
+    { "key": "AI_MEMORY_EMBEDDING_PROVIDER" },
+    { "key": "AI_MEMORY_EMBEDDING_TIMEOUT_MS" }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "expectedTaskRelevantIds": [1, 2, 3],
+  "memories": [
+    {
+      "category": "architecture",
+      "content": "Orient memory flow uses a single search step for task relevance.",
+      "id": 1,
+      "tags": ["orient", "retrieval"]
+    },
+    {
+      "category": "convention",
+      "content": "Search memories uses hybrid retrieval with vector and keyword matching.",
+      "id": 2,
+      "tags": ["search", "hybrid"]
+    },
+    {
+      "category": "decision",
+      "content": "Recall memories ordered by decayed importance with category-specific half-lives.",
+      "id": 3,
+      "tags": ["recall", "importance"]
+    }
+  ],
+  "name": "direct-baseline",
+  "task": "memory orient flow improvements"
+}

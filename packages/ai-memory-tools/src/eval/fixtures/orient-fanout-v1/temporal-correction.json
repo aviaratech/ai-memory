@@ -1,0 +1,27 @@
+{
+  "expectedTaskRelevantIds": [10, 11, 12],
+  "memories": [
+    {
+      "category": "architecture",
+      "content": "Consolidation uses GPT-4o-mini for single-call classification.",
+      "id": 10,
+      "tags": ["consolidation"]
+    },
+    {
+      "category": "architecture",
+      "content": "Consolidation now uses 3-variant ensemble for high-risk memories.",
+      "id": 11,
+      "status": "contested",
+      "supersedesId": 10,
+      "tags": ["consolidation", "ensemble"]
+    },
+    {
+      "category": "convention",
+      "content": "High-risk categories include decision, architecture, and convention.",
+      "id": 12,
+      "tags": ["consolidation", "risk"]
+    }
+  ],
+  "name": "temporal-correction",
+  "task": "consolidation classification accuracy"
+}

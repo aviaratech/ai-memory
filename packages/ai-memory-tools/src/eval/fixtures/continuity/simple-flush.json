@@ -1,0 +1,19 @@
+{
+  "expectedOrient": {
+    "orientation": {
+      "priorSession": {
+        "snapshot": {
+          "snapshotJson": {
+            "next_actions": ["Review continuity suite summary after flush."],
+            "open_questions": ["Which continuity scenario should expand first?"]
+          }
+        }
+      }
+    }
+  },
+  "flush": {
+    "nextActions": ["Review continuity suite summary after flush."],
+    "openQuestions": ["Which continuity scenario should expand first?"],
+    "summary": "Simple continuity flush scenario for experiment harness."
+  }
+}

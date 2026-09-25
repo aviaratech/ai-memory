@@ -1,0 +1,28 @@
+{
+  "expectedTaskRelevantIds": [30, 31, 32],
+  "memories": [
+    {
+      "category": "architecture",
+      "content": "Supersession tracking uses supersedes_id column in ai_memory_entries.",
+      "id": 30,
+      "status": "contested",
+      "tags": ["supersession", "schema"]
+    },
+    {
+      "category": "convention",
+      "content": "Contested memories require manual resolution via resolveContestedMemory API.",
+      "id": 31,
+      "status": "contested",
+      "tags": ["contested", "resolution"]
+    },
+    {
+      "category": "decision",
+      "content": "Memory lineage is preserved even after supersession for audit purposes.",
+      "id": 32,
+      "supersedesId": 30,
+      "tags": ["lineage", "audit"]
+    }
+  ],
+  "name": "zero-direct-recovery",
+  "task": "memory supersession lineage tracking"
+}

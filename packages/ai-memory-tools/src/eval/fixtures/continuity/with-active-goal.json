@@ -1,0 +1,20 @@
+{
+  "expectedOrient": {
+    "orientation": {
+      "priorSession": {
+        "snapshot": {
+          "snapshotJson": {
+            "next_actions": ["Carry forward active-goal continuity context."],
+            "open_questions": ["Should active-goal snapshots receive dedicated metrics?"]
+          }
+        }
+      }
+    }
+  },
+  "flush": {
+    "activeGoal": "Ship active-goal simplification follow-up",
+    "nextActions": ["Carry forward active-goal continuity context."],
+    "openQuestions": ["Should active-goal snapshots receive dedicated metrics?"],
+    "summary": "Continuity flush including activeGoal for forward compatibility."
+  }
+}

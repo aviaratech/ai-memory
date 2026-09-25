@@ -1,0 +1,39 @@
+{
+  "flush": {
+    "project": "fixture/recovery",
+    "sessionId": "fixture-codex-session-a",
+    "task": "fixture-logical-task-export",
+    "source": "codex",
+    "agent": "codex",
+    "activeGoal": "Prepare an offline archive export",
+    "summary": "Prepared the offline archive export and verified the local manifest. The customer review remains pending, so this checkpoint preserves the upload hold and the next read-only check.",
+    "nextActions": ["Verify the archive manifest checksum."],
+    "contextNeeded": ["Customer review is pending; original approval evidence remains authoritative."],
+    "openQuestions": ["Has the customer accepted the archive review?"],
+    "stateModel": {
+      "strategy_confidence": "high",
+      "assumptions": ["The upload hold remains active until original approval is verified."],
+      "constraints": ["Do not upload the archive while customer review is pending."],
+      "uncertainty": []
+    }
+  },
+  "expectedOrient": {
+    "orientation": {
+      "priorSession": {
+        "snapshot": {
+          "snapshotJson": {
+            "next_actions": ["Verify the archive manifest checksum."],
+            "open_questions": ["Has the customer accepted the archive review?"],
+            "x_active_goal": "Prepare an offline archive export",
+            "x_state_model": {
+              "strategy_confidence": "high",
+              "assumptions": ["The upload hold remains active until original approval is verified."],
+              "constraints": ["Do not upload the archive while customer review is pending."],
+              "uncertainty": []
+            }
+          }
+        }
+      }
+    }
+  }
+}

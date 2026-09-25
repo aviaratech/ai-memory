@@ -1,0 +1,54 @@
+{
+  "memories": [
+    {
+      "id": 1001,
+      "project": "example/catalog",
+      "repoSlug": null,
+      "sessionId": "installed-refresh-session",
+      "content": "Current project note remains available after migration.",
+      "memoryKey": "fixture:current-project-note"
+    },
+    {
+      "id": 1002,
+      "project": "catalog",
+      "repoSlug": "example/catalog",
+      "sessionId": "lead-host-session",
+      "content": "Operator decision: finish the document import before release.",
+      "memoryKey": "fixture:legacy-project-decision"
+    },
+    {
+      "id": 1003,
+      "project": "catalog",
+      "repoSlug": "other/catalog",
+      "sessionId": "other-host-session",
+      "content": "Foreign project decision must remain isolated.",
+      "memoryKey": "fixture:foreign-decision"
+    },
+    {
+      "id": 1004,
+      "project": "catalog",
+      "repoSlug": null,
+      "sessionId": "unknown-host-session",
+      "content": "Unknown project decision must remain isolated.",
+      "memoryKey": "fixture:unknown-decision"
+    }
+  ],
+  "historicalRepositoryEvidence": [
+    {
+      "id": 1006,
+      "project": "example/catalog",
+      "repoId": "github.com/example/catalog",
+      "repoSlug": "example/catalog",
+      "sessionId": "lead-host-session",
+      "content": "Historical repository identity uses a host-qualified ID."
+    },
+    {
+      "id": 1007,
+      "project": "catalog",
+      "repoId": "github.com/other/catalog",
+      "repoSlug": "example/catalog",
+      "sessionId": "conflicting-host-session",
+      "content": "Conflicting host-qualified owner must remain isolated."
+    }
+  ]
+}

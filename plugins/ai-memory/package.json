@@ -1,0 +1,24 @@
+{
+  "name": "@aviaratech/ai-memory-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "dist",
+    "hooks",
+    "migrations",
+    "scripts",
+    "skills",
+    "THIRD_PARTY_NOTICES.txt",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/bundle.mjs"
+  },
+  "dependencies": {
+    "@aviaratech/ai-memory-tools": "0.1.0"
+  }
+}

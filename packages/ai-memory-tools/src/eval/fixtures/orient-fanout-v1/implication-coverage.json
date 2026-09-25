@@ -1,0 +1,31 @@
+{
+  "expectedTaskRelevantIds": [20, 21, 22, 23],
+  "memories": [
+    {
+      "category": "architecture",
+      "content": "Orient retrieval returns task-relevant memories for agent context.",
+      "id": 20,
+      "tags": ["orient", "retrieval"]
+    },
+    {
+      "category": "convention",
+      "content": "Retrieval quality is measured by recall and precision at K.",
+      "id": 21,
+      "tags": ["retrieval", "metrics"]
+    },
+    {
+      "category": "decision",
+      "content": "Category diversity improves agent orientation when tasks span multiple domains.",
+      "id": 22,
+      "tags": ["orient", "coverage"]
+    },
+    {
+      "category": "architecture",
+      "content": "Implication search broadens query using task and activeGoal token union.",
+      "id": 23,
+      "tags": ["implication", "search"]
+    }
+  ],
+  "name": "implication-coverage",
+  "task": "orient retrieval quality"
+}

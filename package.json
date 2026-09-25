@@ -1,0 +1,39 @@
+{
+  "name": "ai-memory-release-candidate",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "workspaces": [
+    "packages/ai-memory",
+    "packages/ai-memory-tools",
+    "plugins/ai-memory"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "npm run build -w @aviaratech/ai-memory && npm run build -w @aviaratech/ai-memory-tools && npm run build -w @aviaratech/ai-memory-plugin",
+    "checks": "npm run format:check && npm run build && npm run lint && npm run typecheck && npm run test",
+    "format": "oxfmt packages plugins package.json vitest.config.ts vitest.integration.config.ts .oxlintrc.json .oxfmtrc.json tsconfig.base.json tsconfig.scripts.json",
+    "format:check": "oxfmt --check packages plugins package.json vitest.config.ts vitest.integration.config.ts .oxlintrc.json .oxfmtrc.json tsconfig.base.json tsconfig.scripts.json",
+    "lint": "oxlint packages plugins vitest.config.ts vitest.integration.config.ts",
+    "scan:secrets": "betterleaks git . --log-opts=--all --ignore-gitleaks-allow --redact=100 --no-banner --no-color --timeout=120 && betterleaks dir . --ignore-gitleaks-allow --redact=100 --no-banner --no-color --timeout=120",
+    "scan:secrets:probe": "node --test scripts/secret-scanner-probe.test.mjs",
+    "typecheck": "npm run typecheck -w @aviaratech/ai-memory && npm run typecheck -w @aviaratech/ai-memory-tools && tsc -p tsconfig.scripts.json",
+    "test": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "@types/pg": "^8.20.0",
+    "esbuild": "^0.27.7",
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.85.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "tsx": "^4.22.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "packageManager": "npm@11.19.0"
+}

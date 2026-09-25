@@ -1,0 +1,41 @@
+{
+  "name": "corrected-constraint",
+  "task": "Prepare the archive replay with the accepted window and required checks",
+  "memories": [
+    {
+      "id": 8100,
+      "memoryKey": "fixture:fanout:prior",
+      "category": "decision",
+      "content": "Earlier decision: archive replay uses ten minutes.",
+      "status": "superseded",
+      "tags": ["archive", "window"]
+    },
+    {
+      "id": 8101,
+      "memoryKey": "fixture:fanout:accepted",
+      "category": "decision",
+      "content": "Correction: archive replay now uses thirty minutes; this replaces the old ten-minute replay window.",
+      "status": "active",
+      "supersedesId": 8100,
+      "tags": ["archive", "window"]
+    },
+    {
+      "id": 8102,
+      "memoryKey": "fixture:fanout:disputed",
+      "category": "decision",
+      "content": "Contested proposal: archive replay should use sixty minutes, but no approval exists.",
+      "status": "contested",
+      "supersedesId": 8101,
+      "tags": ["archive", "window", "contested"]
+    },
+    {
+      "id": 8103,
+      "memoryKey": "fixture:fanout:checksum",
+      "category": "convention",
+      "content": "The historical manifest checksum requirement remains valid before archive replay.",
+      "status": "active",
+      "tags": ["archive", "checksum"]
+    }
+  ],
+  "expectedTaskRelevantIds": [8101, 8102, 8103]
+}

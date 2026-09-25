@@ -1,0 +1,47 @@
+# The pinned Betterleaks release supplies the maintained detection rules.
+# This exception is limited to synthetic PostgreSQL URLs in existing unit tests.
+# The accepted recovery tests use one additional exact synthetic local password.
+# Provider tokens and all other rules remain active in those files.
+betterleaksMinVersion = "1.8.1"
+filter = '''
+(
+  finding["rule_id"] == "generic-credential-uri" &&
+  finding["secret"] in ["test", "ai_memory", "postgres", "invalid", "secret", "synthetic", "pass", "example"] &&
+  filter.matchesAny(attributes["path"], [
+  `^packages/ai-memory/src/db/admin-api\.test\.ts$`,
+  `^packages/ai-memory/src/db/runtime\.pool-selection\.test\.ts$`,
+  `^packages/ai-memory-tools/src/backup-db\.test\.ts$`,
+  `^packages/ai-memory-tools/src/ensure-postgres\.test\.ts$`,
+  `^packages/ai-memory-tools/src/eval/recovery-replay\.test\.ts$`,
+  `^packages/ai-memory-tools/src/health-report\.test\.ts$`,
+  `^packages/ai-memory-tools/src/launchd/agent\.test\.ts$`,
+  `^packages/ai-memory-tools/src/server\.bin\.test\.ts$`
+  ]) &&
+  filter.matchesAny(finding["match"], [
+    `^postgres(?:ql)?://[^@]+@(?:localhost|127\.0\.0\.1|db\.example\.invalid)(?::[0-9]+)?/`
+  ]) &&
+  !filter.matchesAny(finding["match"], [
+    `(?i)[?&](?:host|hostaddr|port|dbname|user|password)=`
+  ])
+) || (
+  finding["rule_id"] == "generic-credential-uri" &&
+  finding["secret"] == "private-password" &&
+  filter.matchesAny(attributes["path"], [
+    `^packages/ai-memory-tools/src/backup-db\.test\.ts$`,
+    `^packages/ai-memory-tools/src/backup-s3\.test\.ts$`
+  ]) &&
+  filter.matchesAny(finding["match"], [
+    `^postgresql://synthetic:private-password@127\.0\.0\.1:5432/(?:ai_memory(?:_dr_source|_other_source)?|postgres)`
+  ]) &&
+  !filter.matchesAny(finding["match"], [
+    `(?i)[?&](?:host|hostaddr|port|dbname|user|password)=`
+  ])
+) || (
+  attributes["path"] == ".github/workflows/ci.yml" &&
+  finding["secret"] == "ci_only" &&
+  finding["rule_id"] in ["generic-credential-uri", "generic-password"]
+)
+'''
+
+[extend]
+useDefault = true
