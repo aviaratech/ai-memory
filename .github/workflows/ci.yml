@@ -3,7 +3,7 @@ name: Quality checks
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
 
@@ -15,13 +15,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  checks:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+  linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:18
+        image: pgvector/pgvector:0.8.6-pg18-trixie
         env:
           POSTGRES_USER: ci_memory
           POSTGRES_PASSWORD: ci_only
@@ -42,8 +41,12 @@ jobs:
       - name: Set up pinned Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version-file: .node-version
+          node-version: '24.21.0'
           cache: npm
+      - name: Pin npm
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = 11.19.0
       - name: Install dependencies once
         run: npm ci
       - name: Install pinned Betterleaks
@@ -75,3 +78,85 @@ jobs:
         env:
           AI_MEMORY_DATABASE_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
           AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - name: Pin npm
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = 11.19.0
+      - name: Check platform-specific unit and entrypoint behavior
+        run: |
+          npm ci
+          npm run build
+          npm run test
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - name: Pin npm
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = 11.19.0
+      - name: Assemble both workspace packages
+        run: |
+          npm ci
+          npm run build
+      - name: Check package inventories
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/ai-memory-packages"
+          mkdir -p "$package_dir"
+          for item in 'core:@aviaratech/ai-memory' 'plugin:@aviaratech/ai-memory-plugin'; do
+            label="${item%%:*}"
+            package="${item#*:}"
+            npm pack --workspace "$package" --dry-run --json > "$package_dir/$label-dry-run.json"
+            npm pack --workspace "$package" --pack-destination "$package_dir" --json > "$package_dir/$label-pack.json"
+            node -e '
+              const fs = require("node:fs");
+              const [dry, packed] = process.argv.slice(1).map(path => JSON.parse(fs.readFileSync(path, "utf8"))[0]);
+              const paths = item => item.files.map(file => file.path).sort();
+              if (dry.name !== packed.name || paths(dry).join("\n") !== paths(packed).join("\n")) {
+                throw new Error("npm pack inventory mismatch");
+              }
+              console.log(`${packed.name}: ${packed.files.length} files\n${paths(packed).join("\n")}`);
+            ' "$package_dir/$label-dry-run.json" "$package_dir/$label-pack.json"
+          done
+
+  checks:
+    if: ${{ always() }}
+    needs: [linux, macos, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every coverage lane
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          for result in "$LINUX_RESULT" "$MACOS_RESULT" "$PACKAGE_RESULT"; do
+            test "$result" = success || exit 1
+          done
