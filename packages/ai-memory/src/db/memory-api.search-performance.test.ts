@@ -30,7 +30,7 @@
  *
  * The project-approved live-DB evidence path is the operator-run search
  * evaluator at
- * `packages/ai-memory-tools/src/eval/search-eval.ts`
+ * `packages/ai-memory/src/tools/eval/search-eval.ts`
  * (`pnpm --filter @aviaratech/ai-memory run test:search-eval`). That harness
  * seeds a real DB and runs the real `searchMemories` SQL end-to-end. The
  * rationale for keeping the unit gate on SQL-shape + JS bound + bounded

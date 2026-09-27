@@ -32,12 +32,15 @@ test('synthetic provider token is found and never printed', () => {
 
 const fixtureUrl = ['postgres:', '//user:pass@', 'localhost:5432/ai_memory_test'].join('');
 
-test('synthetic local fixture and ordinary text do not raise findings', () => {
-  const result = scan(
-    `${fixtureUrl}\nNo credential is present.\n`,
+test('synthetic local fixtures in current and historical paths do not raise findings', () => {
+  for (const path of [
     'packages/ai-memory/src/db/admin-api.test.ts',
-  );
-  assert.equal(result.status, 0, 'narrow local test URL exception must be accepted');
+    'packages/ai-memory/src/tools/backup-db.test.ts',
+    'packages/ai-memory-tools/src/backup-db.test.ts',
+  ]) {
+    const result = scan(`${fixtureUrl}\nNo credential is present.\n`, path);
+    assert.equal(result.status, 0, `narrow local test URL exception must be accepted in ${path}`);
+  }
 });
 
 test('the local fixture exception does not extend to an unrelated path', () => {
@@ -66,15 +69,20 @@ const recoveryFixtureUrl = [
   '127.0.0.1:5432/ai_memory_dr_source',
 ].join('');
 
-test('synthetic recovery fixture is accepted only in its test file', () => {
-  assert.equal(scan(`${recoveryFixtureUrl}\n`, 'packages/ai-memory-tools/src/backup-s3.test.ts').status, 0);
-  assert.equal(scan(`${recoveryFixtureUrl}\n`, 'packages/ai-memory-tools/src/disaster-recovery.ts').status, 1);
+test('synthetic recovery fixture is accepted only in current and historical test files', () => {
+  for (const path of [
+    'packages/ai-memory/src/tools/backup-s3.test.ts',
+    'packages/ai-memory-tools/src/backup-s3.test.ts',
+  ]) {
+    assert.equal(scan(`${recoveryFixtureUrl}\n`, path).status, 0);
+  }
+  assert.equal(scan(`${recoveryFixtureUrl}\n`, 'packages/ai-memory/src/tools/disaster-recovery.ts').status, 1);
 });
 
 test('new recovery-test password is detected and redacted', () => {
   const password = randomBytes(24).toString('hex');
   const url = `postgresql://synthetic:${password}@127.0.0.1:5432/ai_memory_dr_source`;
-  const result = scan(`${url}\n`, 'packages/ai-memory-tools/src/backup-s3.test.ts');
+  const result = scan(`${url}\n`, 'packages/ai-memory/src/tools/backup-s3.test.ts');
   assert.equal(result.status, 1);
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(password, 'u'));
 });
@@ -82,7 +90,7 @@ test('new recovery-test password is detected and redacted', () => {
 test('recovery fixture with a target override is detected', () => {
   const result = scan(
     `${recoveryFixtureUrl}?host=production.example.com\n`,
-    'packages/ai-memory-tools/src/backup-s3.test.ts',
+    'packages/ai-memory/src/tools/backup-s3.test.ts',
   );
   assert.equal(result.status, 1);
 });

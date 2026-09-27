@@ -1,8 +1,8 @@
 /**
- * @aviaratech/ai-memory/internal — Privileged export surface for ai-memory-tools.
+ * @aviaratech/ai-memory/internal — Privileged export surface for package operations.
  *
  * External consumers should use the main `@aviaratech/ai-memory` export.
- * This barrel consolidates all deep paths that ai-memory-tools needs.
+ * This barrel consolidates all deep paths that package operations need.
  */
 
 // ── standalone modules ──────────────────────────────────────────────

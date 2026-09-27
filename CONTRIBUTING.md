@@ -17,6 +17,6 @@ Integration tests are separate from the default gate. Use a **disposable** Postg
 npm run test:integration
 ```
 
-The project-identity test exercises migration history; do not point either URL at the persistent personal database. `npm run init -w @aviaratech/ai-memory-tools` and `npm run smoke -w @aviaratech/ai-memory-tools` can exercise a disposable `ai_memory_test` database after `npm run build`. Destroy only the test databases that you provisioned. Do not run tests with live content or provider keys.
+The project-identity test exercises migration history; do not point either URL at the persistent personal database. `npm run init -w @aviaratech/ai-memory` and `npm run smoke -w @aviaratech/ai-memory` can exercise a disposable `ai_memory_test` database after `npm run build`. Destroy only the test databases that you provisioned. Do not run tests with live content or provider keys.
 
 Use synthetic, domain-neutral examples and fixtures. Keep credentials, actual memory records, private logs, and machine-specific paths out of commits and issue discussions. [Installation](docs/installation.md) and [operations](docs/operations.md) describe the user-facing commands.

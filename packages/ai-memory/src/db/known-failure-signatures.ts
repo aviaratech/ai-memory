@@ -9,11 +9,11 @@
  * with placeholders — matching the same normalization used in health-report signatures.
  *
  * To add an entry after a fix lands:
- *   1. Run `npm run health -w @aviaratech/ai-memory-tools` to see the current top failure signatures.
+ *   1. Run `npm run health -w @aviaratech/ai-memory` to see the current top failure signatures.
  *   2. Copy the signature string exactly.
  *   3. Set fixDate to the ISO date when the fix was merged/deployed.
  *   4. Set resolvedBy to a release or change reference.
- *   5. Run `npm run failures:resolve-known -w @aviaratech/ai-memory-tools -- --dry-run` to verify match counts.
+ *   5. Run `npm run failures:resolve-known -w @aviaratech/ai-memory -- --dry-run` to verify match counts.
  *   6. Commit this file and the PR together.
  */
 

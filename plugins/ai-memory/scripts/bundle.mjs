@@ -10,7 +10,7 @@ mkdirSync(dist, { recursive: true });
 await build({
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   bundle: true,
-  entryPoints: [resolve(root, 'packages/ai-memory-tools/dist/server.js')],
+  entryPoints: [resolve(root, 'packages/ai-memory/dist/tools/server.js')],
   external: ['node:*'],
   format: 'esm',
   ignoreAnnotations: true,

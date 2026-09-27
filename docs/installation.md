@@ -20,19 +20,19 @@ npm ci
 npm run build
 ```
 
-For a versioned npm installation, create a separate local directory and install the tools package; it brings in the matching core package:
+For a versioned npm installation, create a separate local directory and install the single core package (0.2.0 once published):
 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact @aviaratech/ai-memory-tools@0.1.1
+npm install --save-exact @aviaratech/ai-memory@0.2.0
 ```
 
-The installed package provides `node_modules/@aviaratech/ai-memory-tools/dist/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. The optional plugin is distributed as `aviaratech-ai-memory-plugin-0.1.1.tgz` on the matching [GitHub release](https://github.com/aviaratech/ai-memory/releases/tag/v0.1.1). After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
+The installed package provides `node_modules/@aviaratech/ai-memory/dist/tools/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. After a reviewed 0.2.0 release, the optional plugin is distributed as `aviaratech-ai-memory-plugin-0.2.0.tgz` on its matching GitHub release. After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
 
 ```sh
 mkdir ai-memory-plugin
-tar -xzf aviaratech-ai-memory-plugin-0.1.1.tgz -C ai-memory-plugin --strip-components=1
+tar -xzf aviaratech-ai-memory-plugin-0.2.0.tgz -C ai-memory-plugin --strip-components=1
 ```
 
 The archive includes the bundled MCP launcher, migrations, license, and third-party notices.
@@ -40,30 +40,32 @@ The archive includes the bundled MCP launcher, migrations, license, and third-pa
 Provide `AI_MEMORY_DATABASE_URL` for the database-owning role through your host's protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated `ai_memory` database. The package does not infer a URL from another service or load a shared `.env` file. After setting it, run these commands from the standalone checkout:
 
 ```sh
-npm run pg:status -w @aviaratech/ai-memory-tools
-npm run init -w @aviaratech/ai-memory-tools
+npm run pg:status -w @aviaratech/ai-memory
+npm run init -w @aviaratech/ai-memory
 ```
 
 From the versioned npm installation, use the shipped commands instead:
 
 ```sh
-node node_modules/@aviaratech/ai-memory-tools/dist/ensure-postgres.js --status
-node node_modules/@aviaratech/ai-memory-tools/dist/init-db.js
+node node_modules/@aviaratech/ai-memory/dist/tools/ensure-postgres.js --status
+node node_modules/@aviaratech/ai-memory/dist/tools/init-db.js
 ```
 
 `init` applies the numbered migrations and records them in `public.ai_memory_pgmigrations`. The CLI fails if the URL is missing or points to a remote host. `AI_MEMORY_MIGRATIONS_DIR` is a controlled packaging/test override; normal installs use migrations shipped with the core package.
 
 ## Connect an MCP client
 
-Configure an MCP client that supports stdio servers to launch `node` with the **absolute path** to either this checkout's `packages/ai-memory-tools/dist/server.js` or the installed `node_modules/@aviaratech/ai-memory-tools/dist/server.js` as its argument. For example, adapt this generic server entry to your client's configuration format:
+Configure an MCP client that supports stdio servers to launch `node` with the **absolute path** to either this checkout's `packages/ai-memory/dist/tools/server.js` or the installed `node_modules/@aviaratech/ai-memory/dist/tools/server.js` as its argument. For example, adapt this generic server entry to your client's configuration format:
 
 ```json
 {
   "command": "node",
-  "args": ["/absolute/path/to/ai-memory/packages/ai-memory-tools/dist/server.js"]
+  "args": ["/absolute/path/to/ai-memory/packages/ai-memory/dist/tools/server.js"]
 }
 ```
 
-Give that server process the same protected `AI_MEMORY_DATABASE_URL`; keep credentials out of a shared client configuration. `npm run mcp -w @aviaratech/ai-memory-tools` starts the same stdio server from the repository root, and the tools package exposes an `ai-memory-mcp` bin. The optional plugin contains skills and hooks; its bundled launcher is built at `plugins/ai-memory/dist/mcp-launcher.js`, and compatible Claude plugin hosts read `plugins/ai-memory/.mcp.json`.
+Give that server process the same protected `AI_MEMORY_DATABASE_URL`; keep credentials out of a shared client configuration. `npm run mcp -w @aviaratech/ai-memory` starts the same stdio server from the repository root, and the core package exposes an `ai-memory-mcp` bin. The optional plugin contains skills and hooks; its bundled launcher is built at `plugins/ai-memory/dist/mcp-launcher.js`, and compatible Claude plugin hosts read `plugins/ai-memory/.mcp.json`.
 
 No provider key is needed for basic local storage and text search. `AI_MEMORY_EMBEDDING_PROVIDER=openai` enables the optional OpenAI embedding path and requires `AI_MEMORY_EMBEDDING_API_KEY`; `AI_MEMORY_EMBEDDING_MODEL` defaults to `text-embedding-3-small`. Optional classification uses `AI_MEMORY_CLASSIFY_API_KEY` (or the embedding key) and `AI_MEMORY_CLASSIFY_MODEL`. These features call an external provider and may incur provider charges. Leave them unset for a local-only installation. See [operations](operations.md) before enabling backups.
+
+For a dependency and import mapping from the published 0.1.x tools package, see [Migrating from 0.1.x](api-architecture.md#migrating-from-01x). Existing 0.1.x installs remain usable; the 0.2.0 commands above apply only after that version is published.

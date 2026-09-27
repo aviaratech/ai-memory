@@ -149,7 +149,7 @@ async function warnForMissingOptionalSchemaCapabilities(client: QueryClient, cap
   if (!capabilities.hasVector) {
     logAiMemoryWarn('db.pgvector_unavailable', {
       message:
-        'pgvector extension is unavailable; vector write/search paths are disabled. Install/enable extension "vector" and rerun `npm run init -w @aviaratech/ai-memory-tools` to enable semantic vectors.',
+        'pgvector extension is unavailable; vector write/search paths are disabled. Install/enable extension "vector" and rerun `npm run init -w @aviaratech/ai-memory` to enable semantic vectors.',
     });
     return;
   }
@@ -157,7 +157,7 @@ async function warnForMissingOptionalSchemaCapabilities(client: QueryClient, cap
   if (!capabilities.hasEmbeddingColumn) {
     logAiMemoryWarn('db.embedding_column_unavailable', {
       message:
-        'ai_memory_entries.embedding is unavailable; vector write/search paths are disabled. Rerun `npm run init -w @aviaratech/ai-memory-tools` after enabling pgvector.',
+        'ai_memory_entries.embedding is unavailable; vector write/search paths are disabled. Rerun `npm run init -w @aviaratech/ai-memory` after enabling pgvector.',
     });
     return;
   }
@@ -167,7 +167,7 @@ async function warnForMissingOptionalSchemaCapabilities(client: QueryClient, cap
     if (!embeddingIndexExists) {
       logAiMemoryWarn('db.embedding_index_unavailable', {
         message:
-          'ai_memory_entries_embedding_hnsw_idx is unavailable; vector search remains functional but may be slower. Rerun `npm run init -w @aviaratech/ai-memory-tools` to recreate the index.',
+          'ai_memory_entries_embedding_hnsw_idx is unavailable; vector search remains functional but may be slower. Rerun `npm run init -w @aviaratech/ai-memory` to recreate the index.',
       });
     }
   } catch (error) {

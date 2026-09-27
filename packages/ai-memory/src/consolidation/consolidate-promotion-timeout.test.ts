@@ -32,11 +32,9 @@ import { afterEach, describe, it, vi } from 'vitest';
 
 /**
  * Mirrors the public `extractTimedOutSteps` regex from
- * `@aviaratech/ai-memory-tools/src/telemetry-summary.ts` so the test can
+ * `../tools/telemetry-summary.ts` so the test can
  * prove the canonical warning message shape is parseable into a phase
- * name without taking a reverse-direction cross-package import (this
- * package is the leaf; ai-memory-tools depends on it, not the other
- * way around).
+ * name without importing the MCP runtime into this focused engine test.
  */
 const TIMED_OUT_STEP_PATTERN = / timed out after \d+ms\b/iu;
 
@@ -180,9 +178,7 @@ describe('consolidateMemories flush-promotion candidate timeout', () => {
     // it parses messages of the form `<phase> timed out after <n>ms` and
     // returns the phase prefix. Drive the same parse here so this test
     // covers the end-to-end attribution shape rather than only the local
-    // record. (Importing the helper directly from `@aviaratech/ai-memory-tools`
-    // is forbidden because that package depends on this one — see the
-    // package dependency graph in the root AGENTS.md.)
+    // record. Keep this engine test independent of the MCP runtime.
     const phasesFromMessages = details.flatMap(detail => {
       const match = TIMED_OUT_STEP_PATTERN.exec(detail.message);
       return match === null ? [] : [detail.message.slice(0, match.index).trim()];

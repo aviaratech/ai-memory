@@ -1,4 +1,4 @@
-# Enable AI_MEMORY_RELEASE_ENABLED only after both npm packages exist, trusted
+# Enable AI_MEMORY_RELEASE_ENABLED only after the npm package exists, trusted
 # publishers are configured, and public-release has required reviewers.
 name: Publish reviewed release
 run-name: Release ${{ inputs.version }}
@@ -16,10 +16,6 @@ on:
         type: string
       core_sha256:
         description: Reviewed core archive SHA-256
-        required: true
-        type: string
-      tools_sha256:
-        description: Reviewed tools archive SHA-256
         required: true
         type: string
       plugin_sha256:
@@ -64,7 +60,6 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       SOURCE_SHA: ${{ inputs.source_sha }}
       CORE_SHA256: ${{ inputs.core_sha256 }}
-      TOOLS_SHA256: ${{ inputs.tools_sha256 }}
       PLUGIN_SHA256: ${{ inputs.plugin_sha256 }}
     steps:
       - name: Check out reviewed main
@@ -83,7 +78,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          for digest in "$CORE_SHA256" "$TOOLS_SHA256" "$PLUGIN_SHA256"; do
+          for digest in "$CORE_SHA256" "$PLUGIN_SHA256"; do
             [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
           done
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
@@ -91,7 +86,6 @@ jobs:
           const fs = require('node:fs');
           const expected = [
             ['packages/ai-memory/package.json', '@aviaratech/ai-memory'],
-            ['packages/ai-memory-tools/package.json', '@aviaratech/ai-memory-tools'],
             ['plugins/ai-memory/package.json', '@aviaratech/ai-memory-plugin'],
           ];
           for (const [path, name] of expected) {
@@ -120,18 +114,29 @@ jobs:
           npm run scan:secrets
           npm run scan:secrets:probe
           npm run checks
+      - name: Create separate disposable project identity database
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.AI_MEMORY_DATABASE_URL });
+          await client.connect();
+          try { await client.query('CREATE DATABASE ai_memory_project_identity_ci OWNER ci_memory'); }
+          finally { await client.end(); }
+          NODE
+        env:
+          AI_MEMORY_DATABASE_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_ci
       - name: Check disposable PostgreSQL integration
         run: npm run test:integration
         env:
           AI_MEMORY_DATABASE_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_ci
-          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_ci
+          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory@127.0.0.1:5432/ai_memory_project_identity_ci
       - name: Pack and verify exact reviewed archives
         shell: bash
         run: |
           set -euo pipefail
           release_dir="$RUNNER_TEMP/ai-memory-release"
           mkdir -p "$release_dir"
-          for item in 'core:@aviaratech/ai-memory' 'tools:@aviaratech/ai-memory-tools' 'plugin:@aviaratech/ai-memory-plugin'; do
+          for item in 'core:@aviaratech/ai-memory' 'plugin:@aviaratech/ai-memory-plugin'; do
             label="${item%%:*}"
             package="${item#*:}"
             npm pack --workspace "$package" --dry-run --json > "$release_dir/$label-dry-run.json"
@@ -144,10 +149,9 @@ jobs:
             ' "$release_dir/$label-dry-run.json" "$release_dir/$label-pack.json"
           done
           printf '%s  %s\n' "$CORE_SHA256" "$release_dir/aviaratech-ai-memory-$RELEASE_VERSION.tgz" \
-            "$TOOLS_SHA256" "$release_dir/aviaratech-ai-memory-tools-$RELEASE_VERSION.tgz" \
             "$PLUGIN_SHA256" "$release_dir/aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz" \
             | sha256sum --check --status
-          for label in core tools plugin; do
+          for label in core plugin; do
             archive="$(node -e 'const p = require(process.argv[1])[0]; console.log(p.filename)' "$release_dir/$label-pack.json")"
             mkdir -p "$release_dir/unpacked/$label"
             tar -xzf "$release_dir/$archive" -C "$release_dir/unpacked/$label"
@@ -156,7 +160,6 @@ jobs:
       - name: Require existing npm packages for trusted publishing
         run: |
           npm view @aviaratech/ai-memory@latest version --json > /dev/null
-          npm view @aviaratech/ai-memory-tools@latest version --json > /dev/null
       - name: Preflight registry and GitHub release conflicts
         shell: bash
         env:
@@ -179,7 +182,6 @@ jobs:
             fi
           }
           check_package core @aviaratech/ai-memory
-          check_package tools @aviaratech/ai-memory-tools
           tag="v$RELEASE_VERSION"
           archive="aviaratech-ai-memory-plugin-$RELEASE_VERSION.tgz"
           remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
@@ -189,7 +191,7 @@ jobs:
             [[ "$remote_tag" == "$SOURCE_SHA" ]] || { echo 'Existing release has no verified source tag'; exit 1; }
             state="$(node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" preflight)"
             if [[ "$state" == published* ]]; then
-              [[ "$(cat "$release_dir/core-state")" == present && "$(cat "$release_dir/tools-state")" == present ]] || {
+              [[ "$(cat "$release_dir/core-state")" == present ]] || {
                 echo 'Published release precedes its reviewed npm package versions'
                 exit 1
               }
@@ -268,7 +270,6 @@ jobs:
             fi
           }
           publish_one core @aviaratech/ai-memory "aviaratech-ai-memory-$RELEASE_VERSION.tgz"
-          publish_one tools @aviaratech/ai-memory-tools "aviaratech-ai-memory-tools-$RELEASE_VERSION.tgz"
       - name: Complete reviewed plugin release
         shell: bash
         env:

@@ -9,7 +9,7 @@ description: Use when reviewing memory health, consolidating stale memories, deb
 
 Verify system health and key metrics:
 
-1. Run `npm run health -w @aviaratech/ai-memory-tools` for a full report.
+1. Run `npm run health -w @aviaratech/ai-memory` for a full report.
 2. Or use the `/ai-memory:memory-health` command for a quick connectivity check.
 
 **Key metrics to review:**
@@ -80,6 +80,6 @@ When sessions are not being ingested or memory gaps appear:
 2. Common causes:
    - **Malformed payloads** -- missing required fields in context packs or deltas.
    - **DB connectivity** -- PostgreSQL not running or connection pool exhausted.
-   - **Schema drift** -- migrations not applied after an update (`npm run init -w @aviaratech/ai-memory-tools`).
-3. For DB connectivity issues, verify with `npm run pg:status -w @aviaratech/ai-memory-tools`.
-4. For schema drift, run migrations and re-check: `npm run init -w @aviaratech/ai-memory-tools`.
+   - **Schema drift** -- migrations not applied after an update (`npm run init -w @aviaratech/ai-memory`).
+3. For DB connectivity issues, verify with `npm run pg:status -w @aviaratech/ai-memory`.
+4. For schema drift, run migrations and re-check: `npm run init -w @aviaratech/ai-memory`.

@@ -15,7 +15,13 @@ filter = '''
   `^packages/ai-memory-tools/src/eval/recovery-replay\.test\.ts$`,
   `^packages/ai-memory-tools/src/health-report\.test\.ts$`,
   `^packages/ai-memory-tools/src/launchd/agent\.test\.ts$`,
-  `^packages/ai-memory-tools/src/server\.bin\.test\.ts$`
+  `^packages/ai-memory-tools/src/server\.bin\.test\.ts$`,
+  `^packages/ai-memory/src/tools/backup-db\.test\.ts$`,
+  `^packages/ai-memory/src/tools/ensure-postgres\.test\.ts$`,
+  `^packages/ai-memory/src/tools/eval/recovery-replay\.test\.ts$`,
+  `^packages/ai-memory/src/tools/health-report\.test\.ts$`,
+  `^packages/ai-memory/src/tools/launchd/agent\.test\.ts$`,
+  `^packages/ai-memory/src/tools/server\.bin\.test\.ts$`
   ]) &&
   filter.matchesAny(finding["match"], [
     `^postgres(?:ql)?://[^@]+@(?:localhost|127\.0\.0\.1|db\.example\.invalid)(?::[0-9]+)?/`
@@ -28,7 +34,9 @@ filter = '''
   finding["secret"] == "private-password" &&
   filter.matchesAny(attributes["path"], [
     `^packages/ai-memory-tools/src/backup-db\.test\.ts$`,
-    `^packages/ai-memory-tools/src/backup-s3\.test\.ts$`
+    `^packages/ai-memory-tools/src/backup-s3\.test\.ts$`,
+    `^packages/ai-memory/src/tools/backup-db\.test\.ts$`,
+    `^packages/ai-memory/src/tools/backup-s3\.test\.ts$`
   ]) &&
   filter.matchesAny(finding["match"], [
     `^postgresql://synthetic:private-password@127\.0\.0\.1:5432/(?:ai_memory(?:_dr_source|_other_source)?|postgres)`

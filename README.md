@@ -9,7 +9,7 @@ npm ci
 npm run checks
 ```
 
-For a personal database and MCP client, follow [installation](docs/installation.md). [API and architecture](docs/api-architecture.md) explains package ownership; [operations](docs/operations.md) covers health, encrypted backup, and recovery. [Contributing](CONTRIBUTING.md) describes checks and isolated database tests.
+For a personal database and MCP client, install the single `@aviaratech/ai-memory` npm package as described in [installation](docs/installation.md). [API and architecture](docs/api-architecture.md) explains package ownership; [operations](docs/operations.md) covers health, encrypted backup, and recovery. [Contributing](CONTRIBUTING.md) describes checks and isolated database tests.
 
 The source and package archives are licensed under the [MIT License](LICENSE). The plugin archive also includes notices for its bundled dependencies.
 

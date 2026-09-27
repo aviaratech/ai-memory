@@ -384,7 +384,7 @@ Builder and implementation sessions often produce durable knowledge that review 
   "memoryKey": "example/docs:session-snapshot-continuity-fields",
   "content": "Auto session snapshots now include structured continuity fields (next_actions, context_needed, open_questions, evidence_refs) populated by the caller. This improves session resume quality for implementation sessions where the assistant message alone is insufficient context.",
   "confidence": 0.85,
-  "evidenceRefs": ["packages/ai-memory-tools/src/ingestion/auto-session-ingest.ts"],
+  "evidenceRefs": ["packages/ai-memory/src/tools/ingestion/auto-session-ingest.ts"],
   "project": "example/docs",
   "tags": ["ai-memory", "session-snapshot", "continuity"]
 }
