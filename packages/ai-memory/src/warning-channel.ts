@@ -3,11 +3,11 @@
  *
  * `recordAiMemoryWarningDetail` writes into an `AsyncLocalStorage`-scoped
  * collector started by `runWithAiMemoryWarningCollector`. The MCP server in
- * `@aviaratech/ai-memory-tools` wraps every tool invocation in such a
+ * The MCP server wraps every tool invocation in such a
  * collector and forwards the resulting warning messages into the response
  * payload (`payload.warnings`) and into `ai_tool_invocations.summary_json.timed_out_steps`.
  *
- * Lives in `@aviaratech/ai-memory` (not `ai-memory-tools`) so DB-layer code
+ * Lives in the core module so DB-layer code
  * — embedding fetch, bounded DB transactions, flush sub-phases — can record
  * phase-attributed degradation directly.
  */

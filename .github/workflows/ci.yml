@@ -59,8 +59,19 @@ jobs:
         run: npm run scan:secrets && npm run scan:secrets:probe
       - name: Check source
         run: npm run checks
+      - name: Create separate disposable project identity database
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.AI_MEMORY_DATABASE_URL });
+          await client.connect();
+          try { await client.query('CREATE DATABASE ai_memory_project_identity_ci OWNER ci_memory'); }
+          finally { await client.end(); }
+          NODE
+        env:
+          AI_MEMORY_DATABASE_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
       - name: Check disposable PostgreSQL integration
         run: npm run test:integration
         env:
           AI_MEMORY_DATABASE_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
-          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
+          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci

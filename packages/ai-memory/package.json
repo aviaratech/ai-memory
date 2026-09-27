@@ -1,16 +1,21 @@
 {
   "name": "@aviaratech/ai-memory",
-  "version": "0.1.1",
-  "description": "Durable local PostgreSQL memory engine for AI agents",
+  "version": "0.2.0",
+  "description": "Durable local PostgreSQL memory engine and MCP tools for AI agents",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aviaratech/ai-memory.git",
     "directory": "packages/ai-memory"
   },
+  "bin": {
+    "ai-memory-mcp": "./dist/tools/server.js"
+  },
   "files": [
     "dist",
+    "fixtures",
     "migrations",
+    "scripts/backup-db.sh",
     "README.md"
   ],
   "type": "module",
@@ -24,12 +29,52 @@
     "./internal": {
       "types": "./dist/internal.d.ts",
       "default": "./dist/internal.js"
+    },
+    "./ingestion": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.js"
+    },
+    "./server": {
+      "types": "./dist/tools/server.d.ts",
+      "default": "./dist/tools/server.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/stage-assets.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "retention:purge": "node dist/retention-purge.js"
+    "retention:purge": "node dist/retention-purge.js",
+    "backfill:embeddings": "node dist/tools/scripts/backfill-embeddings.js",
+    "backfill:patch-snapshots": "node dist/tools/backfill-patch-snapshots.js",
+    "backup:install": "node dist/tools/backup-launchd-agent.js install",
+    "backup:run-once": "node dist/tools/backup-launchd-agent.js run-once",
+    "backup:status": "node dist/tools/backup-launchd-agent.js status",
+    "backup:check": "node dist/tools/disaster-recovery.js status",
+    "backup:uninstall": "node dist/tools/backup-launchd-agent.js uninstall",
+    "restore": "node dist/tools/disaster-recovery.js restore",
+    "codex:bootstrap": "node dist/tools/codexConnectivity.js bootstrap",
+    "codex:doctor": "node dist/tools/codexConnectivity.js doctor",
+    "codex:ensure-cli": "node dist/tools/codexConnectivity.js ensure-cli",
+    "codex:launchd:install": "node dist/tools/codex-launchd-agent.js install",
+    "codex:launchd:run-once": "node dist/tools/codex-launchd-agent.js run-once",
+    "codex:launchd:status": "node dist/tools/codex-launchd-agent.js status",
+    "codex:launchd:uninstall": "node dist/tools/codex-launchd-agent.js uninstall",
+    "codex:mcp:http:install": "node dist/tools/codex-http-launchd-agent.js install",
+    "codex:mcp:http:status": "node dist/tools/codex-http-launchd-agent.js status",
+    "codex:mcp:http:uninstall": "node dist/tools/codex-http-launchd-agent.js uninstall",
+    "eval": "node dist/tools/eval/experiment-harness.js",
+    "failures:resolve-known": "node dist/tools/failures-resolve-known.js",
+    "health": "node dist/tools/health-report.js",
+    "hook:session-end": "node dist/tools/ingestion/ingest-claude-session-end-hook.js",
+    "hook:session-start": "node dist/tools/ingestion/check-session-start-hook.js --hook",
+    "ingest:auto:load": "node dist/tools/ingestion/auto-session-ingest.js",
+    "ingest:codex": "node dist/tools/ingestion/ingest-codex-session.js --dry-run --latest",
+    "ingest:codex:launchd": "node dist/tools/ingestion/ingest-codex-launchd.js --dry-run",
+    "init": "node dist/tools/init-db.js",
+    "mcp": "node dist/tools/server.js",
+    "pg:ensure": "node dist/tools/ensure-postgres.js --start",
+    "pg:status": "node dist/tools/ensure-postgres.js --status",
+    "smoke": "node dist/tools/smoke-ingest.js",
+    "test:search-eval": "node dist/tools/eval/search-eval.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
