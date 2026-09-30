@@ -1,5 +1,6 @@
-# Enable AI_MEMORY_RELEASE_ENABLED only after the npm package exists, trusted
-# publishers are configured, and public-release has required reviewers.
+# Enable AI_MEMORY_RELEASE_ENABLED only after the core npm trusted publisher is
+# verified. Exact-source App approval and main CI replace deployment reviewers;
+# public-release must retain its protected-branch policy.
 name: Publish reviewed release
 run-name: Release ${{ inputs.version }}
 
@@ -42,6 +43,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      pull-requests: read
+      actions: read
     services:
       postgres:
         image: pgvector/pgvector:0.8.6-pg18-trixie
@@ -61,6 +64,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       CORE_SHA256: ${{ inputs.core_sha256 }}
       PLUGIN_SHA256: ${{ inputs.plugin_sha256 }}
+      REVIEWER_ACTOR: at-gpt-reviewer[bot]
     steps:
       - name: Check out reviewed main
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -95,6 +99,33 @@ jobs:
             }
           }
           NODE
+      - name: Require independent acceptance of the exact release source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/ai-memory-release"
+          mkdir -p "$release_dir"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/pulls" \
+            | jq 'flatten' > "$release_dir/pullRequests.json"
+          read -r pr_number reviewed_head < <(node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const prs = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/ai-memory-release/pullRequests.json`, 'utf8'));
+          const merged = prs.filter(pr => pr.state === 'closed' && pr.merged_at && pr.merge_commit_sha === process.env.SOURCE_SHA);
+          if (merged.length !== 1) throw new Error('Source must identify one merged main PR');
+          console.log(merged[0].number, merged[0].head.sha);
+          NODE
+          )
+          [[ "$pr_number" =~ ^[0-9]+$ && "$reviewed_head" =~ ^[0-9a-f]{40}$ ]]
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews" \
+            | jq 'flatten' > "$release_dir/reviews.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/commits/$reviewed_head" > "$release_dir/headCommit.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&event=push&branch=main" \
+            | jq '[.[].workflow_runs[]]' > "$release_dir/workflowRuns.json"
+          node scripts/verify-release-admission.mjs "$release_dir" "$GITHUB_REPOSITORY" \
+            "$SOURCE_SHA" "$(git rev-parse 'HEAD^{tree}')" "$REVIEWER_ACTOR"
       - name: Install pinned npm and dependencies
         run: |
           npm install --global npm@11.19.0
@@ -157,7 +188,7 @@ jobs:
             tar -xzf "$release_dir/$archive" -C "$release_dir/unpacked/$label"
             betterleaks dir "$release_dir/unpacked/$label" --ignore-gitleaks-allow --redact=100 --no-banner --no-color --timeout=120
           done
-      - name: Require existing npm packages for trusted publishing
+      - name: Require existing core npm package for trusted publishing
         run: |
           npm view @aviaratech/ai-memory@latest version --json > /dev/null
       - name: Preflight registry and GitHub release conflicts
