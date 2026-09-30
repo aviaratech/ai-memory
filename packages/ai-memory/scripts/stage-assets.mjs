@@ -23,6 +23,8 @@ const enumOrders = [
   ['memoryType', ['episodic', 'semantic', 'procedural', 'reflective'], 2],
   ['sensitivity', ['confidential', 'internal', 'public', 'restricted'], 1],
   ['memoryDetail', ['compact', 'full'], 1],
+  ['status', ['contested', 'active', 'archived', 'expired', 'superseded'], 1],
+  ['strategy_confidence', ['high', 'medium', 'low'], 2],
 ];
 for (const [field, order, expectedCount] of enumOrders) {
   let count = 0;
