@@ -37,7 +37,7 @@ tar -xzf aviaratech-ai-memory-plugin-0.2.0.tgz -C ai-memory-plugin --strip-compo
 
 The archive includes the bundled MCP launcher, migrations, license, and third-party notices.
 
-Provide `AI_MEMORY_DATABASE_URL` for the database-owning role through your host's protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated `ai_memory` database. The package does not infer a URL from another service or load a shared `.env` file. After setting it, run these commands from the standalone checkout:
+For bootstrap and upgrades, provide `AI_MEMORY_DATABASE_URL` for the database-owning administrator role through your host's protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated `ai_memory` database. The package does not infer a URL from another service or load a shared `.env` file. After setting it, run these commands from the standalone checkout:
 
 ```sh
 npm run pg:status -w @aviaratech/ai-memory
@@ -51,7 +51,13 @@ node node_modules/@aviaratech/ai-memory/dist/tools/ensure-postgres.js --status
 node node_modules/@aviaratech/ai-memory/dist/tools/init-db.js
 ```
 
-`init` applies the numbered migrations and records them in `public.ai_memory_pgmigrations`. The CLI fails if the URL is missing or points to a remote host. `AI_MEMORY_MIGRATIONS_DIR` is a controlled packaging/test override; normal installs use migrations shipped with the core package.
+`init` applies pending numbered migrations with the administrator role and records them in `public.ai_memory_pgmigrations`. Once the ledger contains the complete migration set shipped with the package, initialization verifies its structure and ordered migration names in a read-only transaction. It performs no schema DDL, ledger writes, or sequence changes, including when invoked during MCP startup.
+
+A separate non-owner runtime login can therefore start after the administrator has initialized the matching package. Give that login database connection and schema `USAGE`, the privileges needed by the application on its memory tables, and only `SELECT` on `public.ai_memory_pgmigrations`. It needs no schema `CREATE`, ledger ownership, membership in an administrator role, or privileges on the ledger's sequence. Do not grant application write privileges on the migration ledger. Supply this runtime login's URL to the MCP process through the same protected environment mechanism.
+
+Missing or pending migrations and incompatible ledger structure or history fail initialization with an administrator requirement. Apply upgrades using the matching reviewed package and administrator role before restarting the runtime; do not add runtime DDL privileges or bypass initialization. The ledger records migration names rather than historical SQL content hashes, so retain the matching package and its migration assets for recovery.
+
+The CLI fails if the URL is missing or points to a remote host. `AI_MEMORY_MIGRATIONS_DIR` is a controlled packaging/test override; normal installs use migrations shipped with the core package.
 
 ## Connect an MCP client
 
