@@ -45,12 +45,25 @@ registerHooks({
 `;
 
 const fakePg = `
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 export default { Client: class {
+  rejectQuery;
+  keepAlive;
   async connect() {}
-  async end() {}
+  async end() {
+    appendFileSync(process.env.DR_SQL_LOG, JSON.stringify('CLIENT_END') + '\\n');
+    clearInterval(this.keepAlive);
+    this.rejectQuery?.(new Error('synthetic disconnect'));
+  }
   async query(sql) {
     appendFileSync(process.env.DR_SQL_LOG, JSON.stringify(sql) + '\\n');
+    if (process.env.DR_HOLD_QUERY && sql.includes('count(*)')) {
+      writeFileSync(process.env.DR_QUERY_READY, 'ready');
+      this.keepAlive = setInterval(() => {}, 1000);
+      return await new Promise((resolve, reject) => { this.rejectQuery = reject; });
+    }
+    if (process.env.DR_HOLD_QUERY && sql.includes("c.relkind IN ('r', 'p')"))
+      return { rows: [{ schema: 'public', name: 'synthetic_rows' }] };
     if (sql.includes('pg_database_size')) return { rows: [{ size: '1' }] };
     if (sql.includes('pg_export_snapshot')) return { rows: [{ snapshot: 'synthetic-snapshot' }] };
     if (sql === 'SHOW server_version_num') return { rows: [{ server_version_num: '180006' }] };
@@ -59,6 +72,29 @@ export default { Client: class {
     return { rows: [], rowCount: 0 };
   }
 } };
+`;
+
+const fakeAwsPreflight = `#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+if (process.argv.includes('get-bucket-versioning')) {
+  const wait = setInterval(() => {
+    if (fs.readdirSync(process.env.DR_READY_DIR).length === 4) {
+      clearInterval(wait);
+      process.exit(8);
+    }
+  }, 10);
+} else {
+  process.on('SIGTERM', () => {});
+  process.on('SIGINT', () => {});
+  const descendant = spawn(process.execPath, ['-e',
+    "process.on('SIGTERM',()=>{});process.on('SIGINT',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],
+    { stdio: ['ignore', 'pipe', 'inherit'] });
+  descendant.stdout.once('data', () => {
+    fs.writeFileSync(process.env.DR_READY_DIR + '/' + process.pid, JSON.stringify([process.pid, descendant.pid]));
+  });
+  setInterval(() => {}, 1000);
+}
 `;
 
 const fakeTool = `#!/usr/bin/env node
@@ -222,6 +258,110 @@ function alive(pid: number) {
     return false;
   }
 }
+
+function observe(child: ReturnType<typeof spawn>) {
+  let stdout = '',
+    stderr = '';
+  child.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const closed = new Promise<void>((resolve, reject) => {
+    child.once('close', () => {
+      resolve();
+    });
+    child.once('error', reject);
+  });
+  return { closed, output: () => ({ stdout, stderr }) };
+}
+
+async function waitUntil(predicate: () => boolean, timeout: number, message: string) {
+  const deadline = Date.now() + timeout;
+  while (!predicate() && Date.now() < deadline) await delay(10);
+  assert.ok(predicate(), message);
+}
+
+for (const [command, signal] of [
+  ['backup', 'SIGINT'],
+  ['restore', 'SIGTERM'],
+] as const) {
+  test(`${signal} disconnects a blocked ${command} verification query`, { timeout: 10_000 }, async () => {
+    const current = fixture();
+    let child: ReturnType<typeof spawn> | undefined;
+    let observed: ReturnType<typeof observe> | undefined;
+    try {
+      if (command === 'restore') await restoreFixture(current);
+      const ready = join(current.root, 'query-ready');
+      child = spawn(process.execPath, [script, command], {
+        env: { ...current.env, DR_HOLD_QUERY: '1', DR_QUERY_READY: ready },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      observed = observe(child);
+      await waitUntil(() => existsSync(ready), 5_000, 'query never became active');
+      child.kill(signal);
+      await waitUntil(() => child?.exitCode !== null, 2_000, 'cancelled query kept CLI alive');
+      await observed.closed;
+      assert.equal(child.exitCode, signal === 'SIGINT' ? 130 : 143);
+      assert.match(observed.output().stderr, /COMMAND_CANCELLED/u);
+      const sql = readFileSync(current.env.DR_SQL_LOG ?? '', 'utf8');
+      assert.match(sql, /count\(\*\)/u);
+      assert.ok(sql.trimEnd().endsWith('"CLIENT_END"'));
+      assert.doesNotMatch(sql, /ROLLBACK|DROP DATABASE/u);
+      assert.ok(readdirSync(current.backups).every(name => !/^\.(backup|restore)-/u.test(name)));
+      assert.doesNotMatch(observed.output().stdout, /restore_verified|"stage":"complete"/u);
+      if (command === 'restore') assert.match(observed.output().stdout, /restore_target_preserved_for_inspection/u);
+      else
+        assert.equal(
+          (JSON.parse(readFileSync(join(current.backups, 'last-attempt.json'), 'utf8')) as { reason: string }).reason,
+          'COMMAND_CANCELLED',
+        );
+    } finally {
+      child?.kill('SIGKILL');
+      await observed?.closed;
+      rmSync(current.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('failed parallel S3 preflight closes resistant siblings and preserves peers', { timeout: 15_000 }, async () => {
+  const current = fixture();
+  const ready = join(current.root, 'ready');
+  mkdirSync(ready);
+  writeFileSync(join(current.root, 'bin', 'aws'), fakeAwsPreflight, { mode: 0o700 });
+  const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  const peerObserved = observe(peer);
+  let child: ReturnType<typeof spawn> | undefined;
+  let observed: ReturnType<typeof observe> | undefined;
+  let owned: number[] = [];
+  try {
+    child = spawn(process.execPath, [script, 'backup'], {
+      env: { ...current.env, DR_READY_DIR: ready, AI_MEMORY_S3_BUCKET: 'synthetic-bucket' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    observed = observe(child);
+    await waitUntil(() => readdirSync(ready).length === 4, 5_000, 'parallel siblings never became active');
+    owned = readdirSync(ready).flatMap(name => JSON.parse(readFileSync(join(ready, name), 'utf8')) as number[]);
+    await waitUntil(() => child?.exitCode !== null, 7_000, 'failed preflight kept siblings alive');
+    await observed.closed;
+    assert.equal(child.exitCode, 1);
+    assert.match(observed.output().stderr, /S3_PREFLIGHT_FAILED/u);
+    await waitUntil(() => owned.every(pid => !alive(pid)), 1_000, 'preflight descendants remained alive');
+    assert.ok(peer.pid !== undefined && alive(peer.pid));
+    assert.doesNotMatch(observed.output().stdout, /"stage":"complete"/u);
+    assert.ok(!existsSync(join(current.backups, 'last-success.json')));
+  } finally {
+    child?.kill('SIGKILL');
+    await observed?.closed;
+    // Also recover identities if a readiness assertion failed partway through.
+    owned = readdirSync(ready).flatMap(name => JSON.parse(readFileSync(join(ready, name), 'utf8')) as number[]);
+    for (const pid of owned) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    peer.kill('SIGKILL');
+    await peerObserved.closed;
+    rmSync(current.root, { recursive: true, force: true });
+  }
+});
 
 for (const [phase, stop] of [
   ['version', 'SIGINT'],

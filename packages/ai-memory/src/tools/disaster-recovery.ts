@@ -105,6 +105,8 @@ function isManifest(value: unknown): value is BackupManifest {
 }
 
 const cancellation = new AbortController();
+const ownedProcesses = new Set<{ stop: (reason: string) => void; closed: Promise<string | undefined> }>();
+const ownedClients = new Map<PgClient, () => Promise<void>>();
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const PROCESS_CLEANUP_GRACE_MS = 5_000;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -270,6 +272,14 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
     const cancel = () => {
       stop('COMMAND_CANCELLED');
     };
+    let resolveClosed!: (failure: string | undefined) => void;
+    const owner = {
+      stop,
+      closed: new Promise<string | undefined>(resolve => {
+        resolveClosed = resolve;
+      }),
+    };
+    ownedProcesses.add(owner);
     cancellation.signal.addEventListener('abort', cancel, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.length;
@@ -292,6 +302,8 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
     child.once('close', status => {
       cancellation.signal.removeEventListener('abort', cancel);
       clearTimeout(killTimer);
+      ownedProcesses.delete(owner);
+      resolveClosed(failure);
       if (failure || status !== 0 || (options.rejectStderr && stderrBytes > 0))
         rejectRun(
           Object.assign(new Error(failure ?? options.failure ?? 'COMMAND_FAILED'), {
@@ -388,6 +400,7 @@ function quote(name: string) {
 
 async function connect(url: string): Promise<PgClient> {
   const { default: pg } = await import('pg');
+  checkCancellation();
   const parsed = validateUrl(url, 'PG');
   const client = new pg.Client({
     host: parsed.hostname.replace(/^\[|\]$/gu, ''),
@@ -398,12 +411,40 @@ async function connect(url: string): Promise<PgClient> {
     ssl: false,
     connectionTimeoutMillis: 20_000,
   });
+  let closing: Promise<void> | undefined;
+  let rejectCancelled!: (reason: Error) => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    rejectCancelled = reject;
+  });
+  const close = () => {
+    closing ??= Promise.resolve()
+      .then(() => client.end())
+      .finally(() => {
+        cancellation.signal.removeEventListener('abort', cancel);
+      });
+    return closing;
+  };
+  const cancel = () => {
+    rejectCancelled(Object.assign(new Error('COMMAND_CANCELLED'), { code: 'COMMAND_CANCELLED' }));
+    // pg.end() disconnects an active non-pipelined query, releasing its
+    // transaction rather than waiting for the query or a rollback to finish.
+    void close().catch(() => {});
+  };
+  ownedClients.set(client, close);
+  cancellation.signal.addEventListener('abort', cancel, { once: true });
   try {
-    await client.connect();
+    await Promise.race([client.connect(), cancelled]);
+    checkCancellation();
     return client;
   } catch {
+    await close().catch(() => {});
+    checkCancellation();
     return fail('DATABASE_UNAVAILABLE');
   }
+}
+
+async function closeClient(client: PgClient) {
+  await ownedClients.get(client)?.();
 }
 
 async function databaseFacts(client: PgClient, countRows: boolean): Promise<DatabaseFacts> {
@@ -491,10 +532,10 @@ async function sourceSnapshot(url: string, sourceId: string, dumpPath: string, p
       migrationCodeSha256: code.digest,
     };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (!cancellation.signal.aborted) await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
-    await client.end();
+    await closeClient(client);
   }
 }
 
@@ -856,7 +897,7 @@ async function backup() {
           (await client.query<{ size: string }>('SELECT pg_database_size(current_database())::text AS size')).rows[0]
             ?.size,
         );
-        await client.end();
+        await closeClient(client);
         const available = await freeBytes(dir);
         if (available < size * 2 + 128 * 1024 * 1024) fail('DISK_CAPACITY_LOW');
         await enterStage('snapshot', { estimatedBytes: size, availableBytes: available, reused: 0 });
@@ -934,7 +975,7 @@ async function backup() {
       stage,
       startedAt: new Date(started).toISOString(),
       endedAt: new Date().toISOString(),
-      reason: errorCode(error),
+      reason: cancellation.signal.aborted ? 'COMMAND_CANCELLED' : errorCode(error),
     });
     throw error;
   } finally {
@@ -1108,7 +1149,7 @@ async function restore() {
       await admin.query(`CREATE DATABASE ${quote(targetName)}`);
       created = true;
     } finally {
-      await admin.end();
+      await closeClient(admin);
     }
     log('restore_created_empty_target', { elapsedMs: Date.now() - started });
     const passFile = await createPgPass(targetUrl.toString(), work);
@@ -1131,7 +1172,7 @@ async function restore() {
         fail('RESTORE_DATA_MISMATCH');
       await checkSequences(target, metadata.sequenceNames);
     } finally {
-      await target.end();
+      await closeClient(target);
     }
     await run(process.execPath, [resolve(SCRIPT_DIR, 'smoke-ingest.js')], {
       env: { ...process.env, AI_MEMORY_DATABASE_URL: targetUrl.toString() },
@@ -1174,9 +1215,26 @@ async function main() {
     else if (command === 'restore') await restore();
     else fail('USAGE_BACKUP_STATUS_RESTORE');
   } catch (error) {
-    process.stderr.write(`[ai-memory-dr] ${command ?? 'command'} failed: ${errorCode(error)}\n`);
+    const code = cancellation.signal.aborted ? 'COMMAND_CANCELLED' : errorCode(error);
+    process.stderr.write(`[ai-memory-dr] ${command ?? 'command'} failed: ${code}\n`);
     if (!cancellation.signal.aborted) process.exitCode = 1;
   } finally {
+    // Promise.all can reject while other preflight commands are still alive.
+    // Keep signal handling installed until every resource we own has closed.
+    const remaining = [...ownedProcesses];
+    for (const owner of remaining) owner.stop('COMMAND_FAILED');
+    const [processResults, clientResults] = await Promise.all([
+      Promise.all(remaining.map(owner => owner.closed)),
+      Promise.allSettled([...ownedClients.values()].map(close => close())),
+    ]);
+    if (
+      processResults.includes('PROCESS_CLEANUP_FAILED') ||
+      clientResults.some(result => result.status === 'rejected')
+    ) {
+      process.stderr.write('[ai-memory-dr] resource cleanup failed: RESOURCE_CLEANUP_FAILED\n');
+      if (!cancellation.signal.aborted) process.exitCode = 1;
+    }
+    ownedClients.clear();
     process.removeListener('SIGINT', interrupt);
     process.removeListener('SIGTERM', terminate);
   }
