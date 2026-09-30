@@ -54,6 +54,12 @@ if (args[1] === 's3' && op === 'cp') {
   const key = destination.replace(/^s3:\\/\\/synthetic-bucket\\//, '');
   if (key.endsWith('/archive.aimdr') && !fs.existsSync(process.env.FAKE_FAIL_ONCE)) {
     fs.writeFileSync(process.env.FAKE_FAIL_ONCE, 'failed once');
+    if (process.env.FAKE_INTERRUPT === 'cancellation') {
+      process.on('SIGTERM', () => {});
+      process.kill(process.ppid, 'SIGTERM');
+      setInterval(() => {}, 1000);
+      return;
+    }
     process.stderr.write('synthetic-private-marker: interrupted upload\\n');
     process.exit(8);
   }
@@ -80,221 +86,243 @@ else if (op === 'delete-object') { process.stderr.write('AccessDenied\\n'); proc
 else process.exit(2);
 `;
 
-test('interrupted S3 upload retries only authenticated compatible archive and publishes manifest last', () => {
-  const root = mkdtempSync(join(tmpdir(), 'ai-memory-s3-test-'));
-  chmodSync(root, 0o700);
-  try {
-    const backups = join(root, 'backups');
-    const bin = join(root, 'bin');
-    const remote = join(root, 'remote');
-    mkdirSync(backups, { mode: 0o700 });
-    mkdirSync(bin);
-    mkdirSync(remote);
-    const aws = join(bin, 'aws');
-    writeFileSync(aws, fakeAws, { mode: 0o700 });
-    const pgDump = join(bin, 'pg_dump');
-    writeFileSync(pgDump, '#!/bin/sh\necho "pg_dump (PostgreSQL) 17.0"\n', { mode: 0o700 });
-    const key = randomBytes(32);
-    const keyFile = join(root, 'key');
-    writeFileSync(keyFile, `${key.toString('base64')}\n`, { mode: 0o600 });
-    const dump = join(root, 'synthetic.dump');
-    writeFileSync(dump, 'synthetic disposable database archive');
-    const backupId = randomUUID();
-    const archive = join(backups, `${backupId}.aimdr`);
-    const createdAt = new Date().toISOString();
-    const metadata = {
-      format: 1,
-      backupId,
-      sourceId: 'synthetic-source-001',
-      createdAt,
-      databaseName: 'ai_memory_dr_source',
-      sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_dr_source'),
-      migrationCodeSha256: codeDigest(),
-      dumpSha256: sha(readFileSync(dump)),
-      dumpBytes: statSync(dump).size,
-    };
-    const seal = spawnSync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        'const {encryptArchive}=await import(process.env.DR_MODULE); await encryptArchive(process.env.DR_DUMP,process.env.DR_ARCHIVE,JSON.parse(process.env.DR_METADATA),Buffer.from(process.env.DR_KEY,"base64"));',
-      ],
-      {
+test.each(['failure', 'cancellation'])(
+  '%s during S3 upload retries only authenticated compatible archive and publishes manifest last',
+  { timeout: 20_000 },
+  interruption => {
+    const root = mkdtempSync(join(tmpdir(), 'ai-memory-s3-test-'));
+    chmodSync(root, 0o700);
+    try {
+      const backups = join(root, 'backups');
+      const bin = join(root, 'bin');
+      const remote = join(root, 'remote');
+      mkdirSync(backups, { mode: 0o700 });
+      mkdirSync(bin);
+      mkdirSync(remote);
+      const aws = join(bin, 'aws');
+      writeFileSync(aws, fakeAws, { mode: 0o700 });
+      const pgDump = join(bin, 'pg_dump');
+      writeFileSync(pgDump, '#!/bin/sh\necho "pg_dump (PostgreSQL) 17.0"\n', { mode: 0o700 });
+      const key = randomBytes(32);
+      const keyFile = join(root, 'key');
+      writeFileSync(keyFile, `${key.toString('base64')}\n`, { mode: 0o600 });
+      const dump = join(root, 'synthetic.dump');
+      writeFileSync(dump, 'synthetic disposable database archive');
+      const backupId = randomUUID();
+      const archive = join(backups, `${backupId}.aimdr`);
+      const createdAt = new Date().toISOString();
+      const metadata = {
+        format: 1,
+        backupId,
+        sourceId: 'synthetic-source-001',
+        createdAt,
+        databaseName: 'ai_memory_dr_source',
+        sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_dr_source'),
+        migrationCodeSha256: codeDigest(),
+        dumpSha256: sha(readFileSync(dump)),
+        dumpBytes: statSync(dump).size,
+      };
+      const seal = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          'const {encryptArchive}=await import(process.env.DR_MODULE); await encryptArchive(process.env.DR_DUMP,process.env.DR_ARCHIVE,JSON.parse(process.env.DR_METADATA),Buffer.from(process.env.DR_KEY,"base64"));',
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            DR_MODULE: pathToFileURL(script).href,
+            DR_DUMP: dump,
+            DR_ARCHIVE: archive,
+            DR_METADATA: JSON.stringify(metadata),
+            DR_KEY: key.toString('base64'),
+          },
+        },
+      );
+      assert.equal(seal.status, 0, seal.stderr);
+      const manifest = {
+        format: 1,
+        backupId,
+        createdAt,
+        archiveSha256: sha(readFileSync(archive)),
+        archiveBytes: statSync(archive).size,
+      };
+      writeFileSync(
+        join(backups, 'pending.json'),
+        JSON.stringify({
+          manifest,
+          bucket: 'synthetic-bucket',
+          prefix: 'synthetic',
+          sourceIdSha256: sha('synthetic-source-001'),
+          keySha256: sha(key),
+          sourceTargetSha256: metadata.sourceTargetSha256,
+          migrationCodeSha256: metadata.migrationCodeSha256,
+          scriptSha256: sha(readFileSync(script)),
+        }),
+      );
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        AI_MEMORY_BACKUP_DIR: backups,
+        AI_MEMORY_BACKUP_KEY_FILE: keyFile,
+        AI_MEMORY_BACKUP_SOURCE_ID: 'synthetic-source-001',
+        AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_dr_source',
+        AI_MEMORY_S3_BUCKET: 'synthetic-bucket',
+        AI_MEMORY_S3_PREFIX: 'synthetic',
+        FAKE_S3_ROOT: remote,
+        FAKE_AWS_LOG: join(root, 'aws.log'),
+        FAKE_FAIL_ONCE: join(root, 'fail-once'),
+        FAKE_INTERRUPT: interruption,
+      };
+      const command = () => spawnSync(process.execPath, [script, 'backup'], { encoding: 'utf8', env });
+      const first = command();
+      assert.notEqual(first.status, 0);
+      assert.match(first.stderr, interruption === 'cancellation' ? /COMMAND_CANCELLED/u : /S3_UPLOAD_FAILED/u);
+      assert.doesNotMatch(first.stderr, /synthetic-private-marker|private-password/u);
+      assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), false);
+      assert.equal(existsSync(join(backups, 'last-success.json')), false);
+      assert.equal(
+        (JSON.parse(readFileSync(join(backups, 'last-attempt.json'), 'utf8')) as { reason: string }).reason,
+        interruption === 'cancellation' ? 'COMMAND_CANCELLED' : 'S3_UPLOAD_FAILED',
+      );
+      const checkpoint = readFileSync(join(backups, 'pending.json'));
+      const second = command();
+      assert.equal(second.status, 0, second.stderr);
+      assert.match(second.stdout, /reused_encrypted_archive/u);
+      assert.equal(existsSync(join(backups, 'pending.json')), false);
+      assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), true);
+      assert.equal(existsSync(join(remote, 'synthetic', backupId, 'manifest.json')), true);
+      const controlBackups = join(root, 'control-backups');
+      const controlRemote = join(root, 'control-remote');
+      mkdirSync(controlBackups, { mode: 0o700 });
+      mkdirSync(controlRemote);
+      writeFileSync(join(controlBackups, `${backupId}.aimdr`), readFileSync(archive));
+      writeFileSync(join(controlBackups, 'pending.json'), checkpoint);
+      const uninterrupted = spawnSync(process.execPath, [script, 'backup'], {
+        encoding: 'utf8',
+        env: { ...env, AI_MEMORY_BACKUP_DIR: controlBackups, FAKE_S3_ROOT: controlRemote },
+      });
+      assert.equal(uninterrupted.status, 0, uninterrupted.stderr);
+      for (const name of ['archive.aimdr', 'manifest.json'])
+        assert.deepEqual(
+          readFileSync(join(remote, 'synthetic', backupId, name)),
+          readFileSync(join(controlRemote, 'synthetic', backupId, name)),
+        );
+      assert.equal(spawnSync(process.execPath, [script, 'status'], { encoding: 'utf8', env }).status, 0);
+      assert.doesNotMatch(readFileSync(join(root, 'aws.log'), 'utf8'), /delete-object/u);
+      const denied = spawnSync(
+        aws,
+        [
+          '--no-cli-pager',
+          's3api',
+          'delete-object',
+          '--bucket',
+          'synthetic-bucket',
+          '--key',
+          `synthetic/${backupId}/archive.aimdr`,
+          '--version-id',
+          'version1',
+        ],
+        { encoding: 'utf8', env },
+      );
+      assert.notEqual(denied.status, 0);
+      assert.match(denied.stderr, /AccessDenied/u);
+      writeFileSync(
+        join(backups, 'pending.json'),
+        JSON.stringify({
+          manifest,
+          bucket: 'synthetic-bucket',
+          prefix: 'synthetic',
+          sourceIdSha256: sha('synthetic-source-001'),
+          keySha256: sha(key),
+          sourceTargetSha256: metadata.sourceTargetSha256,
+          migrationCodeSha256: metadata.migrationCodeSha256,
+          scriptSha256: sha(readFileSync(script)),
+        }),
+      );
+      const changedSource = spawnSync(process.execPath, [script, 'backup'], {
         encoding: 'utf8',
         env: {
-          ...process.env,
-          DR_MODULE: pathToFileURL(script).href,
-          DR_DUMP: dump,
-          DR_ARCHIVE: archive,
-          DR_METADATA: JSON.stringify(metadata),
-          DR_KEY: key.toString('base64'),
+          ...env,
+          AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_other_source',
         },
-      },
-    );
-    assert.equal(seal.status, 0, seal.stderr);
-    const manifest = {
-      format: 1,
-      backupId,
-      createdAt,
-      archiveSha256: sha(readFileSync(archive)),
-      archiveBytes: statSync(archive).size,
-    };
-    writeFileSync(
-      join(backups, 'pending.json'),
-      JSON.stringify({
-        manifest,
-        bucket: 'synthetic-bucket',
-        prefix: 'synthetic',
-        sourceIdSha256: sha('synthetic-source-001'),
-        keySha256: sha(key),
-        sourceTargetSha256: metadata.sourceTargetSha256,
-        migrationCodeSha256: metadata.migrationCodeSha256,
-        scriptSha256: sha(readFileSync(script)),
-      }),
-    );
-    const env = {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ''}`,
-      AI_MEMORY_BACKUP_DIR: backups,
-      AI_MEMORY_BACKUP_KEY_FILE: keyFile,
-      AI_MEMORY_BACKUP_SOURCE_ID: 'synthetic-source-001',
-      AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_dr_source',
-      AI_MEMORY_S3_BUCKET: 'synthetic-bucket',
-      AI_MEMORY_S3_PREFIX: 'synthetic',
-      FAKE_S3_ROOT: remote,
-      FAKE_AWS_LOG: join(root, 'aws.log'),
-      FAKE_FAIL_ONCE: join(root, 'fail-once'),
-    };
-    const command = () => spawnSync(process.execPath, [script, 'backup'], { encoding: 'utf8', env });
-    const first = command();
-    assert.notEqual(first.status, 0);
-    assert.match(first.stderr, /S3_UPLOAD_FAILED/u);
-    assert.doesNotMatch(first.stderr, /synthetic-private-marker|private-password/u);
-    assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), false);
-    assert.equal(existsSync(join(backups, 'last-success.json')), false);
-    assert.equal(
-      (JSON.parse(readFileSync(join(backups, 'last-attempt.json'), 'utf8')) as { reason: string }).reason,
-      'S3_UPLOAD_FAILED',
-    );
-    const second = command();
-    assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /reused_encrypted_archive/u);
-    assert.equal(existsSync(join(backups, 'pending.json')), false);
-    assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), true);
-    assert.equal(existsSync(join(remote, 'synthetic', backupId, 'manifest.json')), true);
-    assert.equal(spawnSync(process.execPath, [script, 'status'], { encoding: 'utf8', env }).status, 0);
-    assert.doesNotMatch(readFileSync(join(root, 'aws.log'), 'utf8'), /delete-object/u);
-    const denied = spawnSync(
-      aws,
-      [
-        '--no-cli-pager',
-        's3api',
-        'delete-object',
-        '--bucket',
-        'synthetic-bucket',
-        '--key',
-        `synthetic/${backupId}/archive.aimdr`,
-        '--version-id',
-        'version1',
-      ],
-      { encoding: 'utf8', env },
-    );
-    assert.notEqual(denied.status, 0);
-    assert.match(denied.stderr, /AccessDenied/u);
-    writeFileSync(
-      join(backups, 'pending.json'),
-      JSON.stringify({
-        manifest,
-        bucket: 'synthetic-bucket',
-        prefix: 'synthetic',
-        sourceIdSha256: sha('synthetic-source-001'),
-        keySha256: sha(key),
-        sourceTargetSha256: metadata.sourceTargetSha256,
-        migrationCodeSha256: metadata.migrationCodeSha256,
-        scriptSha256: sha(readFileSync(script)),
-      }),
-    );
-    const changedSource = spawnSync(process.execPath, [script, 'backup'], {
-      encoding: 'utf8',
-      env: {
-        ...env,
-        AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_other_source',
-      },
-    });
-    assert.notEqual(changedSource.status, 0);
-    assert.match(changedSource.stdout, /pending_rejected/u);
-    assert.doesNotMatch(changedSource.stdout, /reused_encrypted_archive/u);
-    assert.match(changedSource.stderr, /PG_TOOL_VERSION_UNSUPPORTED/u);
-    writeFileSync(
-      join(backups, 'pending.json'),
-      JSON.stringify({
-        manifest,
-        bucket: 'synthetic-bucket',
-        prefix: 'synthetic',
-        sourceIdSha256: sha('synthetic-source-001'),
-        keySha256: sha(key),
-        sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_other_source'),
-        migrationCodeSha256: metadata.migrationCodeSha256,
-        scriptSha256: sha(readFileSync(script)),
-      }),
-    );
-    const changedCheckpoint = spawnSync(process.execPath, [script, 'backup'], {
-      encoding: 'utf8',
-      env: {
-        ...env,
-        AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_other_source',
-      },
-    });
-    assert.notEqual(changedCheckpoint.status, 0);
-    assert.match(changedCheckpoint.stdout, /pending_rejected/u);
-    assert.doesNotMatch(changedCheckpoint.stdout, /reused_encrypted_archive/u);
-    assert.match(changedCheckpoint.stderr, /PG_TOOL_VERSION_UNSUPPORTED/u);
-    writeFileSync(
-      join(backups, 'pending.json'),
-      JSON.stringify({
-        manifest,
-        bucket: 'synthetic-bucket',
-        prefix: 'synthetic',
-        sourceIdSha256: sha('synthetic-source-001'),
-        keySha256: sha(key),
-        sourceTargetSha256: metadata.sourceTargetSha256,
-        migrationCodeSha256: metadata.migrationCodeSha256,
-        scriptSha256: 'incompatible-code',
-      }),
-    );
-    const incompatibleCode = command();
-    assert.notEqual(incompatibleCode.status, 0);
-    assert.match(incompatibleCode.stdout, /pending_rejected/u);
-    assert.doesNotMatch(incompatibleCode.stdout, /reused_encrypted_archive/u);
-    writeFileSync(
-      join(backups, 'pending.json'),
-      JSON.stringify({
-        manifest,
-        bucket: 'synthetic-bucket',
-        prefix: 'synthetic',
-        sourceIdSha256: sha('synthetic-source-001'),
-        keySha256: sha(key),
-        sourceTargetSha256: metadata.sourceTargetSha256,
-        migrationCodeSha256: metadata.migrationCodeSha256,
-        scriptSha256: sha(readFileSync(script)),
-      }),
-    );
-    const corrupt = readFileSync(archive);
-    corrupt[24] = (corrupt[24] ?? 0) ^ 1;
-    writeFileSync(archive, corrupt);
-    const incompatible = command();
-    assert.notEqual(incompatible.status, 0);
-    assert.match(incompatible.stdout, /pending_rejected/u);
-    assert.doesNotMatch(incompatible.stdout, /reused_encrypted_archive/u);
-    const unprotected = spawnSync(process.execPath, [script, 'backup'], {
-      encoding: 'utf8',
-      env: { ...env, FAKE_RETENTION_MODE: 'GOVERNANCE' },
-    });
-    assert.notEqual(unprotected.status, 0);
-    assert.match(unprotected.stderr, /S3_PROTECTION_INCOMPLETE/u);
-    assert.doesNotMatch(unprotected.stdout, /upload_and_verify/u);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      });
+      assert.notEqual(changedSource.status, 0);
+      assert.match(changedSource.stdout, /pending_rejected/u);
+      assert.doesNotMatch(changedSource.stdout, /reused_encrypted_archive/u);
+      assert.match(changedSource.stderr, /PG_TOOL_VERSION_UNSUPPORTED/u);
+      writeFileSync(
+        join(backups, 'pending.json'),
+        JSON.stringify({
+          manifest,
+          bucket: 'synthetic-bucket',
+          prefix: 'synthetic',
+          sourceIdSha256: sha('synthetic-source-001'),
+          keySha256: sha(key),
+          sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_other_source'),
+          migrationCodeSha256: metadata.migrationCodeSha256,
+          scriptSha256: sha(readFileSync(script)),
+        }),
+      );
+      const changedCheckpoint = spawnSync(process.execPath, [script, 'backup'], {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_other_source',
+        },
+      });
+      assert.notEqual(changedCheckpoint.status, 0);
+      assert.match(changedCheckpoint.stdout, /pending_rejected/u);
+      assert.doesNotMatch(changedCheckpoint.stdout, /reused_encrypted_archive/u);
+      assert.match(changedCheckpoint.stderr, /PG_TOOL_VERSION_UNSUPPORTED/u);
+      writeFileSync(
+        join(backups, 'pending.json'),
+        JSON.stringify({
+          manifest,
+          bucket: 'synthetic-bucket',
+          prefix: 'synthetic',
+          sourceIdSha256: sha('synthetic-source-001'),
+          keySha256: sha(key),
+          sourceTargetSha256: metadata.sourceTargetSha256,
+          migrationCodeSha256: metadata.migrationCodeSha256,
+          scriptSha256: 'incompatible-code',
+        }),
+      );
+      const incompatibleCode = command();
+      assert.notEqual(incompatibleCode.status, 0);
+      assert.match(incompatibleCode.stdout, /pending_rejected/u);
+      assert.doesNotMatch(incompatibleCode.stdout, /reused_encrypted_archive/u);
+      writeFileSync(
+        join(backups, 'pending.json'),
+        JSON.stringify({
+          manifest,
+          bucket: 'synthetic-bucket',
+          prefix: 'synthetic',
+          sourceIdSha256: sha('synthetic-source-001'),
+          keySha256: sha(key),
+          sourceTargetSha256: metadata.sourceTargetSha256,
+          migrationCodeSha256: metadata.migrationCodeSha256,
+          scriptSha256: sha(readFileSync(script)),
+        }),
+      );
+      const corrupt = readFileSync(archive);
+      corrupt[24] = (corrupt[24] ?? 0) ^ 1;
+      writeFileSync(archive, corrupt);
+      const incompatible = command();
+      assert.notEqual(incompatible.status, 0);
+      assert.match(incompatible.stdout, /pending_rejected/u);
+      assert.doesNotMatch(incompatible.stdout, /reused_encrypted_archive/u);
+      const unprotected = spawnSync(process.execPath, [script, 'backup'], {
+        encoding: 'utf8',
+        env: { ...env, FAKE_RETENTION_MODE: 'GOVERNANCE' },
+      });
+      assert.notEqual(unprotected.status, 0);
+      assert.match(unprotected.stderr, /S3_PROTECTION_INCOMPLETE/u);
+      assert.doesNotMatch(unprotected.stdout, /upload_and_verify/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

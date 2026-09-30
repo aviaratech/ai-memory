@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 
 // The only backup/restore implementation. Secrets and provider errors never enter CLI output.
-import { spawn, execFile as execFileCallback } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { Client as PgClient } from 'pg';
 
-type RunOptions = { env?: NodeJS.ProcessEnv; timeout?: number; failure?: string };
+type RunOptions = {
+  env?: NodeJS.ProcessEnv;
+  failure?: string;
+  stdout?: number | 'ignore';
+  stderr?: 'ignore';
+  rejectStderr?: boolean;
+};
 type ExtensionIdentity = { extname: string; extversion: string };
 type DatabaseFacts = {
   serverMajor: number;
@@ -99,7 +104,11 @@ function isManifest(value: unknown): value is BackupManifest {
   );
 }
 
-const execFile = promisify(execFileCallback);
+const cancellation = new AbortController();
+const ownedProcesses = new Set<{ stop: (reason: string) => void; closed: Promise<string | undefined> }>();
+const ownedClients = new Map<PgClient, () => Promise<void>>();
+const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+const PROCESS_CLEANUP_GRACE_MS = 5_000;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '../../../..');
 const MIGRATIONS_DIR = resolve(SCRIPT_DIR, '../../migrations');
@@ -114,6 +123,10 @@ const URL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function fail(code: string): never {
   throw Object.assign(new Error(code), { code });
+}
+
+function checkCancellation() {
+  if (cancellation.signal.aborted) fail('COMMAND_CANCELLED');
 }
 
 function log(stage: string, fields: Record<string, unknown> = {}) {
@@ -197,6 +210,7 @@ async function atomicJson(path: string, value: unknown) {
 async function writeAll(handle: FileHandle, buffer: Buffer) {
   let offset = 0;
   while (offset < buffer.length) {
+    checkCancellation();
     const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset);
     if (bytesWritten <= 0) fail('FILE_WRITE_FAILED');
     offset += bytesWritten;
@@ -211,6 +225,7 @@ async function digestFile(path: string) {
   const hash = createHash('sha256');
   let bytes = 0;
   for await (const part of createReadStream(path) as AsyncIterable<Buffer>) {
+    checkCancellation();
     hash.update(part);
     bytes += part.length;
   }
@@ -223,29 +238,85 @@ async function freeBytes(path: string) {
 }
 
 async function run(command: string, args: string[], options: RunOptions = {}) {
-  try {
-    const result = await execFile(command, args, {
+  checkCancellation();
+  return await new Promise<string>((resolveRun, rejectRun) => {
+    const child = spawn(command, args, {
       env: options.env ?? process.env,
-      timeout: options.timeout ?? 30 * 60 * 1000,
-      maxBuffer: 1024 * 1024,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', options.stdout ?? 'pipe', options.stderr ?? 'pipe'],
     });
-    return result.stdout.trim();
-  } catch {
-    return fail(options.failure ?? 'COMMAND_FAILED');
-  }
+    const chunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let failure: string | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const signalOwned = (signal: NodeJS.Signals) => {
+      if (child.pid === undefined) return;
+      try {
+        if (process.platform === 'win32') child.kill(signal);
+        else process.kill(-child.pid, signal);
+      } catch (error) {
+        if (errorCode(error) !== 'ESRCH') failure = 'PROCESS_CLEANUP_FAILED';
+      }
+    };
+    const stop = (reason: string) => {
+      failure ??= reason;
+      if (killTimer !== undefined) return;
+      signalOwned('SIGTERM');
+      // This bounds closure of an already cancelled/failed owned process tree,
+      // never the elapsed duration of useful backup or restore work.
+      killTimer = setTimeout(() => {
+        signalOwned('SIGKILL');
+      }, PROCESS_CLEANUP_GRACE_MS);
+    };
+    const cancel = () => {
+      stop('COMMAND_CANCELLED');
+    };
+    let resolveClosed!: (failure: string | undefined) => void;
+    const owner = {
+      stop,
+      closed: new Promise<string | undefined>(resolve => {
+        resolveClosed = resolve;
+      }),
+    };
+    ownedProcesses.add(owner);
+    cancellation.signal.addEventListener('abort', cancel, { once: true });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_COMMAND_OUTPUT_BYTES) stop(options.failure ?? 'COMMAND_FAILED');
+      else chunks.push(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > MAX_COMMAND_OUTPUT_BYTES) stop(options.failure ?? 'COMMAND_FAILED');
+    });
+    child.once('error', () => {
+      failure ??= options.failure ?? 'COMMAND_FAILED';
+    });
+    child.once('exit', status => {
+      if (status !== 0) failure ??= options.failure ?? 'COMMAND_FAILED';
+      // Descendants can retain pipes after the direct child exits. Close the
+      // owned group before waiting for close and releasing files/checkpoints.
+      signalOwned('SIGKILL');
+    });
+    child.once('close', status => {
+      cancellation.signal.removeEventListener('abort', cancel);
+      clearTimeout(killTimer);
+      ownedProcesses.delete(owner);
+      resolveClosed(failure);
+      if (failure || status !== 0 || (options.rejectStderr && stderrBytes > 0))
+        rejectRun(
+          Object.assign(new Error(failure ?? options.failure ?? 'COMMAND_FAILED'), {
+            code: failure ?? options.failure ?? 'COMMAND_FAILED',
+          }),
+        );
+      else resolveRun(Buffer.concat(chunks).toString('utf8').trim());
+    });
+  });
 }
 
 async function runDiscard(command: string, args: string[], code: string) {
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'ignore'] });
-    child.on('error', () => {
-      rejectPromise(new Error(code));
-    });
-    child.on('close', status => {
-      if (status === 0) resolvePromise();
-      else rejectPromise(new Error(code));
-    });
-  }).catch(() => fail(code));
+  await run(command, args, { stdout: 'ignore', stderr: 'ignore', failure: code });
 }
 
 function pgEnv(url: string, passFile: string | null): NodeJS.ProcessEnv {
@@ -301,22 +372,10 @@ async function runPgToFile(
 ) {
   const output = await fs.open(path, 'wx', 0o600);
   try {
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child = spawn(command, args, { env: pgEnv(url, passFile), stdio: ['ignore', output.fd, 'pipe'] });
-      let errorBytes = 0;
-      child.stderr?.on('data', (chunk: Buffer) => {
-        errorBytes += chunk.length;
-      });
-      child.on('error', () => {
-        rejectPromise(new Error(code));
-      });
-      child.on('close', status => {
-        if (status === 0 && errorBytes === 0) resolvePromise();
-        else rejectPromise(new Error(code));
-      });
-    });
+    await run(command, args, { env: pgEnv(url, passFile), stdout: output.fd, rejectStderr: true, failure: code });
     await output.sync();
-  } catch {
+  } catch (error) {
+    if (['COMMAND_CANCELLED', 'PROCESS_CLEANUP_FAILED'].includes(errorCode(error))) throw error;
     fail(code);
   } finally {
     await output.close();
@@ -341,6 +400,7 @@ function quote(name: string) {
 
 async function connect(url: string): Promise<PgClient> {
   const { default: pg } = await import('pg');
+  checkCancellation();
   const parsed = validateUrl(url, 'PG');
   const client = new pg.Client({
     host: parsed.hostname.replace(/^\[|\]$/gu, ''),
@@ -351,12 +411,40 @@ async function connect(url: string): Promise<PgClient> {
     ssl: false,
     connectionTimeoutMillis: 20_000,
   });
+  let closing: Promise<void> | undefined;
+  let rejectCancelled!: (reason: Error) => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    rejectCancelled = reject;
+  });
+  const close = () => {
+    closing ??= Promise.resolve()
+      .then(() => client.end())
+      .finally(() => {
+        cancellation.signal.removeEventListener('abort', cancel);
+      });
+    return closing;
+  };
+  const cancel = () => {
+    rejectCancelled(Object.assign(new Error('COMMAND_CANCELLED'), { code: 'COMMAND_CANCELLED' }));
+    // pg.end() disconnects an active non-pipelined query, releasing its
+    // transaction rather than waiting for the query or a rollback to finish.
+    void close().catch(() => {});
+  };
+  ownedClients.set(client, close);
+  cancellation.signal.addEventListener('abort', cancel, { once: true });
   try {
-    await client.connect();
+    await Promise.race([client.connect(), cancelled]);
+    checkCancellation();
     return client;
   } catch {
+    await close().catch(() => {});
+    checkCancellation();
     return fail('DATABASE_UNAVAILABLE');
   }
+}
+
+async function closeClient(client: PgClient) {
+  await ownedClients.get(client)?.();
 }
 
 async function databaseFacts(client: PgClient, countRows: boolean): Promise<DatabaseFacts> {
@@ -444,10 +532,10 @@ async function sourceSnapshot(url: string, sourceId: string, dumpPath: string, p
       migrationCodeSha256: code.digest,
     };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (!cancellation.signal.aborted) await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
-    await client.end();
+    await closeClient(client);
   }
 }
 
@@ -463,8 +551,10 @@ export async function encryptArchive(dumpPath: string, archivePath: string, meta
   try {
     await writeAll(handle, Buffer.concat([MAGIC, iv]));
     await writeAll(handle, cipher.update(Buffer.concat([length, encoded])));
-    for await (const chunk of createReadStream(dumpPath) as AsyncIterable<Buffer>)
+    for await (const chunk of createReadStream(dumpPath) as AsyncIterable<Buffer>) {
+      checkCancellation();
       await writeAll(handle, cipher.update(chunk));
+    }
     await writeAll(handle, cipher.final());
     await writeAll(handle, cipher.getAuthTag());
     await handle.sync();
@@ -528,6 +618,7 @@ export async function decryptArchive(archivePath: string, dumpPath: string, key:
       start: HEADER_BYTES,
       end: stat.size - TAG_BYTES - 1,
     }) as AsyncIterable<Buffer>) {
+      checkCancellation();
       await consume(decipher.update(part));
     }
     await consume(decipher.final());
@@ -539,7 +630,7 @@ export async function decryptArchive(archivePath: string, dumpPath: string, key:
   } catch (error) {
     await output.close();
     await fs.rm(dumpPath, { force: true });
-    if (['DUMP_INTEGRITY_FAILED', 'FILE_WRITE_FAILED'].includes((error as { code?: string })?.code ?? '')) throw error;
+    if (['DUMP_INTEGRITY_FAILED', 'FILE_WRITE_FAILED', 'COMMAND_CANCELLED'].includes(errorCode(error))) throw error;
     return fail('ARCHIVE_AUTHENTICATION_FAILED');
   } finally {
     await output.close().catch(() => {});
@@ -708,6 +799,7 @@ async function pendingCandidate(
   try {
     pending = await readJson<PendingCheckpoint>(path);
   } catch {
+    checkCancellation();
     if (await fs.stat(path).catch(() => null)) {
       await fs.rename(path, join(dir, `.pending-rejected-${randomUUID()}.json`));
       log('pending_rejected', { reason: 'unreadable' });
@@ -734,7 +826,10 @@ async function pendingCandidate(
     Date.now() - Date.parse(expected?.createdAt) <= PENDING_MAX_AGE_MS &&
     /^[a-f0-9-]{36}$/u.test(expected?.backupId ?? '');
   if (valid) {
-    const actual = await digestFile(archivePath).catch(() => null);
+    const actual = await digestFile(archivePath).catch(() => {
+      checkCancellation();
+      return null;
+    });
     valid = actual?.sha256 === expected.archiveSha256 && actual?.bytes === expected.archiveBytes;
   }
   if (valid) {
@@ -748,6 +843,7 @@ async function pendingCandidate(
         metadata.sourceTargetSha256 === sourceTargetDigest(sourceTarget) &&
         metadata.migrationCodeSha256 === code.digest;
     } catch {
+      checkCancellation();
       valid = false;
     } finally {
       await fs.rm(probe, { force: true });
@@ -766,6 +862,7 @@ async function backup() {
   const attemptPath = join(dir, 'last-attempt.json');
   let stage = 'preflight';
   const enterStage = async (name: string, fields: Record<string, unknown> = {}) => {
+    checkCancellation();
     stage = name;
     await atomicJson(attemptPath, { state: 'running', stage, startedAt: new Date(started).toISOString() });
     log(stage, { elapsedMs: Date.now() - started, ...fields });
@@ -800,7 +897,7 @@ async function backup() {
           (await client.query<{ size: string }>('SELECT pg_database_size(current_database())::text AS size')).rows[0]
             ?.size,
         );
-        await client.end();
+        await closeClient(client);
         const available = await freeBytes(dir);
         if (available < size * 2 + 128 * 1024 * 1024) fail('DISK_CAPACITY_LOW');
         await enterStage('snapshot', { estimatedBytes: size, availableBytes: available, reused: 0 });
@@ -851,6 +948,7 @@ async function backup() {
     const completed = config
       ? await upload(config, candidate.archivePath, candidate.manifest, dir)
       : candidate.manifest;
+    checkCancellation();
     if (!config) await atomicJson(join(dir, `${completed.backupId}.manifest.json`), completed);
     await atomicJson(join(dir, 'last-success.json'), {
       completedAt: new Date().toISOString(),
@@ -877,7 +975,7 @@ async function backup() {
       stage,
       startedAt: new Date(started).toISOString(),
       endedAt: new Date().toISOString(),
-      reason: errorCode(error),
+      reason: cancellation.signal.aborted ? 'COMMAND_CANCELLED' : errorCode(error),
     });
     throw error;
   } finally {
@@ -1047,17 +1145,18 @@ async function restore() {
         fail('TARGET_EXTENSION_UNAVAILABLE');
       const existing = (await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [targetName])).rowCount;
       if (existing) fail('RESTORE_TARGET_EXISTS');
+      checkCancellation();
       await admin.query(`CREATE DATABASE ${quote(targetName)}`);
       created = true;
     } finally {
-      await admin.end();
+      await closeClient(admin);
     }
     log('restore_created_empty_target', { elapsedMs: Date.now() - started });
     const passFile = await createPgPass(targetUrl.toString(), work);
     await run(
       'pg_restore',
       ['--exit-on-error', '--single-transaction', '--no-owner', '--no-acl', '--dbname', targetName, dumpPath],
-      { env: pgEnv(targetUrl.toString(), passFile), failure: 'PG_RESTORE_FAILED', timeout: 60 * 60 * 1000 },
+      { env: pgEnv(targetUrl.toString(), passFile), failure: 'PG_RESTORE_FAILED' },
     );
     const target = await connect(targetUrl.toString());
     try {
@@ -1073,7 +1172,7 @@ async function restore() {
         fail('RESTORE_DATA_MISMATCH');
       await checkSequences(target, metadata.sequenceNames);
     } finally {
-      await target.end();
+      await closeClient(target);
     }
     await run(process.execPath, [resolve(SCRIPT_DIR, 'smoke-ingest.js')], {
       env: { ...process.env, AI_MEMORY_DATABASE_URL: targetUrl.toString() },
@@ -1083,6 +1182,7 @@ async function restore() {
       env: { ...process.env, AI_MEMORY_DATABASE_URL: targetUrl.toString() },
       failure: 'RESTORE_SMOKE_FAILED',
     });
+    checkCancellation();
     log('restore_verified', {
       elapsedMs: Date.now() - started,
       tables: metadata.tableNames.length,
@@ -1099,14 +1199,44 @@ async function restore() {
 
 async function main() {
   const command = process.argv[2];
+  const interrupt = () => {
+    process.exitCode = 130;
+    cancellation.abort();
+  };
+  const terminate = () => {
+    process.exitCode = 143;
+    cancellation.abort();
+  };
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', terminate);
   try {
     if (command === 'backup') await backup();
     else if (command === 'status') await status();
     else if (command === 'restore') await restore();
     else fail('USAGE_BACKUP_STATUS_RESTORE');
   } catch (error) {
-    process.stderr.write(`[ai-memory-dr] ${command ?? 'command'} failed: ${errorCode(error)}\n`);
-    process.exitCode = 1;
+    const code = cancellation.signal.aborted ? 'COMMAND_CANCELLED' : errorCode(error);
+    process.stderr.write(`[ai-memory-dr] ${command ?? 'command'} failed: ${code}\n`);
+    if (!cancellation.signal.aborted) process.exitCode = 1;
+  } finally {
+    // Promise.all can reject while other preflight commands are still alive.
+    // Keep signal handling installed until every resource we own has closed.
+    const remaining = [...ownedProcesses];
+    for (const owner of remaining) owner.stop('COMMAND_FAILED');
+    const [processResults, clientResults] = await Promise.all([
+      Promise.all(remaining.map(owner => owner.closed)),
+      Promise.allSettled([...ownedClients.values()].map(close => close())),
+    ]);
+    if (
+      processResults.includes('PROCESS_CLEANUP_FAILED') ||
+      clientResults.some(result => result.status === 'rejected')
+    ) {
+      process.stderr.write('[ai-memory-dr] resource cleanup failed: RESOURCE_CLEANUP_FAILED\n');
+      if (!cancellation.signal.aborted) process.exitCode = 1;
+    }
+    ownedClients.clear();
+    process.removeListener('SIGINT', interrupt);
+    process.removeListener('SIGTERM', terminate);
   }
 }
 
