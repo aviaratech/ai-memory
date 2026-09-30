@@ -44,7 +44,7 @@ jobs:
       id-token: write
     services:
       postgres:
-        image: postgres:18
+        image: pgvector/pgvector:0.8.6-pg18-trixie
         env:
           POSTGRES_USER: ci_memory
           POSTGRES_HOST_AUTH_METHOD: trust
