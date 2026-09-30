@@ -1,7 +1,7 @@
 import type { DbClient, DbPool } from './pool.js';
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock } from 'node:test';
@@ -41,6 +41,10 @@ function insertedPgmigrationNames(): string[] {
 }
 
 function installQueryHandler(input: {
+  canMigrate?: boolean;
+  ledgerCompatible?: boolean;
+  ledgerExists?: boolean;
+  ledgerNames?: string[];
   legacyFinalMigrationApplied: boolean;
   legacyMigrationTableExists?: boolean;
   newTrackingCount: number;
@@ -49,6 +53,28 @@ function installQueryHandler(input: {
 
   mockQuery.mock.mockImplementation((sql: string, params?: unknown[]) => {
     const compactSql = sql.replace(/\s+/gu, ' ').trim();
+
+    if (compactSql.includes('AS can_migrate')) {
+      return Promise.resolve({
+        rowCount: 1,
+        rows: [
+          {
+            can_migrate: input.canMigrate ?? true,
+            compatible: input.ledgerCompatible ?? true,
+            ledger_exists: input.ledgerExists ?? input.newTrackingCount > 0,
+          },
+        ],
+      });
+    }
+    if (compactSql.startsWith('SELECT name FROM "public"."ai_memory_pgmigrations"')) {
+      return Promise.resolve({
+        rowCount: input.ledgerNames?.length ?? 0,
+        rows: (input.ledgerNames ?? []).map(name => ({ name })),
+      });
+    }
+    if (input.canMigrate === false && /^(?:CREATE|ALTER|INSERT|UPDATE|DELETE|TRUNCATE)/u.test(compactSql)) {
+      throw new Error('runtime DDL and ledger writes are denied');
+    }
 
     if (compactSql.includes('CREATE TABLE IF NOT EXISTS "public"."ai_memory_pgmigrations"')) {
       return Promise.resolve({ rowCount: 0, rows: [] });
@@ -101,6 +127,57 @@ function toFileUrl(pathname: string): string {
 }
 
 describe('runAiMemoryMigrations', () => {
+  const canonicalNames = readdirSync(fileURLToPath(new URL('../../migrations/', import.meta.url)))
+    .filter(name => name.endsWith('.sql'))
+    .sort()
+    .map(name => name.slice(0, -4));
+
+  it('starts with a complete SELECT-only ledger without invoking the mutating migration runner', async () => {
+    resetMocks();
+    installQueryHandler({
+      canMigrate: false,
+      ledgerExists: true,
+      ledgerNames: canonicalNames,
+      legacyFinalMigrationApplied: true,
+      newTrackingCount: canonicalNames.length,
+    });
+    await runAiMemoryMigrations(createMockPool());
+    assert.equal(runnerMock.mock.callCount(), 0);
+    assert.equal(mockRelease.mock.callCount(), 1);
+    assert.ok(
+      mockQuery.mock.calls.every(call =>
+        /^\s*(?:SELECT|WITH|BEGIN READ ONLY|COMMIT|ROLLBACK)\b/iu.test(call.arguments[0]),
+      ),
+    );
+  });
+
+  for (const state of [
+    { label: 'missing', ledgerExists: false, ledgerNames: [] },
+    { label: 'pending', ledgerExists: true, ledgerNames: canonicalNames.slice(0, -1) },
+    { label: 'unknown', ledgerExists: true, ledgerNames: [...canonicalNames, '999_unknown'] },
+    { label: 'duplicate', ledgerExists: true, ledgerNames: [...canonicalNames, canonicalNames[0] ?? '001_baseline'] },
+    { label: 'reordered', ledgerExists: true, ledgerNames: [...canonicalNames].reverse() },
+    { label: 'incompatible', ledgerExists: true, ledgerCompatible: false, ledgerNames: canonicalNames },
+  ]) {
+    it(`fails closed for a ${state.label} runtime ledger with an administrator requirement`, async () => {
+      resetMocks();
+      installQueryHandler({
+        ...state,
+        canMigrate: false,
+        legacyFinalMigrationApplied: false,
+        newTrackingCount: state.ledgerNames.length,
+      });
+      await assert.rejects(runAiMemoryMigrations(createMockPool()), /administrator.*canonical migrations/iu);
+      assert.equal(runnerMock.mock.callCount(), 0);
+      assert.equal(mockRelease.mock.callCount(), 1);
+      assert.ok(
+        mockQuery.mock.calls.every(call =>
+          /^\s*(?:SELECT|WITH|BEGIN READ ONLY|COMMIT|ROLLBACK)\b/iu.test(call.arguments[0]),
+        ),
+      );
+    });
+  }
+
   it('resolves an explicit ai-memory migrations dir override', () => {
     const root = makeTempDir('ai-memory-migrations-env');
     const overrideDir = mkdir(join(root, 'custom-migrations'));

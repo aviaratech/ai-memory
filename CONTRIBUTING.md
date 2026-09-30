@@ -19,4 +19,6 @@ npm run test:integration
 
 The project-identity test exercises migration history; do not point either URL at the persistent personal database. `npm run init -w @aviaratech/ai-memory` and `npm run smoke -w @aviaratech/ai-memory` can exercise a disposable `ai_memory_test` database after `npm run build`. Destroy only the test databases that you provisioned. Do not run tests with live content or provider keys.
 
+The non-owner startup regression uses the separate `AI_MEMORY_PROJECT_IDENTITY_TEST_URL` as its disposable administrator connection. That test administrator needs `CREATEDB` and `CREATEROLE`; the fixture creates unique synthetic databases and a non-owner login, proves packaged startup with a SELECT-only migration ledger, and drops its own databases and login in cleanup. Use these capabilities only on the disposable test instance. CI's disposable PostgreSQL service supplies this administrator role.
+
 Use synthetic, domain-neutral examples and fixtures. Keep credentials, actual memory records, private logs, and machine-specific paths out of commits and issue discussions. [Installation](docs/installation.md) and [operations](docs/operations.md) describe the user-facing commands.
