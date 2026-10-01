@@ -10,6 +10,12 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 `npm run smoke -w @aviaratech/ai-memory` uses bundled fictional fixtures and writes to the selected database. Run it only against an isolated disposable database. `npm run pg:ensure -w @aviaratech/ai-memory` can start a local service when `AI_MEMORY_POSTGRES_START_COMMAND` is configured; it does not choose a remote database or Docker fallback.
 
+## Stored search-vector migration
+
+Source migration `007_stored_search_vector` follows the six migrations in the released 0.2.0 package. It adds a generated stored text-search vector using the existing search expression. PostgreSQL maintains it on inserts and updates; adoption backfills existing records, rewrites the table and requires an exclusive table lock. Allow for the additional storage and write cost when scheduling an approved upgrade with its matching package. A canceled migration rolls back its column and ledger entry; initialization discards the failed connection so a retry can resume the pending migration.
+
+After adopting 007, the six-migration 0.2.0 initializer rejects the longer ledger. Retaining the old indexes does not enable a code-only rollback. Recovery to 0.2.0 uses a verified backup from the six-migration database and the original 0.2.0 package, restored into a new database through the procedure below. A backup taken after 007 instead requires the matching seven-migration source or release. Restore enforces the migration-code digest; mixing those assets fails with `MIGRATION_CODE_MISMATCH`. Keep the corresponding package and recovery credentials with each backup through the existing separate protected channels.
+
 ## Encrypted local backup
 
 Back up a dedicated database named `ai_memory` or `ai_memory_<name>`. Set `AI_MEMORY_BACKUP_SOURCE_ID` to a stable, opaque identifier of 8–128 letters, digits, dots, underscores, or hyphens. Set `AI_MEMORY_BACKUP_KEY_FILE` to an **absolute**, owner-only (`0600`) file containing a base64-encoded 32-byte random key. Keep it outside this checkout and the backup directory. `AI_MEMORY_BACKUP_DIR` defaults to `~/.local/share/ai-memory/backups`; it must be owner-only (`0700`) and outside the checkout. `pg_dump` and `pg_restore` 18 must be on `PATH`.

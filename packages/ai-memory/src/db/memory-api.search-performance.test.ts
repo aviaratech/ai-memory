@@ -122,6 +122,7 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     // and a query embedding are both available.
     for (const cte of [
       'WITH filtered_candidates AS',
+      'candidate_features AS MATERIALIZED',
       'semantic_candidates AS',
       'keyword_candidates AS',
       'combined_candidates AS',
@@ -192,16 +193,26 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     assert.equal(referenceParams[3], 'fixture/recovery');
     const prefilter = referenceSql.slice(
       referenceSql.indexOf('FROM ai_memory_entries'),
-      referenceSql.indexOf('semantic_candidates AS'),
+      referenceSql.indexOf('ts_rank_cd(search_vector'),
     );
-    assert.ok(prefilter.includes("websearch_to_tsquery('english', $1)"));
+    const queryInput = referenceSql.slice(
+      referenceSql.indexOf('WITH search_query'),
+      referenceSql.indexOf('candidate_features AS'),
+    );
+    assert.ok(queryInput.includes("websearch_to_tsquery('english', $1)"));
     assert.ok(
-      prefilter.includes("websearch_to_tsquery('english', $2)"),
+      queryInput.includes("websearch_to_tsquery('english', $2)"),
       'normalized membership is additive to original joined-term membership',
     );
     assert.ok(prefilter.includes("status IN ('active', 'contested')"));
     assert.ok(prefilter.includes('project = $4'));
     assert.ok(!prefilter.includes('~ $3'), 'reference ranking must not add an unindexed alternative predicate');
+    assert.equal(
+      prefilter.match(/@@/gu)?.length,
+      1,
+      'original, token-OR, and normalized membership must share one index-compatible vector match',
+    );
+    assert.ok(queryInput.includes("ELSE ''::tsquery"), 'empty token queries must keep their nonmatching behavior');
     assert.ok(!referenceSql.includes('concat_ws'), 'reference ranking must not synthesize references across fields');
     assert.ok(referenceSql.includes('AS reference_fields'));
     assert.ok(referenceSql.includes('jsonb_array_elements(evidence_refs)'));
@@ -215,6 +226,34 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
       assert.match(selection, /ORDER BY reference_hint DESC[\s\S]*LIMIT \$\d+/u);
     }
     assert.deepEqual(referenceParams.slice(4), [10, 10, 10], 'existing candidate caps remain bounded');
+  });
+
+  it('uses the stored vector and one query input for original and normalized reference ranking', async () => {
+    let sql = '';
+    mockPoolConnect(statement => {
+      if (statement.includes('filtered_candidates')) sql = statement;
+      return Promise.resolve(toQueryResult([buildHighCardinalityRow(0)]));
+    });
+
+    await searchMemories({ includeEmbedding: false, project: 'fixture/recovery', query: 'issue4821 scoped reference' });
+
+    assert.ok(sql.includes('candidate_features AS MATERIALIZED'));
+    assert.ok(sql.includes('search_query AS MATERIALIZED'));
+    const projection = sql.slice(
+      sql.indexOf('candidate_features AS MATERIALIZED'),
+      sql.indexOf('FROM ai_memory_entries'),
+    );
+    assert.ok(projection.includes('search_vector,'));
+    assert.ok(
+      !projection.includes('to_tsvector'),
+      'candidate projection must use the database-maintained stored vector',
+    );
+    assert.ok(sql.includes('@@ (SELECT text_query FROM search_query)'));
+    const ranking = sql.slice(sql.indexOf('ts_rank_cd(search_vector'), sql.indexOf('semantic_candidates AS'));
+    assert.ok(ranking.includes("ts_rank_cd(search_vector, websearch_to_tsquery('english', $1))"));
+    assert.ok(ranking.includes('FROM candidate_features'));
+    assert.ok(!ranking.includes('coalesce(content'), 'ranking must reuse the stored document vector');
+    assert.ok(!ranking.includes('ai_memory_reference_search_terms'));
   });
 
   it('measurement queries cannot give same-number issue rows priority before candidate caps', async () => {

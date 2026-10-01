@@ -13,7 +13,7 @@ import {
 } from './importance.js';
 import {
   buildMemorySearchKeywordHintSql,
-  buildMemorySearchKeywordMatchSql,
+  buildMemorySearchMatchQuerySql,
   buildMemorySearchOrRankSql,
   buildMemorySearchReferenceMatchSql,
 } from './memory-sql.js';
@@ -383,12 +383,8 @@ export async function searchMemories(input: unknown) {
   const orRanks = textQueryParams.map(buildMemorySearchOrRankSql);
   const orRankSql = `GREATEST(${orRanks.join(', ')})`;
   // Keep original joined lexemes eligible while adding normalized reference terms.
-  const textSearchCondition = `(${textQueryParams
-    .map(
-      param =>
-        `(${SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('english', ${param}) OR ${buildMemorySearchKeywordMatchSql(param)})`,
-    )
-    .join(' OR ')})`;
+  const textSearchQuerySql = textQueryParams.map(buildMemorySearchMatchQuerySql).join(' || ');
+  const textSearchCondition = `${SEARCH_VECTOR_SQL} @@ (SELECT text_query FROM search_query)`;
 
   if (!includeInactive) {
     baseConditions.push(`status IN ('active', 'contested')`);
@@ -464,17 +460,29 @@ export async function searchMemories(input: unknown) {
 
   const sql = `
     WITH filtered_candidates AS (
+      WITH search_query AS MATERIALIZED (
+        SELECT (${textSearchQuerySql}) AS text_query
+      ), candidate_features AS MATERIALIZED (
+        SELECT
+          id,
+          created_at,
+          search_vector,
+          CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
+          CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
+          ${decayedImportanceSql} AS decayed_importance
+        FROM ai_memory_entries
+        WHERE ${filteredCandidateConditions.join(' AND ')}
+      )
       SELECT
         id,
         created_at,
-        ts_rank_cd(${SEARCH_VECTOR_SQL}, websearch_to_tsquery('english', ${queryParam})) AS semantic_relevance,
+        ts_rank_cd(search_vector, websearch_to_tsquery('english', ${queryParam})) AS semantic_relevance,
         ${orRankSql} AS or_semantic_relevance,
-        CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
-        CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
-        ${decayedImportanceSql} AS decayed_importance,
+        keyword_hint,
+        reference_hint,
+        decayed_importance,
         0::double precision AS vector_similarity
-      FROM ai_memory_entries
-      WHERE ${filteredCandidateConditions.join(' AND ')}
+      FROM candidate_features
     ),
     semantic_candidates AS (
       SELECT id, created_at, semantic_relevance, or_semantic_relevance, keyword_hint, reference_hint, decayed_importance, vector_similarity

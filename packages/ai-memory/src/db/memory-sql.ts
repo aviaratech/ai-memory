@@ -1,5 +1,3 @@
-import { SEARCH_VECTOR_SQL } from './runtime.js';
-
 export function buildMemoryInsertReturningSql(hasEmbeddingColumn: boolean) {
   return `
     ${buildMemoryInsertBaseSql(hasEmbeddingColumn)}
@@ -24,14 +22,15 @@ export function buildMemorySearchKeywordHintSql(queryParam: string) {
   )`;
 }
 
-export function buildMemorySearchKeywordMatchSql(queryParam: string) {
+export function buildMemorySearchMatchQuerySql(queryParam: string) {
   const tokenizedOrQuerySql = buildTokenizedOrQuerySql(queryParam);
 
   return `
-    (
-      ${tokenizedOrQuerySql} IS NOT NULL
-      AND ${SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('english', ${tokenizedOrQuerySql})
-    )
+    (websearch_to_tsquery('english', ${queryParam}) || CASE
+      WHEN ${tokenizedOrQuerySql} IS NOT NULL
+      THEN websearch_to_tsquery('english', ${tokenizedOrQuerySql})
+      ELSE ''::tsquery
+    END)
   `;
 }
 
@@ -39,6 +38,8 @@ export function buildMemorySearchKeywordMatchSql(queryParam: string) {
  * Builds SQL that computes ts_rank_cd using a tokenized OR-based tsquery.
  * This gives non-zero relevance scores to memories that match ANY query term,
  * unlike the AND-based websearch_to_tsquery used for primary semantic ranking.
+ * Only this positive English OR query can discard absent lexemes: doing so
+ * preserves its covers, positions and weights while reducing rank allocation.
  */
 export function buildMemorySearchOrRankSql(queryParam: string) {
   const tokenizedOrQuerySql = buildTokenizedOrQuerySql(queryParam);
@@ -46,8 +47,12 @@ export function buildMemorySearchOrRankSql(queryParam: string) {
   return `CASE
     WHEN ${tokenizedOrQuerySql} IS NOT NULL
     THEN ts_rank_cd(
-      ${SEARCH_VECTOR_SQL},
-      websearch_to_tsquery('english', ${tokenizedOrQuerySql})
+      search_vector,
+      coalesce((
+        SELECT string_agg(quote_literal(lexeme), ' | ')::tsquery
+        FROM unnest(tsvector_to_array(to_tsvector('english', ${tokenizedOrQuerySql}))) AS terms(lexeme)
+        WHERE search_vector @@ quote_literal(lexeme)::tsquery
+      ), ''::tsquery)
     )
     ELSE 0
   END`;
