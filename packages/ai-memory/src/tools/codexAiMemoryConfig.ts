@@ -279,6 +279,12 @@ function parseCodexConfig(raw: string): TomlTable {
   }
 }
 
+function containsDateTime(value: TomlValue): boolean {
+  if (value instanceof Date) return true;
+  if (Array.isArray(value)) return value.some(containsDateTime);
+  return isTomlTable(value) && Object.values(value).some(containsDateTime);
+}
+
 function registrationFromConfig(config: TomlTable): CodexMcpRegistration {
   const absent = { args: [], command: undefined, env: {}, exists: false };
   const unsupported = { ...absent, exists: true, unsupportedFormat: true };
@@ -326,6 +332,11 @@ export function writeCodexAiMemoryRegistration(
   const readCurrent = () => (existsSync(desired.configPath) ? readFileSync(desired.configPath, 'utf8') : undefined);
   if (readCurrent() !== expectedRaw) throw new Error('Codex configuration changed; no repair was written.');
   const config = parseCodexConfig(expectedRaw ?? '');
+  // The supported Node runtime lacks Temporal; legacy TOML dates can discard sub-millisecond precision.
+  if (containsDateTime(config))
+    throw new Error(
+      'Codex configuration contains date/time values that cannot be rewritten losslessly; no repair was written.',
+    );
   const existing = registrationFromConfig(config);
   if (existing.disabled === true || existing.unsupportedFormat === true) {
     throw new Error('Disabled or unsupported configuration form; registration was preserved.');

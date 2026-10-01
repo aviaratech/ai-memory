@@ -48,8 +48,14 @@ function fixture() {
 
 test('explicit protected repair preserves the healthy one-argument registration byte for byte', async () => {
   const { input, configuration } = fixture();
-  assert.equal(await ensureCliRegistration(input), false);
-  assert.equal(readFileSync(input.codexConfigPath, 'utf8'), configuration);
+  for (const raw of [
+    configuration,
+    `${configuration}\n[profiles.example]\nlast_seen = 2026-10-01T12:34:56.123456Z\n`,
+  ]) {
+    writeFileSync(input.codexConfigPath, raw);
+    assert.equal(await ensureCliRegistration(input), false);
+    assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+  }
 });
 
 test('unrecognized registration is preserved without building inline database credentials', async () => {

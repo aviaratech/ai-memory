@@ -217,9 +217,9 @@ test('atomic repair preserves unrelated commented and array table headers after 
   assert.deepEqual(actual.profiles, expected.profiles);
 });
 
-test('repair preserves unrelated integer precision, float types, dates, multiline strings and array tables', () => {
+test('repair preserves unrelated integer precision, float types, multiline strings and array tables', () => {
   const { codexConfigPath, desired, protectedLauncherPath } = protectedFixture();
-  const original = `large_integer = 9223372036854775807\nintegral_float = 2.0\nlocal_date = 2026-10-01\nlocal_time = 12:34:56.789\noffset_time = 2026-10-01T12:34:56-07:00\nmessage = '''first\nsecond'''\n[mcp_servers.ai-memory]\ncommand = 'node'\nargs = ['${protectedLauncherPath}']\n[[profiles.example.rules]]\ncommand = 'other'\n`;
+  const original = `large_integer = 9223372036854775807\nintegral_float = 2.0\nmessage = '''first\nsecond'''\n[mcp_servers.ai-memory]\ncommand = 'node'\nargs = ['${protectedLauncherPath}']\n[[profiles.example.rules]]\ncommand = 'other'\n`;
   writeFileSync(codexConfigPath, original);
   writeCodexAiMemoryRegistration(desired, original);
   const expected = parse(original, { integersAsBigInt: true });
@@ -238,4 +238,22 @@ test('invalid TOML is unready and preserves original bytes without exposing pars
     writeCodexAiMemoryRegistration(desired, original);
   }, /^Error: Invalid Codex configuration; no repair was written\.$/u);
   assert.equal(readFileSync(codexConfigPath, 'utf8'), original);
+});
+
+test('repair refuses date and time values rather than losing unrelated fractional precision', () => {
+  const { codexConfigPath, desired, protectedLauncherPath } = protectedFixture();
+  for (const value of [
+    '2026-10-01T12:34:56.123456Z',
+    '2026-10-01T12:34:56.123456789-07:00',
+    '2026-10-01T12:34:56.123456789123',
+    '12:34:56.123456789',
+    '2026-10-01',
+  ]) {
+    const original = `[mcp_servers.ai-memory]\ncommand = 'node'\nargs = ['${protectedLauncherPath}']\n[profiles.example]\nhistory = [{ last_seen = ${value} }]\n`;
+    writeFileSync(codexConfigPath, original);
+    assert.throws(() => {
+      writeCodexAiMemoryRegistration(desired, original);
+    }, /date\/time values.*losslessly/u);
+    assert.equal(readFileSync(codexConfigPath, 'utf8'), original);
+  }
 });
