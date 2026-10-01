@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'vitest';
+import { parse, type TomlTable } from 'smol-toml';
 
 import {
   buildAiMemoryLaunchEnv,
@@ -185,7 +186,8 @@ test('atomic protected repair preserves unrelated host entries and removes inlin
   writeFileSync(codexConfigPath, original, { mode: 0o600 });
   writeCodexAiMemoryRegistration(desired, original);
   const actual = readFileSync(codexConfigPath, 'utf8');
-  assert.ok(actual.startsWith(unrelated));
+  assert.deepEqual((parse(actual).mcp_servers as TomlTable).other, (parse(unrelated).mcp_servers as TomlTable).other);
+  assert.equal(parse(actual).model, 'example-model');
   assert.ok(actual.includes('startup_timeout_sec = 40'));
   assert.equal(actual.includes('[mcp_servers.ai-memory.env]'), false);
   assert.equal(actual.includes('synthetic-credential-do-not-display'), false);
@@ -209,5 +211,31 @@ test('atomic repair preserves unrelated commented and array table headers after 
   const original = `[mcp_servers.ai-memory]\ncommand = "node"\nargs = [${JSON.stringify(protectedLauncherPath)}]\n\n${unrelated}`;
   writeFileSync(codexConfigPath, original);
   writeCodexAiMemoryRegistration(desired, original);
-  assert.ok(readFileSync(codexConfigPath, 'utf8').endsWith(unrelated));
+  const actual = parse(readFileSync(codexConfigPath, 'utf8'));
+  const expected = parse(unrelated);
+  assert.deepEqual((actual.mcp_servers as TomlTable).other, (expected.mcp_servers as TomlTable).other);
+  assert.deepEqual(actual.profiles, expected.profiles);
+});
+
+test('repair preserves unrelated integer precision, float types, dates, multiline strings and array tables', () => {
+  const { codexConfigPath, desired, protectedLauncherPath } = protectedFixture();
+  const original = `large_integer = 9223372036854775807\nintegral_float = 2.0\nlocal_date = 2026-10-01\nlocal_time = 12:34:56.789\noffset_time = 2026-10-01T12:34:56-07:00\nmessage = '''first\nsecond'''\n[mcp_servers.ai-memory]\ncommand = 'node'\nargs = ['${protectedLauncherPath}']\n[[profiles.example.rules]]\ncommand = 'other'\n`;
+  writeFileSync(codexConfigPath, original);
+  writeCodexAiMemoryRegistration(desired, original);
+  const expected = parse(original, { integersAsBigInt: true });
+  const actual = parse(readFileSync(codexConfigPath, 'utf8'), { integersAsBigInt: true });
+  delete (expected.mcp_servers as TomlTable)['ai-memory'];
+  delete (actual.mcp_servers as TomlTable)['ai-memory'];
+  assert.deepEqual(actual, expected);
+});
+
+test('invalid TOML is unready and preserves original bytes without exposing parser source lines', () => {
+  const { codexConfigPath, desired } = protectedFixture();
+  const original = 'PRIVATE_TOKEN = "synthetic-private-password"\ninvalid = [1 #';
+  writeFileSync(codexConfigPath, original);
+  assert.equal(evaluateCodexAiMemoryRegistration(readCodexAiMemoryRegistration(codexConfigPath), desired).ok, false);
+  assert.throws(() => {
+    writeCodexAiMemoryRegistration(desired, original);
+  }, /^Error: Invalid Codex configuration; no repair was written\.$/u);
+  assert.equal(readFileSync(codexConfigPath, 'utf8'), original);
 });

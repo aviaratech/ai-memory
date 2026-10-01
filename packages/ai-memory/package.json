@@ -82,6 +82,7 @@
     "ajv-formats": "^3.0.1",
     "node-pg-migrate": "8.0.4",
     "pg": "^8.21.0",
+    "smol-toml": "1.9.0",
     "zod": "^4.4.3"
   }
 }

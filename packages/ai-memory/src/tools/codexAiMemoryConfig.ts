@@ -16,6 +16,8 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { parse, stringify, type TomlTable, type TomlValue } from 'smol-toml';
 
 import { bootstrapAiMemoryCliRuntimeEnv } from './runtimeEnv.js';
 
@@ -239,27 +241,6 @@ export function evaluateCodexAiMemoryRegistration(
   };
 }
 
-export function extractTomlSection(raw: string, header: string): string | undefined {
-  const lines = raw.split(/\r?\n/u);
-  const startIndex = lines.findIndex(line => parseTableHeader(line) === header);
-  if (startIndex < 0) {
-    return undefined;
-  }
-
-  let endIndex = lines.length;
-  for (let index = startIndex + 1; index < lines.length; index += 1) {
-    if (parseTableHeader(lines[index] ?? '') !== undefined) {
-      endIndex = index;
-      break;
-    }
-  }
-
-  return lines
-    .slice(startIndex + 1, endIndex)
-    .join('\n')
-    .trim();
-}
-
 export function isManagedCodexAiMemoryRegistration(
   registration: CodexMcpRegistration,
   input: { currentPath?: string | undefined; nodeExecPath?: string | undefined } = {},
@@ -280,85 +261,60 @@ export function isManagedCodexAiMemoryRegistration(
   return resolve(registration.args[0] ?? '') === expectedLauncherPath;
 }
 
-export function parseTomlStringArray(section: string | undefined, key: string): string[] {
-  if (section === undefined) {
-    return [];
-  }
-
-  const match = new RegExp(`^${escapeRegExp(key)}\\s*=\\s*\\[(.*)\\]\\s*$`, 'mu').exec(section);
-  const arrayBody = match?.[1];
-  if (arrayBody === undefined) {
-    return [];
-  }
-
-  return [...arrayBody.matchAll(/"((?:\\"|[^"])*)"/g)].map(matchResult => decodeTomlString(matchResult[1] ?? ''));
-}
-
-export function parseTomlStringMap(section: string | undefined): Record<string, string> {
-  if (section === undefined) {
-    return {};
-  }
-
-  const entries = [...section.matchAll(/^([A-Z0-9_]+)\s*=\s*"((?:\\"|[^"])*)"\s*$/gmu)];
-  return Object.fromEntries(
-    entries.map((match): [string, string] => [match[1] ?? '', decodeTomlString(match[2] ?? '')]),
+function isTomlTable(value: TomlValue | undefined): value is TomlTable {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   );
 }
 
-export function parseTomlStringValue(section: string | undefined, key: string): string | undefined {
-  if (section === undefined) {
-    return undefined;
+function parseCodexConfig(raw: string): TomlTable {
+  try {
+    // Preserve TOML integer/float types and full integer precision when rewriting unrelated settings.
+    return parse(raw, { integersAsBigInt: true });
+  } catch {
+    // Parser errors can include source lines containing credentials.
+    throw new Error('Invalid Codex configuration; no repair was written.');
   }
+}
 
-  const match = new RegExp(`^${escapeRegExp(key)}\\s*=\\s*"((?:\\\\"|[^"])*)"\\s*$`, 'mu').exec(section);
-  const value = match?.[1];
-  return value === undefined ? undefined : decodeTomlString(value);
+function registrationFromConfig(config: TomlTable): CodexMcpRegistration {
+  const absent = { args: [], command: undefined, env: {}, exists: false };
+  const unsupported = { ...absent, exists: true, unsupportedFormat: true };
+  if (config.mcp_servers === undefined) return absent;
+  if (!isTomlTable(config.mcp_servers)) return unsupported;
+  const registration = config.mcp_servers[DEFAULT_MCP_NAME];
+  if (registration === undefined) return absent;
+  if (!isTomlTable(registration)) return unsupported;
+  const args = registration.args;
+  const env = registration.env;
+  const validArgs = Array.isArray(args) && args.every(value => typeof value === 'string');
+  const validEnv =
+    env === undefined || (isTomlTable(env) && Object.values(env).every(value => typeof value === 'string'));
+  return {
+    args: validArgs ? args : [],
+    command: typeof registration.command === 'string' ? registration.command : undefined,
+    env: validEnv && env !== undefined ? (env as Record<string, string>) : {},
+    exists: true,
+    hasInlineEnv: env !== undefined,
+    disabled: registration.enabled === false,
+    unsupportedFormat:
+      !validArgs ||
+      !validEnv ||
+      typeof registration.command !== 'string' ||
+      (registration.enabled !== undefined && typeof registration.enabled !== 'boolean') ||
+      registration.url !== undefined,
+  };
 }
 
 export function readCodexAiMemoryRegistration(configPath: string = DEFAULT_CODEX_CONFIG_PATH): CodexMcpRegistration {
-  if (!existsSync(configPath)) {
-    return {
-      args: [],
-      command: undefined,
-      env: {},
-      exists: false,
-    };
+  if (!existsSync(configPath)) return registrationFromConfig({});
+  try {
+    return registrationFromConfig(parseCodexConfig(readFileSync(configPath, 'utf8')));
+  } catch {
+    return { args: [], command: undefined, env: {}, exists: true, unsupportedFormat: true };
   }
-
-  const raw = readFileSync(configPath, 'utf8');
-  const configSection = extractTomlSection(raw, '[mcp_servers.ai-memory]');
-  const envSection = extractTomlSection(raw, '[mcp_servers.ai-memory.env]');
-
-  if (configSection === undefined) {
-    return {
-      args: [],
-      command: undefined,
-      env: {},
-      // Unsupported TOML forms are conflicts, never permission to overwrite an existing entry.
-      exists:
-        /^\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:ai-memory|"ai-memory"|'ai-memory')(?:\s*\.|\s*\])/mu.test(
-          raw,
-        ) || /^(?:ai-memory|"ai-memory"|'ai-memory')\s*=/mu.test(extractTomlSection(raw, '[mcp_servers]') ?? ''),
-    };
-  }
-
-  return {
-    args: parseTomlStringArray(configSection, 'args'),
-    command: parseTomlStringValue(configSection, 'command'),
-    env: parseTomlStringMap(envSection),
-    exists: true,
-    hasInlineEnv: envSection !== undefined || /^env\s*=/mu.test(configSection),
-    disabled: /^enabled\s*=\s*false(?:\s|#|$)/mu.test(configSection),
-    unsupportedFormat: raw.split(/\r?\n/u).some(line => {
-      const header = parseTableHeader(line);
-      return (
-        header !== undefined &&
-        /^\[\[?mcp_servers\.ai-memory(?:\.|\])/u.test(header) &&
-        header !== '[mcp_servers.ai-memory]' &&
-        header !== '[mcp_servers.ai-memory.env]'
-      );
-    }),
-  };
 }
 
 /** Update only the supported registration, preserving other host entries and the original file until atomic commit. */
@@ -369,44 +325,32 @@ export function writeCodexAiMemoryRegistration(
   if (desired.mcpName !== DEFAULT_MCP_NAME) throw new Error('Only the ai-memory registration is supported.');
   const readCurrent = () => (existsSync(desired.configPath) ? readFileSync(desired.configPath, 'utf8') : undefined);
   if (readCurrent() !== expectedRaw) throw new Error('Codex configuration changed; no repair was written.');
-  const existing = readCodexAiMemoryRegistration(desired.configPath);
+  const config = parseCodexConfig(expectedRaw ?? '');
+  const existing = registrationFromConfig(config);
+  if (existing.disabled === true || existing.unsupportedFormat === true) {
+    throw new Error('Disabled or unsupported configuration form; registration was preserved.');
+  }
   if (existing.exists && (existing.args.length !== 1 || existing.args[0] !== desired.args[0])) {
     throw new Error('Existing Codex ai-memory registration is external or conflicting; it was preserved.');
   }
-  const raw = expectedRaw ?? '';
-  if (existing.disabled === true || existing.unsupportedFormat === true || /"""|'''/u.test(raw)) {
-    throw new Error('Disabled or unsupported configuration form; registration was preserved.');
+  const servers = isTomlTable(config.mcp_servers) ? config.mcp_servers : (Object.create(null) as TomlTable);
+  const registration = isTomlTable(servers[DEFAULT_MCP_NAME])
+    ? servers[DEFAULT_MCP_NAME]
+    : (Object.create(null) as TomlTable);
+  registration.command = desired.command;
+  registration.args = desired.args;
+  delete registration.env;
+  if (Object.keys(desired.env).length > 0)
+    registration.env = Object.assign(Object.create(null) as TomlTable, desired.env);
+  servers[DEFAULT_MCP_NAME] = registration;
+  config.mcp_servers = servers;
+  let next: string;
+  try {
+    next = stringify(config, { numbersAsFloat: true });
+    if (!isDeepStrictEqual(parseCodexConfig(next), config)) throw new Error('roundtrip mismatch');
+  } catch {
+    throw new Error('Codex configuration could not be preserved; no repair was written.');
   }
-  if (/^env\s*=/mu.test(extractTomlSection(raw, '[mcp_servers.ai-memory]') ?? '')) {
-    throw new Error('Unsupported inline environment form; registration was preserved.');
-  }
-  const rootHeader = '[mcp_servers.ai-memory]';
-  const envHeader = '[mcp_servers.ai-memory.env]';
-  const rootLines = [`command = ${JSON.stringify(desired.command)}`, `args = ${JSON.stringify(desired.args)}`];
-  const envLines = Object.entries(desired.env)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
-  const lines = raw.split('\n');
-  const output: string[] = [];
-  let section = '';
-  let insertedRoot = false;
-  for (const line of lines) {
-    const header = parseTableHeader(line);
-    if (header !== undefined) {
-      section = header;
-      if (section === rootHeader) {
-        output.push(line, ...rootLines);
-        insertedRoot = true;
-        continue;
-      }
-    }
-    if (section === envHeader) continue;
-    if (section === rootHeader && /^(?:command|args|env)\s*=/u.test(line.trim())) continue;
-    output.push(line);
-  }
-  if (!insertedRoot) output.push('', rootHeader, ...rootLines);
-  if (envLines.length > 0) output.push('', envHeader, ...envLines);
-  const next = `${output.join('\n').replace(/\n*$/u, '')}\n`;
   mkdirSync(dirname(desired.configPath), { recursive: true, mode: 0o700 });
   const temporary = `${desired.configPath}.ai-memory-${randomUUID()}.tmp`;
   try {
@@ -433,24 +377,12 @@ function isUsableFile(path: string, mode: number): boolean {
   }
 }
 
-function parseTableHeader(line: string): string | undefined {
-  return /^\s*(\[\[?[^\]\n]+\]\]?)\s*(?:#.*)?$/u.exec(line)?.[1];
-}
-
 export function resolveAiMemoryServerScriptPath(): string {
   return DEFAULT_SERVER_SCRIPT_PATH;
 }
 
 export function resolveCodexConfigPath(): string {
   return DEFAULT_CODEX_CONFIG_PATH;
-}
-
-function decodeTomlString(value: string): string {
-  return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function firstNonEmptyString(...values: (string | undefined)[]): string | undefined {

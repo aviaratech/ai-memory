@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test, vi } from 'vitest';
+import { parse, type TomlTable } from 'smol-toml';
 
 vi.mock('./ensure-postgres.js', () => ({
   ensurePostgresRunning: vi.fn().mockRejectedValue(new Error('synthetic-private-password')),
@@ -68,7 +69,7 @@ test('explicit protected repair fixes stale Node and removes inline secrets whil
   );
   assert.equal(await ensureCliRegistration(input), true);
   const actual = readFileSync(input.codexConfigPath, 'utf8');
-  assert.ok(actual.startsWith(unrelated));
+  assert.deepEqual((parse(actual).mcp_servers as TomlTable).other, (parse(unrelated).mcp_servers as TomlTable).other);
   assert.ok(actual.includes(JSON.stringify(input.nodeExecPath)));
   assert.equal(actual.includes('synthetic-private-password'), false);
   assert.equal(actual.includes('.env]'), false);
@@ -92,6 +93,77 @@ test('quoted existing registration is a conflict and is never overwritten', asyn
   writeFileSync(input.codexConfigPath, raw);
   await assert.rejects(ensureCliRegistration(input), /external or conflicting/u);
   assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+});
+
+test('dotted and indented quoted external registrations are preserved', async () => {
+  const { input } = fixture();
+  for (const raw of [
+    'mcp_servers.ai-memory.command = "external"\nmcp_servers.ai-memory.args = ["other-script"]\n',
+    '  [mcp_servers."ai-memory"]\n  command = "external"\n  args = ["other-script"]\n',
+  ]) {
+    writeFileSync(input.codexConfigPath, raw);
+    await assert.rejects(ensureCliRegistration(input), /external or conflicting/u);
+    assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+  }
+});
+
+test('healthy dotted registration with literal strings remains byte for byte unchanged', async () => {
+  const { input } = fixture();
+  const raw = `mcp_servers.'ai-memory'.command = '${input.nodeExecPath}'\nmcp_servers.'ai-memory'.args = ['${input.protectedLauncherPath}']\n`;
+  writeFileSync(input.codexConfigPath, raw);
+  assert.equal(await ensureCliRegistration(input), false);
+  assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+});
+
+test('literal extra arguments are a conflict even when the selected Node is stale', async () => {
+  const { input, configuration } = fixture();
+  const raw = configuration
+    .replace(JSON.stringify(input.nodeExecPath), '"node"')
+    .replace(
+      `args = [${JSON.stringify(input.protectedLauncherPath)}]`,
+      `args = [${JSON.stringify(input.protectedLauncherPath)}, '--extra']`,
+    );
+  writeFileSync(input.codexConfigPath, raw);
+  await assert.rejects(ensureCliRegistration(input), /external or conflicting/u);
+  assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+});
+
+test('quoted and indented inline environments are unready and removed by explicit repair', async () => {
+  const { input, configuration } = fixture();
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('unreachable')));
+  for (const suffix of [
+    '\n[mcp_servers."ai-memory".env]\nPRIVATE_TOKEN = "synthetic-private-password"\n',
+    '  env = { PRIVATE_TOKEN = "synthetic-private-password" }\n',
+  ]) {
+    writeFileSync(input.codexConfigPath, configuration + suffix);
+    const before = await collectDoctorReport(input);
+    assert.equal(before.registration.ok, false);
+    assert.equal(before.registration.mismatches.includes('inline_env_not_allowed'), true);
+    assert.equal(await ensureCliRegistration(input), true);
+    assert.equal(readFileSync(input.codexConfigPath, 'utf8').includes('synthetic-private-password'), false);
+    assert.equal((await collectDoctorReport(input)).registration.ok, true);
+  }
+});
+
+test('indented disabled registration is preserved and diagnosed as unready', async () => {
+  const { input, configuration } = fixture();
+  const raw = `${configuration}  enabled = false\n`;
+  writeFileSync(input.codexConfigPath, raw);
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('unreachable')));
+  assert.equal((await collectDoctorReport(input)).registration.ok, false);
+  await assert.rejects(ensureCliRegistration(input), /unsupported configuration form/u);
+  assert.equal(readFileSync(input.codexConfigPath, 'utf8'), raw);
+});
+
+test('repair preserves an unrelated quoted project key containing a closing bracket', async () => {
+  const { input, configuration } = fixture();
+  const unrelated = '[projects."/synthetic/project[work]"]\ntrust_level = "trusted"\n';
+  const raw = `${configuration.replace(JSON.stringify(input.nodeExecPath), '"node"')}\n[mcp_servers.ai-memory.env]\nPRIVATE_TOKEN = "synthetic-private-password"\n\n${unrelated}`;
+  writeFileSync(input.codexConfigPath, raw);
+  assert.equal(await ensureCliRegistration(input), true);
+  const actual = readFileSync(input.codexConfigPath, 'utf8');
+  assert.ok(actual.includes('"/synthetic/project[work]"'));
+  assert.ok(actual.includes('trust_level = "trusted"'));
 });
 
 test('a missing registration is not created for an unavailable selected wrapper', async () => {
