@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
@@ -15,6 +16,8 @@ import {
   evaluateCodexAiMemoryRegistration,
   isManagedCodexAiMemoryRegistration,
   readCodexAiMemoryRegistration,
+  resolveAiMemoryServerScriptPath,
+  writeCodexAiMemoryRegistration,
 } from './codexAiMemoryConfig.js';
 import { ensurePostgresRunning } from './ensure-postgres.js';
 
@@ -28,10 +31,16 @@ const FLAG_JSON = '--json';
 const FLAG_QUIET = '--quiet';
 const FLAG_SHORT_HELP = '-h';
 
-interface CliOptions {
+interface CliOptions extends RegistrationOptions {
   command: CommandName;
   json: boolean;
   quiet: boolean;
+}
+
+interface RegistrationOptions {
+  codexConfigPath?: string | undefined;
+  nodeExecPath?: string | undefined;
+  protectedLauncherPath?: string | undefined;
 }
 
 type CommandName = 'bootstrap' | 'doctor' | 'ensure-cli';
@@ -59,7 +68,7 @@ async function main() {
   const args = parseArguments(process.argv.slice(2));
 
   if (args.command === 'ensure-cli') {
-    const repaired = await ensureCliRegistration({ quiet: args.quiet });
+    const repaired = await ensureCliRegistration(args);
     if (!args.quiet) {
       process.stdout.write(
         repaired
@@ -71,7 +80,7 @@ async function main() {
   }
 
   if (args.command === 'bootstrap') {
-    await ensureCliRegistration({ quiet: args.quiet });
+    await ensureCliRegistration(args);
     await ensurePostgresRunning({
       logProgress: !args.quiet,
       startIfNeeded: true,
@@ -80,7 +89,7 @@ async function main() {
     await runLaunchdCommand(INGEST_LAUNCHD_SCRIPT, ['install']);
     await waitForHttpHealth();
 
-    const report = await collectDoctorReport();
+    const report = await collectDoctorReport(args);
     renderReport({
       action: 'bootstrap',
       json: args.json,
@@ -93,7 +102,7 @@ async function main() {
     return;
   }
 
-  const report = await collectDoctorReport();
+  const report = await collectDoctorReport(args);
   renderReport({
     action: 'doctor',
     json: args.json,
@@ -104,37 +113,64 @@ async function main() {
   }
 }
 
-void main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  (import.meta.url === pathToFileURL(process.argv[1]).href ||
+    import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href)
+)
+  void main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 
-async function collectDoctorReport(): Promise<DoctorReport> {
+export async function collectDoctorReport(input: RegistrationOptions = {}): Promise<DoctorReport> {
   const warnings: string[] = [];
-  const fixes = ['Run `npm run codex:bootstrap -w @aviaratech/ai-memory` to repair the global Codex ai-memory setup.'];
+  const fixes = [
+    'Use the documented exact Node/launcher selection for a protected registration. Unknown registrations require manual reconciliation.',
+  ];
 
-  const existingRegistration = readCodexAiMemoryRegistration();
-  const registrationEvaluation = isManagedCodexAiMemoryRegistration(existingRegistration)
-    ? { mismatches: [], ok: true, registration: existingRegistration }
-    : evaluateCodexAiMemoryRegistration(
-        existingRegistration,
-        buildDesiredCodexAiMemoryConfig({
-          existingRegistration,
-        }),
-      );
+  const existingRegistration = readCodexAiMemoryRegistration(input.codexConfigPath);
+  const external =
+    input.protectedLauncherPath === undefined &&
+    existingRegistration.exists &&
+    !isManagedCodexAiMemoryRegistration(existingRegistration, input) &&
+    !isDirectRegistration(existingRegistration);
+  let registrationEvaluation: CodexMcpRegistrationEvaluation;
+  try {
+    registrationEvaluation = external
+      ? { mismatches: ['external_registration'], ok: false, registration: existingRegistration }
+      : input.protectedLauncherPath === undefined && isManagedCodexAiMemoryRegistration(existingRegistration, input)
+        ? { mismatches: [], ok: true, registration: existingRegistration }
+        : evaluateCodexAiMemoryRegistration(
+            existingRegistration,
+            buildDesiredCodexAiMemoryConfig({ ...input, baseEnv: { ...process.env }, existingRegistration }),
+          );
+  } catch {
+    registrationEvaluation = {
+      mismatches: ['diagnostic_configuration_unavailable'],
+      ok: false,
+      registration: existingRegistration,
+    };
+  }
   const registrationStatus = getRegistrationStatus(registrationEvaluation);
 
-  const postgres = await ensurePostgresRunning({
-    logProgress: false,
-    startIfNeeded: false,
-  });
-  const postgresDetail = getPostgresDetail(postgres);
-  const postgresCheck: DoctorCheck = {
-    detail: postgresDetail,
-    ok: postgres.ok,
-    status: postgres.ok ? 'running' : 'not_running',
-  };
+  let postgresCheck: DoctorCheck;
+  try {
+    const postgres = await ensurePostgresRunning({ logProgress: false, startIfNeeded: false });
+    postgresCheck = {
+      detail: getPostgresDetail(postgres),
+      ok: postgres.ok,
+      status: postgres.ok ? 'running' : 'not_running',
+    };
+  } catch {
+    postgresCheck = {
+      detail:
+        'The diagnostic process has no usable database configuration; the protected wrapper environment was not loaded.',
+      ok: false,
+      status: 'not_checked',
+    };
+  }
 
   const httpLaunchd = await collectLaunchdStatus(HTTP_LAUNCHD_SCRIPT);
   const ingestLaunchd = await collectLaunchdStatus(INGEST_LAUNCHD_SCRIPT);
@@ -143,8 +179,8 @@ async function collectDoctorReport(): Promise<DoctorReport> {
   if (!registrationEvaluation.ok) {
     warnings.push('Codex global MCP registration is missing or stale.');
   }
-  if (!postgres.ok) {
-    warnings.push('Postgres is not reachable, so ai-memory tools cannot serve requests.');
+  if (!postgresCheck.ok) {
+    warnings.push('Database readiness was not confirmed from the diagnostic process.');
   }
   if (!httpLaunchd.ok) {
     warnings.push('The local ai-memory HTTP launchd service is not loaded.');
@@ -169,13 +205,19 @@ async function collectDoctorReport(): Promise<DoctorReport> {
     httpHealth,
     httpLaunchd,
     ingestLaunchd,
-    ok: registrationEvaluation.ok && postgres.ok && httpLaunchd.ok && httpHealth.ok && ingestLaunchd.ok,
+    ok: registrationEvaluation.ok && postgresCheck.ok && httpLaunchd.ok && httpHealth.ok && ingestLaunchd.ok,
     postgres: postgresCheck,
     registration: {
       detail: registrationStatus,
       mismatches: registrationEvaluation.mismatches,
       ok: registrationEvaluation.ok,
-      status: registrationEvaluation.ok ? 'healthy' : 'needs_repair',
+      status: external
+        ? 'external_registration'
+        : registrationEvaluation.ok
+          ? input.protectedLauncherPath === undefined
+            ? 'healthy'
+            : 'configured_protected'
+          : 'needs_repair',
     },
     warnings,
   };
@@ -185,11 +227,10 @@ async function collectHttpHealthStatus(): Promise<DoctorCheck> {
   const healthUrl = `http://${DEFAULT_HTTP_HOST}:${String(DEFAULT_HTTP_PORT)}/health`;
   try {
     const response = await fetch(healthUrl);
-    const responseText = await response.text();
     if (!response.ok) {
       const statusCode = String(response.status);
       return {
-        detail: `${statusCode} ${response.statusText}: ${responseText}`.trim(),
+        detail: statusCode,
         ok: false,
         status: 'unhealthy',
       };
@@ -201,10 +242,9 @@ async function collectHttpHealthStatus(): Promise<DoctorCheck> {
       ok: true,
       status: 'healthy',
     };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch {
     return {
-      detail: message,
+      detail: 'HTTP health endpoint is unreachable.',
       ok: false,
       status: 'unreachable',
     };
@@ -230,10 +270,9 @@ async function collectLaunchdStatus(scriptPath: string): Promise<DoctorCheck> {
       ok: parsed.loaded === true,
       status,
     };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch {
     return {
-      detail: message,
+      detail: 'Unable to read launchd service status.',
       ok: false,
       status: 'error',
     };
@@ -244,13 +283,21 @@ function dedupeStrings(values: string[]) {
   return [...new Set(values)];
 }
 
-async function ensureCliRegistration(input: { quiet: boolean }): Promise<boolean> {
-  const existingRegistration = readCodexAiMemoryRegistration();
-  if (isManagedCodexAiMemoryRegistration(existingRegistration)) {
+export async function ensureCliRegistration(input: RegistrationOptions & { quiet: boolean }): Promise<boolean> {
+  const existingRegistration = readCodexAiMemoryRegistration(input.codexConfigPath);
+  if (input.protectedLauncherPath === undefined && isManagedCodexAiMemoryRegistration(existingRegistration, input)) {
     return false;
+  }
+  if (
+    existingRegistration.exists &&
+    (existingRegistration.args.length !== 1 ||
+      existingRegistration.args[0] !== (input.protectedLauncherPath ?? resolveAiMemoryServerScriptPath()))
+  ) {
+    throw new Error('Existing Codex ai-memory registration is external or conflicting; it was preserved.');
   }
 
   const desired = buildDesiredCodexAiMemoryConfig({
+    ...input,
     existingRegistration,
   });
   const evaluation = evaluateCodexAiMemoryRegistration(existingRegistration, desired);
@@ -258,18 +305,19 @@ async function ensureCliRegistration(input: { quiet: boolean }): Promise<boolean
     return false;
   }
 
-  if (existingRegistration.exists) {
-    await runCodexCommand(['mcp', 'remove', desired.mcpName]);
+  if (
+    evaluation.mismatches.includes('registration_disabled') ||
+    evaluation.mismatches.includes('unsupported_registration_format')
+  ) {
+    throw new Error('Disabled or unsupported configuration form; registration was preserved.');
   }
-
-  const addArgs = ['mcp', 'add'];
-  for (const [key, value] of Object.entries(desired.env).sort(([left], [right]) => left.localeCompare(right))) {
-    addArgs.push('--env', `${key}=${value}`);
+  if (evaluation.mismatches.some(value => value.endsWith('_unavailable'))) {
+    throw new Error('Selected protected launcher or Node executable is unavailable; registration was preserved.');
   }
-  addArgs.push(desired.mcpName, '--', desired.command, ...desired.args);
-  await runCodexCommand(addArgs);
+  const before = existsSync(desired.configPath) ? readFileSync(desired.configPath, 'utf8') : undefined;
+  writeCodexAiMemoryRegistration(desired, before);
 
-  const afterRegistration = readCodexAiMemoryRegistration();
+  const afterRegistration = readCodexAiMemoryRegistration(desired.configPath);
   const afterEvaluation = evaluateCodexAiMemoryRegistration(afterRegistration, desired);
   if (!afterEvaluation.ok) {
     throw new Error(
@@ -287,21 +335,8 @@ function formatDetail(detail?: string) {
   return detail === undefined || detail.length === 0 ? '' : ` (${detail})`;
 }
 
-function formatExecError(error: unknown) {
-  if (!(error instanceof Error)) {
-    return String(error);
-  }
-
-  const details = [error.message];
-  const stdout = 'stdout' in error && typeof error.stdout === 'string' ? error.stdout.trim() : '';
-  const stderr = 'stderr' in error && typeof error.stderr === 'string' ? error.stderr.trim() : '';
-  if (stderr.length > 0) {
-    details.push(stderr);
-  } else if (stdout.length > 0) {
-    details.push(stdout);
-  }
-
-  return details.join(' ');
+function isDirectRegistration(registration: CodexMcpRegistrationEvaluation['registration']): boolean {
+  return registration.args.length === 1 && registration.args[0] === resolveAiMemoryServerScriptPath();
 }
 
 function getLaunchdStatusDetail(input: { loaded: boolean; plistExists: boolean; status: string }) {
@@ -318,14 +353,14 @@ function getLaunchdStatusDetail(input: { loaded: boolean; plistExists: boolean; 
 
 function getPostgresDetail(postgres: Awaited<ReturnType<typeof ensurePostgresRunning>>) {
   if (!postgres.ok) {
-    return postgres.errorMessage;
+    return 'Database probe failed; database readiness is not confirmed.';
   }
 
   if (postgres.serverVersion === undefined) {
-    return postgres.databaseUrl;
+    return 'Database connection confirmed from the diagnostic process.';
   }
 
-  return `${postgres.databaseUrl}, ${postgres.serverVersion}`;
+  return postgres.serverVersion;
 }
 
 function getRegistrationStatus(evaluation: CodexMcpRegistrationEvaluation) {
@@ -357,7 +392,17 @@ function parseArguments(argv: readonly string[]): CliOptions {
     quiet: false,
   };
 
-  for (const arg of argv.slice(1)) {
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--protected-launcher' || arg === '--node-executable' || arg === '--config-path') {
+      const value = argv[++index];
+      if (value === undefined || value.startsWith('--'))
+        throw new Error('A registration selection option requires a path.');
+      if (arg === '--protected-launcher') options.protectedLauncherPath = value;
+      if (arg === '--node-executable') options.nodeExecPath = value;
+      if (arg === '--config-path') options.codexConfigPath = value;
+      continue;
+    }
     if (arg === FLAG_JSON) {
       options.json = true;
       continue;
@@ -368,7 +413,7 @@ function parseArguments(argv: readonly string[]): CliOptions {
       continue;
     }
 
-    throw new Error(`Unknown option: ${arg}`);
+    throw new Error('Unknown option.');
   }
 
   return options;
@@ -387,6 +432,9 @@ function printHelp() {
       'Options:',
       '  --json       Emit machine-readable JSON',
       '  --quiet      Suppress non-essential progress output',
+      '  --protected-launcher <absolute path>  Explicitly select an external protected wrapper',
+      '  --node-executable <absolute path>    Select the exact Node executable (required for protected launch)',
+      '  --config-path <path>                 Select the Codex configuration file',
       '',
     ].join('\n'),
   );
@@ -434,19 +482,11 @@ function renderReport(input: { action: 'bootstrap' | 'doctor'; json: boolean; re
   process.stdout.write(renderDoctorText(input.report, input.action));
 }
 
-async function runCodexCommand(args: string[]): Promise<void> {
-  try {
-    await execFileAsync('codex', args, { encoding: 'utf8' });
-  } catch (error: unknown) {
-    throw new Error(`codex ${args.join(' ')} failed: ${formatExecError(error)}`);
-  }
-}
-
 async function runLaunchdCommand(scriptPath: string, args: string[]): Promise<void> {
   try {
     await runNodeScript(scriptPath, args);
-  } catch (error: unknown) {
-    throw new Error(`${scriptPath} ${args.join(' ')} failed: ${formatExecError(error)}`);
+  } catch {
+    throw new Error('ai-memory launchd command failed; inspect protected service diagnostics.');
   }
 }
 

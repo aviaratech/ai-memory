@@ -20,19 +20,19 @@ npm ci
 npm run build
 ```
 
-For a versioned npm installation, create a separate local directory and install the single core package (0.2.0 once published):
+For a versioned npm installation, create a separate local directory and install the single core package (0.2.1 after its reviewed release):
 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact @aviaratech/ai-memory@0.2.0
+npm install --save-exact @aviaratech/ai-memory@0.2.1
 ```
 
-The installed package provides `node_modules/@aviaratech/ai-memory/dist/tools/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. After a reviewed 0.2.0 release, the optional plugin is distributed as `aviaratech-ai-memory-plugin-0.2.0.tgz` on its matching GitHub release. After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
+The installed package provides `node_modules/@aviaratech/ai-memory/dist/tools/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. After a reviewed 0.2.1 release, the optional plugin is distributed as `aviaratech-ai-memory-plugin-0.2.1.tgz` on its matching GitHub release. After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
 
 ```sh
 mkdir ai-memory-plugin
-tar -xzf aviaratech-ai-memory-plugin-0.2.0.tgz -C ai-memory-plugin --strip-components=1
+tar -xzf aviaratech-ai-memory-plugin-0.2.1.tgz -C ai-memory-plugin --strip-components=1
 ```
 
 The archive includes the bundled MCP launcher, migrations, license, and third-party notices.
@@ -74,4 +74,23 @@ Give that server process the same protected `AI_MEMORY_DATABASE_URL`; keep crede
 
 No provider key is needed for basic local storage and text search. `AI_MEMORY_EMBEDDING_PROVIDER=openai` enables the optional OpenAI embedding path and requires `AI_MEMORY_EMBEDDING_API_KEY`; `AI_MEMORY_EMBEDDING_MODEL` defaults to `text-embedding-3-small`. Optional classification uses `AI_MEMORY_CLASSIFY_API_KEY` (or the embedding key) and `AI_MEMORY_CLASSIFY_MODEL`. These features call an external provider and may incur provider charges. Leave them unset for a local-only installation. See [operations](operations.md) before enabling backups.
 
-For a dependency and import mapping from the published 0.1.x tools package, see [Migrating from 0.1.x](api-architecture.md#migrating-from-01x). Existing 0.1.x installs remain usable; the 0.2.0 commands above apply only after that version is published.
+For a dependency and import mapping from the published 0.1.x tools package, see [Migrating from 0.1.x](api-architecture.md#migrating-from-01x). Existing 0.1.x installs remain usable; the 0.2.1 commands above apply only after that version is published.
+
+## Protected Codex registration
+
+A protected wrapper is an explicitly selected external launch contract. It must use the exact absolute Node executable and one absolute wrapper path, with no inline `env` table. The package does not infer ownership from a script name or read/execute the wrapper during diagnosis. Keep your existing protected environment loader and released MCP launcher in that wrapper. For example, adapt these synthetic paths:
+
+```sh
+node node_modules/@aviaratech/ai-memory/dist/tools/codexConnectivity.js doctor --json \
+  --node-executable /absolute/selected/bin/node \
+  --protected-launcher /absolute/runtime/memory-consumers/mcp-launcher.mjs
+node node_modules/@aviaratech/ai-memory/dist/tools/codexConnectivity.js ensure-cli \
+  --node-executable /absolute/selected/bin/node \
+  --protected-launcher /absolute/runtime/memory-consumers/mcp-launcher.mjs
+```
+
+`doctor` is read only. `configured_protected` confirms the exact registration and accessible launch files; it does not establish a successful MCP connection, validate wrapper behavior, or confirm database readiness. The database probe uses only the diagnostic process's environment and reports `not_checked` when that environment cannot supply a usable target. HTTP and launchd checks report their separate service states.
+
+`ensure-cli` preserves a healthy selected registration byte for byte. Explicit repair can correct the Node path and remove inline environment from that same selected wrapper entry. A different wrapper, extra launch arguments, unsupported configuration form, or an undeclared external registration is a conflict and is preserved. Repair parses and validates the complete TOML document, preserves unrelated settings and their value types, and writes atomically; formatting and comments can change during repair. Documents containing TOML date/time values are preserved without repair because the supported runtime's date representation cannot retain all fractional precision. A pre-commit failure preserves the original file. The command does not execute the launcher or activate host services. `--config-path` selects a separate configuration file for controlled inspection or repair. `bootstrap` also starts PostgreSQL and installs services, so use it only with separate host activation authority.
+
+Release 0.2.1 ships migrations `001_baseline` through `007_stored_search_vector`. Its stored search-vector query requires migration 007 to be applied by the database-owning administrator before runtime startup. The six-file 0.2.0 release cannot run against a seven-migration ledger. Retain the exact original release and migration bytes for backup recovery; see [stored search-vector operations](operations.md#stored-search-vector-migration).
