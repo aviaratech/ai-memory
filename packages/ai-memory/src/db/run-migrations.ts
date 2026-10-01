@@ -114,12 +114,11 @@ export async function runAiMemoryMigrations(pool: DbPool): Promise<void> {
   }
 
   const client = await pool.connect();
-  let readingLedger = false;
+  let discardClient = false;
   try {
     // A completed ledger is a startup prerequisite, not a reason to invoke a
     // runner that ensures its own table with CREATE/ALTER on every invocation.
     await client.query('BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ');
-    readingLedger = true;
     const state = (
       await client.query<LedgerState>(`
       WITH ledger AS (SELECT to_regclass('public.ai_memory_pgmigrations') AS oid)
@@ -150,14 +149,12 @@ export async function runAiMemoryMigrations(pool: DbPool): Promise<void> {
       }
       if (applied.length === migrationNames.length) {
         await client.query('COMMIT');
-        readingLedger = false;
         return;
       }
     }
     if (!state.can_migrate)
       requireAdministrator(state.ledger_exists ? 'pending migrations' : 'missing migration ledger');
     await client.query('COMMIT');
-    readingLedger = false;
     await seedExistingSchemaTracking(client);
 
     const runner = loadMigrationRunner();
@@ -171,10 +168,14 @@ export async function runAiMemoryMigrations(pool: DbPool): Promise<void> {
       singleTransaction: false,
     });
   } catch (error) {
-    if (readingLedger) await client.query('ROLLBACK').catch(() => {});
+    // The external-client runner can leave an aborted per-migration transaction
+    // and a session advisory lock after cancellation. Never return it to callers.
+    discardClient = true;
+    await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
-    client.release();
+    if (discardClient) client.release(true);
+    else client.release();
   }
 }
 

@@ -14,6 +14,7 @@ import { runner } from 'node-pg-migrate';
 import { test } from 'vitest';
 import { assertLocalDatabaseUrl, createPool } from './pool.js';
 import { runAiMemoryMigrations } from './run-migrations.js';
+import { SEARCH_VECTOR_SQL } from './runtime.js';
 
 // The already separate disposable opt-in supplies an administrator capable of
 // creating/dropping this fixture's unique databases and login, never live data.
@@ -340,6 +341,134 @@ test(
           await upgrade.client.query<{ name: string }>('SELECT name FROM public.ai_memory_pgmigrations ORDER BY id')
         ).rows.map(row => row.name),
         expected,
+      );
+      const recovery = await createDatabase('backfill');
+      await runner({
+        dbClient: recovery.client,
+        dir: migrations,
+        direction: 'up',
+        count: expected.length - 1,
+        migrationsTable: 'ai_memory_pgmigrations',
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+      const seed = `INSERT INTO ai_memory_entries(content,project,category,memory_type,source,confidence,importance,created_at,updated_at)
+        SELECT repeat('Synthetic supporting reference ledger evidence context discussion source memory details. ',24) || item::text,
+          'synthetic/backfill','convention','semantic','migration-recovery-fixture',0.8,0.6,'2026-01-01'::timestamptz,'2026-01-01'::timestamptz
+        FROM generate_series(1,4096) AS records(item)`;
+      await recovery.client.query(seed);
+      const fingerprint = async (client: Client) =>
+        (
+          await client.query<{ count: string; digest: string }>(`SELECT count(*)::text AS count,
+        md5(string_agg(md5((to_jsonb(entries)-'search_vector')::text),'' ORDER BY id)) AS digest FROM ai_memory_entries AS entries`)
+        ).rows;
+      const priorRows = await fingerprint(recovery.client);
+      const priorSchema = await snapshot(recovery.client);
+      const relation = (
+        await recovery.client.query<{ relation: number; database: number }>(
+          "SELECT 'ai_memory_entries'::regclass::oid AS relation, (SELECT oid FROM pg_database WHERE datname=current_database()) AS database",
+        )
+      ).rows[0];
+      assert.ok(relation);
+      const application = `backfill_${suffix}`;
+      const recoveryPool = createPool({
+        connectionString: recovery.url,
+        max: 1,
+        pgOptions: { application_name: application },
+      });
+      try {
+        const failed = runAiMemoryMigrations(recoveryPool).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        let backend: { pid: number; birth: string } | undefined;
+        await waitFor(async () => {
+          backend = (
+            await admin.query<{ pid: number; birth: string }>(
+              `SELECT pid,backend_start::text AS birth FROM pg_stat_activity AS activity
+            WHERE application_name=$1 AND datname=$2 AND state='active' AND wait_event_type IS DISTINCT FROM 'Lock'
+              AND query LIKE '%ADD COLUMN search_vector%' AND query_start < clock_timestamp()-interval '50 milliseconds'
+              AND EXISTS (SELECT 1 FROM pg_locks WHERE pid=activity.pid AND relation=$3 AND database=$4 AND mode='AccessExclusiveLock' AND granted)`,
+              [application, new URL(recovery.url).pathname.slice(1), relation.relation, relation.database],
+            )
+          ).rows[0];
+          return backend !== undefined;
+        }, '007 did not reach active generated-column backfill');
+        assert.ok(backend);
+        const cancelled = (
+          await admin.query<{ cancelled: boolean }>(
+            `SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity
+          WHERE pid=$1 AND backend_start=$2::timestamptz AND application_name=$3 AND datname=$4 AND state='active'
+            AND query LIKE '%ADD COLUMN search_vector%'`,
+            [backend.pid, backend.birth, application, new URL(recovery.url).pathname.slice(1)],
+          )
+        ).rows[0]?.cancelled;
+        assert.equal(cancelled, true);
+        assert.ok((await failed) instanceof Error, 'backfill cancellation must reject the migration');
+        assert.deepEqual(
+          await snapshot(recovery.client),
+          priorSchema,
+          'cancelled backfill must not advance schema, ledger or sequences',
+        );
+        assert.deepEqual(
+          await fingerprint(recovery.client),
+          priorRows,
+          'cancelled backfill must preserve every stored field',
+        );
+        assert.equal(
+          (await recoveryPool.query<{ value: number }>('SELECT 1 AS value')).rows[0]?.value,
+          1,
+          'the same pool must recover an aborted migration session',
+        );
+        await runAiMemoryMigrations(recoveryPool);
+        assert.equal(
+          (
+            await recovery.client.query<{ count: number }>(
+              `SELECT count(*)::int AS count FROM ai_memory_entries WHERE search_vector::text <> (${SEARCH_VECTOR_SQL})::text`,
+            )
+          ).rows[0]?.count,
+          0,
+        );
+        assert.deepEqual(await fingerprint(recovery.client), priorRows);
+        assert.equal(
+          (
+            await admin.query<{ count: number }>(
+              `SELECT count(*)::int AS count FROM pg_locks WHERE pid=$1 AND locktype='advisory'`,
+              [backend.pid],
+            )
+          ).rows[0]?.count,
+          0,
+        );
+        await migrate(recovery.url);
+        assert.match((await initialize(recovery.url)).stdout, /schema is ready/u);
+      } finally {
+        await recoveryPool.end();
+      }
+      const uninterruptedUpgrade = await createDatabase('backfill_uninterruptedUpgrade');
+      await runner({
+        dbClient: uninterruptedUpgrade.client,
+        dir: migrations,
+        direction: 'up',
+        count: expected.length - 1,
+        migrationsTable: 'ai_memory_pgmigrations',
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+      await uninterruptedUpgrade.client.query(seed);
+      assert.match((await initialize(uninterruptedUpgrade.url)).stdout, /schema is ready/u);
+      assert.deepEqual(
+        await fingerprint(uninterruptedUpgrade.client),
+        priorRows,
+        'retry and uninterruptedUpgrade populated upgrade must preserve identical records',
+      );
+      assert.equal(
+        (
+          await uninterruptedUpgrade.client.query<{ count: number }>(
+            `SELECT count(*)::int AS count FROM ai_memory_entries WHERE search_vector::text <> (${SEARCH_VECTOR_SQL})::text`,
+          )
+        ).rows[0]?.count,
+        0,
+      );
+      console.log(
+        '007 active backfill cancellation rolls back, same-pool retry and actual-default populated startup preserve exact records',
       );
       const legacy = await createDatabase('legacy');
       await legacy.client.query(readFileSync(resolve(migrations, '001_baseline.sql'), 'utf8'));

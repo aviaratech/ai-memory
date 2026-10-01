@@ -111,6 +111,9 @@ test(
       );
       await client.query('BEGIN');
       await client.query(migration);
+      await client.query(
+        await readFile(new URL('../../migrations/007_stored_search_vector.sql', import.meta.url), 'utf8'),
+      );
       await client.query('COMMIT');
       await client.end();
       client = new Client({ connectionString: databaseUrl });

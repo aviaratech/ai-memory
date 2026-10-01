@@ -7,6 +7,7 @@ import {
   countContestedMemories,
   formatError,
   formatMemoryPayload,
+  formatTimeoutMessage,
   getCapabilities,
   getContinuityPack,
   getDatabaseUrlForDisplay,
@@ -33,6 +34,7 @@ import {
   searchMemories,
   storeMemory,
   STRATEGY_CONFIDENCE_VALUES,
+  TimeoutError,
   type ToolInvocationInput,
 } from '@aviaratech/ai-memory/internal';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -1547,6 +1549,22 @@ async function runTool(params: ToolInvocationParams): Promise<ToolResult> {
 
       return response;
     } catch (error) {
+      if (
+        params.toolName === 'memory_search' &&
+        error instanceof TimeoutError &&
+        Number.isSafeInteger(error.timeoutMs) &&
+        error.timeoutMs > 0
+      ) {
+        const phase = /^db\.read\.search_memories(?:\.(?:reversal_penalty|fallback|fallback_reversal_penalty))?$/u.test(
+          error.operation,
+        )
+          ? error.operation
+          : 'memory_search';
+        recordAiMemoryWarningDetail({
+          code: 'mcp.tool_timeout',
+          message: formatTimeoutMessage(phase, error.timeoutMs),
+        });
+      }
       const durationMs = Date.now() - startedAt;
       const toolCategory: ToolCategory = TOOL_CATEGORY_BY_NAME[params.toolName];
       const message = formatError(error);
