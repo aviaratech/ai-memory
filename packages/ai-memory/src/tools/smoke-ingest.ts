@@ -171,10 +171,10 @@ function assertCondition(condition: boolean, message: string): asserts condition
   }
 }
 
-async function cleanupSmokeData() {
-  const sessionIds = [...cleanupIds.sessionIds];
-  const contextPackIds = [...cleanupIds.contextPackIds];
-  const deltaIds = [...cleanupIds.deltaIds];
+export async function cleanupSmokeData(ids = cleanupIds) {
+  const sessionIds = [...ids.sessionIds];
+  const contextPackIds = [...ids.contextPackIds];
+  const deltaIds = [...ids.deltaIds];
 
   if (sessionIds.length === 0 && contextPackIds.length === 0 && deltaIds.length === 0) {
     return;
@@ -193,6 +193,7 @@ async function cleanupSmokeData() {
     }
 
     if (sessionIds.length > 0) {
+      await client.query('DELETE FROM ai_memory_deltas WHERE session_id = ANY($1::text[])', [sessionIds]);
       await client.query(
         'DELETE FROM ai_memory_events WHERE memory_id = ANY(SELECT id FROM ai_memory_entries WHERE session_id = ANY($1::text[]))',
         [sessionIds],
