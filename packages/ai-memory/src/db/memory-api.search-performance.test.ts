@@ -46,6 +46,7 @@ import { afterEach, describe, it } from 'vitest';
 
 import { resolveTimeoutPolicy } from '../timeout-policy.js';
 import { buildTokenFallbackQuery, searchMemories } from './memory-api.js';
+import { buildMemorySearchSemanticRankSql } from './memory-sql.js';
 import { mockPoolConnect } from './test-pool-mock.js';
 
 const HIGH_CARDINALITY_ROW_COUNT = 1_000;
@@ -193,7 +194,7 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     assert.equal(referenceParams[3], 'fixture/recovery');
     const prefilter = referenceSql.slice(
       referenceSql.indexOf('FROM ai_memory_entries'),
-      referenceSql.indexOf('ts_rank_cd(search_vector'),
+      referenceSql.indexOf(buildMemorySearchSemanticRankSql('$1')),
     );
     const queryInput = referenceSql.slice(
       referenceSql.indexOf('WITH search_query'),
@@ -243,7 +244,10 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
       sql.indexOf('candidate_features AS MATERIALIZED'),
       sql.indexOf('FROM ai_memory_entries'),
     );
-    assert.ok(projection.includes('search_vector,'));
+    assert.ok(
+      projection.includes("(search_vector || ''::tsvector) AS search_vector,"),
+      'candidate projection must read each stored vector from TOAST once, not once per ranked lexeme',
+    );
     assert.ok(
       !projection.includes('to_tsvector'),
       'candidate projection must use the database-maintained stored vector',
@@ -251,6 +255,10 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     assert.ok(sql.includes('@@ (SELECT text_query FROM search_query)'));
     const ranking = sql.slice(sql.indexOf('ts_rank_cd(search_vector'), sql.indexOf('semantic_candidates AS'));
     assert.ok(ranking.includes("ts_rank_cd(search_vector, websearch_to_tsquery('english', $1))"));
+    assert.ok(
+      sql.includes(`${buildMemorySearchSemanticRankSql('$1')} AS semantic_relevance`),
+      'primary rank must skip documents that cannot match the websearch query',
+    );
     assert.ok(ranking.includes('FROM candidate_features'));
     assert.ok(!ranking.includes('coalesce(content'), 'ranking must reuse the stored document vector');
     assert.ok(!ranking.includes('ai_memory_reference_search_terms'));

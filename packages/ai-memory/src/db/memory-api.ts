@@ -16,6 +16,7 @@ import {
   buildMemorySearchMatchQuerySql,
   buildMemorySearchOrRankSql,
   buildMemorySearchReferenceMatchSql,
+  buildMemorySearchSemanticRankSql,
 } from './memory-sql.js';
 import { storeMemoryWithClient } from './memory-store.js';
 import { normalizeMemoryType } from './memory-types.js';
@@ -466,7 +467,8 @@ export async function searchMemories(input: unknown) {
         SELECT
           id,
           created_at,
-          search_vector,
+          -- Copy each stored vector out of TOAST once; every rank and lexeme check reuses it.
+          (search_vector || ''::tsvector) AS search_vector,
           CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
           CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
           ${decayedImportanceSql} AS decayed_importance
@@ -476,7 +478,7 @@ export async function searchMemories(input: unknown) {
       SELECT
         id,
         created_at,
-        ts_rank_cd(search_vector, websearch_to_tsquery('english', ${queryParam})) AS semantic_relevance,
+        ${buildMemorySearchSemanticRankSql(queryParam)} AS semantic_relevance,
         ${orRankSql} AS or_semantic_relevance,
         keyword_hint,
         reference_hint,
