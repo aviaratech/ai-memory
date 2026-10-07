@@ -714,9 +714,9 @@ async function boostImportanceForAccessedMemories(memoryIds: number[]) {
       UPDATE ai_memory_entries
       SET
         importance = LEAST(1.0, GREATEST(0.0, (${baseImportanceSql}) + $2::double precision)),
-        updated_at = NOW()
+        last_accessed_at = NOW()
       WHERE id = ANY($1::bigint[])
-        AND updated_at <= NOW() - make_interval(hours => $3::int)
+        AND (last_accessed_at IS NULL OR last_accessed_at <= NOW() - make_interval(hours => $3::int))
     `;
   const params = [memoryIds, IMPORTANCE_ACCESS_BOOST_INCREMENT, IMPORTANCE_ACCESS_BOOST_THROTTLE_HOURS];
   await runDbWriteQuery({

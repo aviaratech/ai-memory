@@ -99,7 +99,12 @@ describe('memory access importance boosts', () => {
     assert.deepEqual(boostParams[0], [91], 'should boost only returned memory ids');
     assert.equal(boostParams[1], 0.02, 'should increment importance by +0.02');
     assert.equal(boostParams[2], 24, 'should throttle boosts to one per 24 hours');
-    assert.ok(boostCall.sql.includes('updated_at <= NOW() - make_interval(hours => $3::int)'));
+    assert.ok(
+      boostCall.sql.includes('last_accessed_at IS NULL OR last_accessed_at <= NOW() - make_interval(hours => $3::int)'),
+      'boost throttle should key on access time',
+    );
+    assert.ok(boostCall.sql.includes('last_accessed_at = NOW()'), 'boost should record access time');
+    assert.ok(!boostCall.sql.includes('updated_at'), 'reads must not change the edit timestamp');
 
     resolveBoost?.();
   });
