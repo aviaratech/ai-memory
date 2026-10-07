@@ -67,7 +67,8 @@ test(
       }
     } finally {
       try {
-        if (ids.length > 0) await verificationPool.query('DELETE FROM ai_memory_entries WHERE id = ANY($1::bigint[])', [ids]);
+        if (ids.length > 0)
+          await verificationPool.query('DELETE FROM ai_memory_entries WHERE id = ANY($1::bigint[])', [ids]);
       } finally {
         await verificationPool.end();
         await closePool();

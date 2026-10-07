@@ -100,11 +100,11 @@ describe('memory access importance boosts', () => {
     assert.equal(boostParams[1], 0.02, 'should increment importance by +0.02');
     assert.equal(boostParams[2], 24, 'should throttle boosts to one per 24 hours');
     assert.ok(
-      boostCall.sql.includes('last_accessed_at IS NULL OR last_accessed_at <= NOW() - make_interval(hours => $3::int)'),
-      'boost throttle should key on access time',
+      boostCall.sql.includes('GREATEST(updated_at, last_accessed_at) <= NOW() - make_interval(hours => $3::int)'),
+      'boost throttle should keep its prior timing: one boost per window after the latest edit or access',
     );
     assert.ok(boostCall.sql.includes('last_accessed_at = NOW()'), 'boost should record access time');
-    assert.ok(!boostCall.sql.includes('updated_at'), 'reads must not change the edit timestamp');
+    assert.ok(!boostCall.sql.includes('updated_at ='), 'reads must not change the edit timestamp');
 
     resolveBoost?.();
   });
