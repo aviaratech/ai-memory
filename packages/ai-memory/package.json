@@ -73,6 +73,7 @@
     "mcp": "node dist/tools/server.js",
     "pg:ensure": "node dist/tools/ensure-postgres.js --start",
     "pg:status": "node dist/tools/ensure-postgres.js --status",
+    "search:benchmark": "node dist/tools/eval/search-benchmark.js",
     "smoke": "node dist/tools/smoke-ingest.js",
     "test:search-eval": "node dist/tools/eval/search-eval.js"
   },
