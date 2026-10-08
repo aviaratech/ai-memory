@@ -16,6 +16,12 @@ Source migration `007_stored_search_vector` follows the six migrations in the re
 
 After adopting 007, the six-migration 0.2.0 initializer rejects the longer ledger. Retaining the old indexes does not enable a code-only rollback. Recovery to 0.2.0 uses a verified backup from the six-migration database and the original 0.2.0 package, restored into a new database through the procedure below. A backup taken after 007 instead requires the matching seven-migration source or release. Restore enforces the migration-code digest; mixing those assets fails with `MIGRATION_CODE_MISMATCH`. Keep the corresponding package and recovery credentials with each backup through the existing separate protected channels.
 
+## Memory access-time migration
+
+Source migration `008_memory_last_accessed_at` adds a nullable `last_accessed_at` column. Search and recall record access there, so reading a memory no longer changes its `updated_at`. The column has no default, so adoption changes only the catalog and does not rewrite the table. An administrator applies it with the matching package before runtime startup. As with 007, an earlier initializer rejects the longer ledger, and recovery to that release uses a backup taken before adoption together with the matching package.
+
+To measure search latency, run `npm run search:benchmark -w @aviaratech/ai-memory` against an empty disposable database. It seeds 40,000 synthetic memories by default (`--rows` changes this), times many-term, long and issue-reference queries, and removes its rows. It refuses to run against a database that holds any other memories.
+
 ## Encrypted local backup
 
 Back up a dedicated database named `ai_memory` or `ai_memory_<name>`. Set `AI_MEMORY_BACKUP_SOURCE_ID` to a stable, opaque identifier of 8–128 letters, digits, dots, underscores, or hyphens. Set `AI_MEMORY_BACKUP_KEY_FILE` to an **absolute**, owner-only (`0600`) file containing a base64-encoded 32-byte random key. Keep it outside this checkout and the backup directory. `AI_MEMORY_BACKUP_DIR` defaults to `~/.local/share/ai-memory/backups`; it must be owner-only (`0700`) and outside the checkout. `pg_dump` and `pg_restore` 18 must be on `PATH`.

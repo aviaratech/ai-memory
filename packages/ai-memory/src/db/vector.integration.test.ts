@@ -13,83 +13,76 @@ import {
 } from '@aviaratech/ai-memory/internal';
 import { Pool } from 'pg';
 
-import { buildMemorySearchMatchQuerySql, buildMemorySearchOrRankSql } from './memory-sql.js';
+import {
+  buildMemorySearchMatchQuerySql,
+  buildMemorySearchOrRankSql,
+  buildMemorySearchSemanticRankSql,
+} from './memory-sql.js';
 import { normalizeSearchReferenceText } from './query-helpers.js';
 import { SEARCH_VECTOR_SQL } from './runtime.js';
 
 const databaseUrl = process.env.AI_MEMORY_DATABASE_URL;
 const vector = (index: number) => Array.from({ length: 1536 }, (_, position) => Number(position === index));
 
-test(
-  'positive token-OR ranks preserve exact float4 bytes for every document and query variant',
-  { skip: databaseUrl === undefined },
-  async () => {
-    assert.ok(databaseUrl);
-    assertLocalDatabaseUrl(databaseUrl);
-    const verificationPool = new Pool({ connectionString: databaseUrl });
-    const documents = [
-      '',
-      'the and or',
-      'forest canopy sample',
-      'canopy forest forest forests',
-      'run running runs',
-      'harbor forest canopy tide',
-      'café naïve résumé Überprüfung',
-      'cafe\u0301 naïve',
-      'issue4821 source ledger',
-      'issue 4821 source ledger',
-      '1 12 123 0123 1.2 3_4',
-      'forest '.repeat(300),
-      'forest harbor canopy '.repeat(1000),
-    ];
-    const rawVectors = [
-      '',
-      "'forest'",
-      "'forest' 'canopi':1D,2A 'harbor':1A,3C",
-      "'forest':1A,2B,3C,4D 'canopi':1D,4A 'harbor':1C,2D",
-      "'forest':1D,16382A,16383B 'canopi':16383C",
-      "'run':1A,2D 'forest':1B 'harbor':1C",
-    ];
-    const queries = [
-      '',
-      '!!!',
-      'the and or',
-      'forest',
-      'absent',
-      'forest forest forests',
-      'forests canopy forest',
-      'run running runs',
-      'forest OR harbor',
-      '"forest canopy"',
-      '-forest -harbor',
-      'forest -harbor',
-      'forest* :A',
-      'canopy-forest',
-      "forest's canopy",
-      'forest_harbor',
-      'issue4821',
-      'Issue #4821',
-      'PR_4821',
-      'issues/4821 -harbor',
-      '4821 samples',
-      '1 12 123 0123',
-      'https://example.invalid/issues/4821',
-      'café naïve résumé',
-      'cafe\u0301 naïve',
-      'Überprüfung',
-      '森林 canopy',
-      'forest '.repeat(80),
-      Array.from({ length: 80 }, (_, index) => `absent${String(index)}`).join(' ') + ' forest canopy',
-    ];
-    // Independent pre-correction oracle: preserve each rank, not merely GREATEST
-    // or selected candidates that could hide a per-query difference.
-    const tokens = `nullif(regexp_replace(trim(regexp_replace(lower($1), '[^[:alnum:]]+', ' ', 'g')), '[[:space:]]+', ' OR ', 'g'), '')`;
-    const prior = `CASE WHEN ${tokens} IS NOT NULL THEN ts_rank_cd(search_vector, websearch_to_tsquery('english', ${tokens})) ELSE 0 END`;
-    try {
-      await initializeDatabase();
-      for (const query of new Set(queries.flatMap(value => [value, normalizeSearchReferenceText(value)]))) {
-        const result = await verificationPool.query<{ after: string; before: string; label: string }>(
-          `WITH records AS (
+const RANK_DOCUMENTS = [
+  '',
+  'the and or',
+  'forest canopy sample',
+  'canopy forest forest forests',
+  'run running runs',
+  'harbor forest canopy tide',
+  'café naïve résumé Überprüfung',
+  'cafe\u0301 naïve',
+  'issue4821 source ledger',
+  'issue 4821 source ledger',
+  '1 12 123 0123 1.2 3_4',
+  'forest '.repeat(300),
+  'forest harbor canopy '.repeat(1000),
+];
+const RANK_RAW_VECTORS = [
+  '',
+  "'forest'",
+  "'forest' 'canopi':1D,2A 'harbor':1A,3C",
+  "'forest':1A,2B,3C,4D 'canopi':1D,4A 'harbor':1C,2D",
+  "'forest':1D,16382A,16383B 'canopi':16383C",
+  "'run':1A,2D 'forest':1B 'harbor':1C",
+];
+const RANK_QUERIES = [
+  '',
+  '!!!',
+  'the and or',
+  'forest',
+  'absent',
+  'forest forest forests',
+  'forests canopy forest',
+  'run running runs',
+  'forest OR harbor',
+  '"forest canopy"',
+  '"canopy forest"',
+  '-forest -harbor',
+  'forest -harbor',
+  '"forest canopy" OR -harbor',
+  'forest* :A',
+  'canopy-forest',
+  "forest's canopy",
+  'forest_harbor',
+  'issue4821',
+  'Issue #4821',
+  'PR_4821',
+  'issues/4821 -harbor',
+  '4821 samples',
+  '1 12 123 0123',
+  'https://example.invalid/issues/4821',
+  'café naïve résumé',
+  'cafe\u0301 naïve',
+  'Überprüfung',
+  '森林 canopy',
+  'forest '.repeat(80),
+  Array.from({ length: 80 }, (_, index) => `absent${String(index)}`).join(' ') + ' forest canopy',
+];
+const RANK_ROW_COUNT = RANK_DOCUMENTS.length * 7 + RANK_RAW_VECTORS.length;
+// Query parameters: $1 query, $2 documents, $3 raw vectors.
+const RANK_VECTORS_SQL = `WITH records AS (
         SELECT content, 'synthetic/reference'::text AS project, 'convention'::text AS category,
           'synthetic-source'::text AS source, 'fixture:issue4821'::text AS memory_key,
           '["https://example.invalid/issues/4821", {"source":"PR4822"}]'::jsonb AS evidence_refs,
@@ -100,13 +93,74 @@ test(
         UNION ALL SELECT 'stripped:' || content, strip(to_tsvector('english',content)) FROM records
         UNION ALL SELECT weight || ':' || content, setweight(to_tsvector('english',content), weight::"char") FROM records CROSS JOIN unnest(ARRAY['A','B','C','D']) AS weights(weight)
         UNION ALL SELECT 'raw:' || vector_text, vector_text::tsvector FROM unnest($3::text[]) AS raw(vector_text)
-      ) SELECT label, encode(float4send(${prior}), 'hex') AS before,
+      )`;
+const rankQueryVariants = () => new Set(RANK_QUERIES.flatMap(value => [value, normalizeSearchReferenceText(value)]));
+
+test(
+  'positive token-OR ranks preserve exact float4 bytes for every document and query variant',
+  { skip: databaseUrl === undefined },
+  async () => {
+    assert.ok(databaseUrl);
+    assertLocalDatabaseUrl(databaseUrl);
+    const verificationPool = new Pool({ connectionString: databaseUrl });
+    // Independent pre-correction oracle: preserve each rank, not merely GREATEST
+    // or selected candidates that could hide a per-query difference.
+    const tokens = `nullif(regexp_replace(trim(regexp_replace(lower($1), '[^[:alnum:]]+', ' ', 'g')), '[[:space:]]+', ' OR ', 'g'), '')`;
+    const prior = `CASE WHEN ${tokens} IS NOT NULL THEN ts_rank_cd(search_vector, websearch_to_tsquery('english', ${tokens})) ELSE 0 END`;
+    try {
+      await initializeDatabase();
+      for (const query of rankQueryVariants()) {
+        const result = await verificationPool.query<{ after: string; before: string; label: string }>(
+          `${RANK_VECTORS_SQL} SELECT label, encode(float4send(${prior}), 'hex') AS before,
         encode(float4send(${buildMemorySearchOrRankSql('$1')}), 'hex') AS after FROM vectors`,
-          [query, documents, rawVectors],
+          [query, RANK_DOCUMENTS, RANK_RAW_VECTORS],
         );
-        assert.equal(result.rows.length, documents.length * 7 + rawVectors.length);
+        assert.equal(result.rows.length, RANK_ROW_COUNT);
         for (const row of result.rows)
           assert.equal(row.after, row.before, JSON.stringify({ query, fixture: row.label.slice(0, 100) }));
+      }
+    } finally {
+      await verificationPool.end();
+    }
+  },
+);
+
+test(
+  'detoasted vectors and the guarded semantic rank preserve exact float4 bytes',
+  { skip: databaseUrl === undefined },
+  async () => {
+    assert.ok(databaseUrl);
+    assertLocalDatabaseUrl(databaseUrl);
+    const verificationPool = new Pool({ connectionString: databaseUrl });
+    try {
+      await initializeDatabase();
+      for (const query of rankQueryVariants()) {
+        // Search ranks a detoasted copy of each stored vector; the oracle ranks the original.
+        const result = await verificationPool.query<{
+          label: string;
+          or_after: string;
+          or_before: string;
+          semantic_after: string;
+          semantic_before: string;
+        }>(
+          `${RANK_VECTORS_SQL}, ranked AS (
+        SELECT label,
+          encode(float4send(ts_rank_cd(search_vector, websearch_to_tsquery('english', $1))), 'hex') AS semantic_before,
+          encode(float4send(${buildMemorySearchOrRankSql('$1')}), 'hex') AS or_before,
+          (search_vector || ''::tsvector) AS detoasted_vector
+        FROM vectors
+      ) SELECT label, semantic_before, or_before,
+        encode(float4send(${buildMemorySearchSemanticRankSql('$1').replaceAll('search_vector', 'detoasted_vector')}), 'hex') AS semantic_after,
+        encode(float4send(${buildMemorySearchOrRankSql('$1').replaceAll('search_vector', 'detoasted_vector')}), 'hex') AS or_after
+      FROM ranked`,
+          [query, RANK_DOCUMENTS, RANK_RAW_VECTORS],
+        );
+        assert.equal(result.rows.length, RANK_ROW_COUNT);
+        for (const row of result.rows) {
+          const fixture = JSON.stringify({ query, fixture: row.label.slice(0, 100) });
+          assert.equal(row.semantic_after, row.semantic_before, `semantic ${fixture}`);
+          assert.equal(row.or_after, row.or_before, `token-OR ${fixture}`);
+        }
       }
     } finally {
       await verificationPool.end();

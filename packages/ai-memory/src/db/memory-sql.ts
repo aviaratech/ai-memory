@@ -35,6 +35,21 @@ export function buildMemorySearchMatchQuerySql(queryParam: string) {
 }
 
 /**
+ * Builds the primary websearch rank. A document that does not match a query
+ * without negation has no cover, so its rank is 0 and the costly ranking pass
+ * is skipped; negated queries are always ranked.
+ */
+export function buildMemorySearchSemanticRankSql(queryParam: string) {
+  const querySql = `websearch_to_tsquery('english', ${queryParam})`;
+
+  return `CASE
+    WHEN position('!' IN ${querySql}::text) > 0 OR search_vector @@ ${querySql}
+    THEN ts_rank_cd(search_vector, ${querySql})
+    ELSE 0
+  END`;
+}
+
+/**
  * Builds SQL that computes ts_rank_cd using a tokenized OR-based tsquery.
  * This gives non-zero relevance scores to memories that match ANY query term,
  * unlike the AND-based websearch_to_tsquery used for primary semantic ranking.

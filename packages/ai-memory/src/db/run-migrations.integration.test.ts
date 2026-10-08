@@ -27,6 +27,8 @@ const expected = readdirSync(migrations)
   .filter(name => name.endsWith('.sql'))
   .sort()
   .map(name => name.slice(0, -4));
+// Migrations applied before the stored search-vector backfill under test.
+const beforeStoredSearchVector = expected.indexOf('007_stored_search_vector');
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
 function runtimeEnv(url: string): Record<string, string> {
@@ -347,7 +349,7 @@ test(
         dbClient: recovery.client,
         dir: migrations,
         direction: 'up',
-        count: expected.length - 1,
+        count: beforeStoredSearchVector,
         migrationsTable: 'ai_memory_pgmigrations',
         logger: { info: () => {}, warn: () => {}, error: () => {} },
       });
@@ -359,7 +361,7 @@ test(
       const fingerprint = async (client: Client) =>
         (
           await client.query<{ count: string; digest: string }>(`SELECT count(*)::text AS count,
-        md5(string_agg(md5((to_jsonb(entries)-'search_vector')::text),'' ORDER BY id)) AS digest FROM ai_memory_entries AS entries`)
+        md5(string_agg(md5((to_jsonb(entries)-'search_vector'-'last_accessed_at')::text),'' ORDER BY id)) AS digest FROM ai_memory_entries AS entries`)
         ).rows;
       const priorRows = await fingerprint(recovery.client);
       const priorSchema = await snapshot(recovery.client);
@@ -448,7 +450,7 @@ test(
         dbClient: uninterruptedUpgrade.client,
         dir: migrations,
         direction: 'up',
-        count: expected.length - 1,
+        count: beforeStoredSearchVector,
         migrationsTable: 'ai_memory_pgmigrations',
         logger: { info: () => {}, warn: () => {}, error: () => {} },
       });

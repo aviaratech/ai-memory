@@ -16,6 +16,7 @@ import {
   buildMemorySearchMatchQuerySql,
   buildMemorySearchOrRankSql,
   buildMemorySearchReferenceMatchSql,
+  buildMemorySearchSemanticRankSql,
 } from './memory-sql.js';
 import { storeMemoryWithClient } from './memory-store.js';
 import { normalizeMemoryType } from './memory-types.js';
@@ -466,7 +467,8 @@ export async function searchMemories(input: unknown) {
         SELECT
           id,
           created_at,
-          search_vector,
+          -- Copy each stored vector out of TOAST once; every rank and lexeme check reuses it.
+          (search_vector || ''::tsvector) AS search_vector,
           CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
           CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
           ${decayedImportanceSql} AS decayed_importance
@@ -476,7 +478,7 @@ export async function searchMemories(input: unknown) {
       SELECT
         id,
         created_at,
-        ts_rank_cd(search_vector, websearch_to_tsquery('english', ${queryParam})) AS semantic_relevance,
+        ${buildMemorySearchSemanticRankSql(queryParam)} AS semantic_relevance,
         ${orRankSql} AS or_semantic_relevance,
         keyword_hint,
         reference_hint,
@@ -714,9 +716,9 @@ async function boostImportanceForAccessedMemories(memoryIds: number[]) {
       UPDATE ai_memory_entries
       SET
         importance = LEAST(1.0, GREATEST(0.0, (${baseImportanceSql}) + $2::double precision)),
-        updated_at = NOW()
+        last_accessed_at = NOW()
       WHERE id = ANY($1::bigint[])
-        AND updated_at <= NOW() - make_interval(hours => $3::int)
+        AND GREATEST(updated_at, last_accessed_at) <= NOW() - make_interval(hours => $3::int)
     `;
   const params = [memoryIds, IMPORTANCE_ACCESS_BOOST_INCREMENT, IMPORTANCE_ACCESS_BOOST_THROTTLE_HOURS];
   await runDbWriteQuery({
