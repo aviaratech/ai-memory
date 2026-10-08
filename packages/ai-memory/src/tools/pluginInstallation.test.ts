@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, it } from 'vitest';
@@ -12,7 +22,7 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 function fixture(host: PluginOptions['host'] = 'codex') {
-  const home = mkdtempSync(join(tmpdir(), 'ai-memory-installer-'));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ai-memory-installer-')));
   homes.push(home);
   const pluginRoot = join(home, 'released-plugin');
   for (const dir of ['.claude-plugin', 'dist', 'hooks', 'skills/memory-lifecycle', 'skills/memory-ops', 'migrations']) {
@@ -141,6 +151,39 @@ describe('owned standalone plugin installation lifecycle', () => {
     assert.deepEqual(f.calls, []);
     assert.deepEqual(inventory(f.home), before);
   });
+  it('preserves a same-ID Claude registration owned by another scope or project', async () => {
+    const f = fixture('claude-code');
+    const installed = await runPluginOperation(f.options('install'), f.context);
+    assert.equal(installed.state, 'installed');
+    const roots = join(f.home, '.config/ai-memory/plugins');
+    const state = JSON.parse(readFileSync(join(roots, readdirSync(roots)[0] ?? 'missing', 'state.json'), 'utf8')) as {
+      marketplace: string;
+    };
+    const path = join(f.home, 'claude/plugins/installed_plugins.json');
+    mkdirSync(dirname(path), { recursive: true });
+    const id = `ai-memory@${state.marketplace}`;
+    const original = JSON.stringify({
+      version: 2,
+      plugins: {
+        [id]: [
+          { scope: 'user', version: '0.2.2', installPath: installed.plugin.installedPath },
+          {
+            scope: 'project',
+            projectPath: join(f.home, 'other-project'),
+            version: '0.2.2',
+            installPath: installed.plugin.installedPath,
+          },
+        ],
+      },
+    });
+    writeFileSync(path, original);
+    const calls = f.calls.length;
+    const result = await runPluginOperation(f.options('remove', { dryRun: true }), f.context);
+    assert.equal(result.state, 'conflict');
+    assert.equal(readFileSync(path, 'utf8'), original);
+    assert.equal(f.calls.length, calls);
+  });
+
   it('preserves a manually disabled Claude plugin before any native mutation', async () => {
     const f = fixture('claude-code');
     await runPluginOperation(f.options('install'), f.context);

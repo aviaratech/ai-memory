@@ -331,6 +331,16 @@ function checkConflicts(ctx: Context, state?: State): void {
     const installed = record(json(resolve(configRoot, 'plugins/installed_plugins.json')).plugins);
     if (Object.keys(installed).some(key => key.startsWith('ai-memory@') && (key !== id || state === undefined)))
       throw new Error('An existing native memory plugin is not owned by this receipt.');
+    const entries = installed[id];
+    if (
+      entries !== undefined &&
+      (!Array.isArray(entries) ||
+        entries.some(value => {
+          const entry = record(value);
+          return entry.scope !== ctx.options.scope || (ctx.options.scope !== 'user' && entry.projectPath !== ctx.cwd);
+        }))
+    )
+      throw new Error('A native registration in another scope or project is not owned by this receipt.');
     const marketplace = record(json(resolve(configRoot, 'plugins/known_marketplaces.json'))[ctx.marketplace]);
     if (
       Object.keys(marketplace).length > 0 &&

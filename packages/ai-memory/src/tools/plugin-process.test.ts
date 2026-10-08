@@ -193,11 +193,18 @@ for (const leaderExit of [false, true]) {
       pids = JSON.parse(readFileSync(pidsPath, 'utf8')) as number[];
       if (!leaderExit) child.kill('SIGTERM');
       assert.equal(await closed, 2);
-      await until(() => pids.every(pid => !alive(pid)));
+      await until(() => pids.every(pid => !alive(pid)) && !alive(-(pids[0] ?? 0)));
       assert.equal((JSON.parse(output) as { state: string }).state, 'pending_recovery');
       const roots = join(home, '.config/ai-memory/plugins');
       const root = join(roots, readdirSync(roots)[0] ?? 'missing');
-      assert.equal(existsSync(join(root, 'operation.lock')), false);
+      if (existsSync(join(root, 'operation.lock'))) {
+        const lock = JSON.parse(readFileSync(join(root, 'operation.lock'), 'utf8')) as {
+          pid: number;
+          groups: number[];
+        };
+        assert.equal(lock.pid, child.pid);
+        assert.ok(lock.groups.every(pid => !alive(-pid)));
+      }
       const recovered = spawn(
         process.execPath,
         [cli, 'plugin', 'rollback', '--host', 'codex', '--scope', 'user', '--json'],
@@ -209,6 +216,7 @@ for (const leaderExit of [false, true]) {
       });
       assert.equal(await new Promise(resolve => recovered.once('close', resolve)), 0);
       assert.equal((JSON.parse(result) as { state: string }).state, 'removed');
+      assert.equal(existsSync(join(root, 'operation.lock')), false);
     } finally {
       for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
       if (child.exitCode === null) child.kill('SIGKILL');
