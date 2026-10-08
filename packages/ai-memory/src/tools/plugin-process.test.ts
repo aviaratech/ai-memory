@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -81,6 +82,79 @@ else {
   setInterval(()=>{},1000);
 }
 `;
+
+it('serializes two stale-lock reclaimers and preserves the new live owner', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-memory-plugin-reclaim-'));
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  const binding = JSON.stringify({ host: 'codex', scope: 'user', cwd: null, home, nativeHome: join(home, 'codex') });
+  const root = join(home, '.config/ai-memory/plugins', createHash('sha256').update(binding).digest('hex'));
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const lock = join(root, 'operation.lock');
+  writeFileSync(lock, JSON.stringify({ schema: 1, binding, token: 'stale', pid: 2147483647, groups: [] }), {
+    mode: 0o600,
+  });
+  writeFileSync(join(bin, 'codex'), native, { mode: 0o700 });
+  const ready = join(home, 'verified');
+  const release = join(home, 'release');
+  const pidsPath = join(home, 'pids.json');
+  const preload = join(home, 'pause.mjs');
+  writeFileSync(
+    preload,
+    `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const remove=fs.rmSync;let paused=false;fs.rmSync=(path,...args)=>{if(!paused&&String(path).endsWith('/operation.lock')){paused=true;fs.writeFileSync(${JSON.stringify(ready)},'ready');while(!fs.existsSync(${JSON.stringify(release)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);}return remove(path,...args);};syncBuiltinESMExports();`,
+  );
+  const env: NodeJS.ProcessEnv = {
+    HOME: home,
+    CODEX_HOME: join(home, 'codex'),
+    PATH: `${bin}:${dirname(process.execPath)}`,
+    NODE_OPTIONS: '--max-old-space-size=512',
+    PLUGIN_TEST_PIDS: pidsPath,
+  };
+  const args = [
+    cli,
+    'plugin',
+    'install',
+    '--host',
+    'codex',
+    '--scope',
+    'user',
+    '--version',
+    getPackageVersion(),
+    '--json',
+  ];
+  const first = spawn(process.execPath, ['--import', preload, ...args], { cwd: home, env, stdio: 'ignore' });
+  const firstClosed = new Promise(resolve => first.once('close', resolve));
+  let second: ReturnType<typeof spawn> | undefined;
+  let secondClosed: Promise<unknown> | undefined;
+  let pids: number[] = [];
+  try {
+    await until(() => existsSync(ready));
+    second = spawn(process.execPath, args, { cwd: home, env, stdio: 'ignore' });
+    secondClosed = new Promise(resolve => second?.once('close', resolve));
+    assert.equal(
+      await Promise.race([secondClosed, delay(2000).then(() => 999)]),
+      2,
+      'another reclaimer entered the mutation instead of preserving exclusive ownership',
+    );
+    assert.equal((JSON.parse(readFileSync(lock, 'utf8')) as { token: string }).token, 'stale');
+    assert.equal(existsSync(pidsPath), false);
+    writeFileSync(release, 'continue');
+    await until(() => existsSync(pidsPath));
+    pids = JSON.parse(readFileSync(pidsPath, 'utf8')) as number[];
+    assert.equal((JSON.parse(readFileSync(lock, 'utf8')) as { pid: number }).pid, first.pid);
+    first.kill('SIGTERM');
+    assert.equal(await firstClosed, 2);
+    await until(() => pids.every(pid => !alive(pid)));
+  } finally {
+    if (existsSync(pidsPath)) pids = JSON.parse(readFileSync(pidsPath, 'utf8')) as number[];
+    for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    if (first.exitCode === null) first.kill('SIGKILL');
+    if (second?.exitCode === null) second.kill('SIGKILL');
+    await firstClosed;
+    if (secondClosed) await secondClosed;
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 15000);
 
 for (const leaderExit of [false, true]) {
   it(`joins resistant native descendants after ${leaderExit ? 'leader failure' : 'cancellation'} and recovers the pending unit`, async () => {

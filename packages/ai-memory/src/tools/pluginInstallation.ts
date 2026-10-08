@@ -6,6 +6,7 @@ import {
   closeSync,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -86,44 +87,62 @@ function processExists(pid: number): boolean {
 
 function acquireLock(ctx: Context): () => void {
   const path = resolve(ctx.root, 'operation.lock');
-  if (existsSync(path)) {
-    const before = lstatSync(path);
-    const prior = json(path);
-    if (
-      !before.isFile() ||
-      before.uid !== process.getuid?.() ||
-      (before.mode & 0o077) !== 0 ||
-      prior.schema !== 1 ||
-      prior.binding !== ctx.binding ||
-      typeof prior.token !== 'string' ||
-      !Number.isSafeInteger(prior.pid) ||
-      Number(prior.pid) <= 0 ||
-      !Array.isArray(prior.groups) ||
-      !prior.groups.every(pid => Number.isSafeInteger(pid) && Number(pid) > 0)
-    )
-      throw new Error('Unrecognized interrupted lock; preserve it for inspection.');
-    if (
-      processExists(Number(prior.pid)) ||
-      prior.groups.some(pid => processExists(process.platform === 'win32' ? Number(pid) : -Number(pid)))
-    )
-      throw new Error('An owner or its native process group is still active.');
-    const current = lstatSync(path);
-    if (
-      current.dev !== before.dev ||
-      current.ino !== before.ino ||
-      JSON.stringify(json(path)) !== JSON.stringify(prior)
-    )
-      throw new Error('Operation lock changed during recovery.');
-    rmSync(path);
-  }
+  const reclaim = resolve(ctx.root, 'operation.reclaim');
+  if (existsSync(reclaim)) throw new Error('Lock reclamation is active or requires inspection.');
   const token = randomUUID();
   const groups = new Set<number>();
   const value = () => ({ schema: 1, binding: ctx.binding, token, pid: process.pid, groups: [...groups] });
-  const fd = openSync(path, 'wx', 0o600);
-  try {
-    writeFileSync(fd, `${JSON.stringify(value())}\n`);
-  } finally {
-    closeSync(fd);
+  const create = () => {
+    const fd = openSync(path, 'wx', 0o600);
+    try {
+      writeFileSync(fd, `${JSON.stringify(value())}\n`);
+    } finally {
+      closeSync(fd);
+    }
+  };
+  if (!existsSync(path)) create();
+  else {
+    // wx serializes the complete stale-lock recheck, unlink and replacement.
+    // An interrupted reclamation guard is deliberately preserved for inspection;
+    // recursively reclaiming it would recreate the same ownership race.
+    const claim = openSync(reclaim, 'wx', 0o600);
+    const claimIdentity = fstatSync(claim);
+    try {
+      writeFileSync(claim, `${JSON.stringify(value())}\n`);
+      const before = lstatSync(path);
+      const prior = json(path);
+      if (
+        !before.isFile() ||
+        before.uid !== process.getuid?.() ||
+        (before.mode & 0o077) !== 0 ||
+        prior.schema !== 1 ||
+        prior.binding !== ctx.binding ||
+        typeof prior.token !== 'string' ||
+        !Number.isSafeInteger(prior.pid) ||
+        Number(prior.pid) <= 0 ||
+        !Array.isArray(prior.groups) ||
+        !prior.groups.every(pid => Number.isSafeInteger(pid) && Number(pid) > 0)
+      )
+        throw new Error('Unrecognized interrupted lock; preserve it for inspection.');
+      if (
+        processExists(Number(prior.pid)) ||
+        prior.groups.some(pid => processExists(process.platform === 'win32' ? Number(pid) : -Number(pid)))
+      )
+        throw new Error('An owner or its native process group is still active.');
+      const current = lstatSync(path);
+      if (
+        current.dev !== before.dev ||
+        current.ino !== before.ino ||
+        JSON.stringify(json(path)) !== JSON.stringify(prior)
+      )
+        throw new Error('Operation lock changed during recovery.');
+      rmSync(path);
+      create();
+    } finally {
+      closeSync(claim);
+      const current = lstatSync(reclaim);
+      if (current.dev === claimIdentity.dev && current.ino === claimIdentity.ino) rmSync(reclaim);
+    }
   }
   ctx.recordNative = (pid, active) => {
     if (json(path).token !== token) throw new Error('Owned operation lock changed.');
@@ -326,10 +345,17 @@ function checkConflicts(ctx: Context, state?: State): void {
     const enabled = record(settings.enabledPlugins)[id];
     if (enabled !== undefined && enabled !== true)
       throw new Error('Preserve disabled or unsupported native plugin policy before replacement.');
-    for (const path of [resolve(ctx.home, '.claude.json'), resolve(ctx.cwd, '.mcp.json')]) {
-      if (record(json(path).mcpServers)['ai-memory'] !== undefined)
-        throw new Error('An existing manual ai-memory MCP registration is preserved.');
-    }
+    const globalPath =
+      ctx.env.CLAUDE_CONFIG_DIR === undefined ? resolve(ctx.home, '.claude.json') : resolve(configRoot, '.claude.json');
+    const global = json(globalPath);
+    const projects = record(global.projects);
+    const localEntries = ctx.options.scope === 'user' ? Object.values(projects) : [projects[ctx.cwd]];
+    if (
+      record(global.mcpServers)['ai-memory'] !== undefined ||
+      localEntries.some(project => record(record(project).mcpServers)['ai-memory'] !== undefined) ||
+      record(json(resolve(ctx.cwd, '.mcp.json')).mcpServers)['ai-memory'] !== undefined
+    )
+      throw new Error('An existing manual ai-memory MCP registration is preserved.');
   }
 }
 

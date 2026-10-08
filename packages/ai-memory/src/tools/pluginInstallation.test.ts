@@ -121,6 +121,26 @@ function inventory(root: string): string[] {
 }
 
 describe('owned standalone plugin installation lifecycle', () => {
+  it('preserves the actual relocated Claude local manual MCP registration shape', async () => {
+    const f = fixture('claude-code');
+    const path = join(f.home, 'claude/.claude.json');
+    mkdirSync(dirname(path), { recursive: true });
+    const original = JSON.stringify({
+      projects: {
+        [f.home]: {
+          mcpServers: { 'ai-memory': { type: 'stdio', command: 'node', args: ['/owned/inert-target.js'], env: {} } },
+        },
+      },
+      unrelated: 42,
+    });
+    writeFileSync(path, original);
+    const before = inventory(f.home);
+    const result = await runPluginOperation(f.options('install', { scope: 'local', dryRun: true }), f.context);
+    assert.equal(result.state, 'conflict');
+    assert.equal(readFileSync(path, 'utf8'), original);
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(inventory(f.home), before);
+  });
   it('preserves a manually disabled Claude plugin before any native mutation', async () => {
     const f = fixture('claude-code');
     await runPluginOperation(f.options('install'), f.context);
