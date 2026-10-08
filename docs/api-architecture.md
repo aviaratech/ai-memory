@@ -4,7 +4,7 @@
 
 The former tools root ingestion API is available at `@aviaratech/ai-memory/ingestion`, with the same exports and behavior. The MCP entry point is `@aviaratech/ai-memory/server`, and the `ai-memory-mcp` executable starts the same server. Importing the package root does not start MCP, ingestion, migrations, or background services. The implementation remains in separate engine, ingestion, server, and operations modules within the package; no forwarding tools package is built.
 
-The separately distributed plugin packages skills, hooks, and a bundled Node launcher. It copies the core package's numbered migration assets during build. The migration registry remains `public.ai_memory_pgmigrations`.
+The runtime package ships the existing built plugin under `plugins/ai-memory`; the matching GitHub archive packages those same files. The plugin contains portable Codex and Claude metadata, skills, hooks, bundled launcher/server and core numbered migration assets. Its package-derived MCP version matches the runtime and plugin manifests. The `ai-memory plugin` CLI owns native installation receipts and delegates registration to the supported host manager; it does not expose a new engine API or setup/service path. Its protected launcher reads the dedicated plugin environment file and requires an already complete migration ledger. The migration registry remains `public.ai_memory_pgmigrations`; read-only doctor cannot apply missing migrations even with administrator credentials.
 
 ## Migrating from 0.1.x
 

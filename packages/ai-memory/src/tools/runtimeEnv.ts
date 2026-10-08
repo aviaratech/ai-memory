@@ -359,7 +359,7 @@ function parsePostgresServiceEnv(input: { defaultValue: string; value: string | 
   return input.value;
 }
 
-function parseSimpleEnvFile(contents: string): NodeJS.ProcessEnv {
+export function parseSimpleEnvFile(contents: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const rawLine of contents.split(/\r?\n/u)) {
     const line = rawLine.trim();

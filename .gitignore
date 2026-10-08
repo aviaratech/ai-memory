@@ -1,6 +1,7 @@
 node_modules/
 dist/
 plugins/ai-memory/migrations/
+packages/ai-memory/plugins/
 *.tsbuildinfo
 .env
 .env.*

@@ -1,6 +1,6 @@
 {
   "name": "@aviaratech/ai-memory",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Durable local PostgreSQL memory engine and MCP tools for AI agents",
   "license": "MIT",
   "repository": {
@@ -9,12 +9,14 @@
     "directory": "packages/ai-memory"
   },
   "bin": {
+    "ai-memory": "./dist/tools/pluginCli.js",
     "ai-memory-mcp": "./dist/tools/server.js"
   },
   "files": [
     "dist",
     "fixtures",
     "migrations",
+    "plugins",
     "scripts/backup-db.sh",
     "README.md"
   ],

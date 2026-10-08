@@ -22,7 +22,7 @@ const STUB_RECALL =
  *     hooks/session-start
  *     hooks/session-end
  *     skills/memory-lifecycle/SKILL.md   (minimal stub)
- *     dist/mcp-server.bundle.js          (stub bundle, optional)
+ *     dist/mcp-launcher.js               (stub launcher, optional)
  *     bin/ai-memory-mcp                  (stub binary, optional)
  */
 function stageTempPlugin(opts?: {
@@ -79,7 +79,7 @@ fi
 
   if (opts?.stubBundledRuntime) {
     writeFileSync(
-      join(distDir, 'mcp-server.bundle.js'),
+      join(distDir, 'mcp-launcher.js'),
       `#!/usr/bin/env node
 if (process.argv[2] === 'hook:session-start') {
   process.stdout.write('${STUB_RECALL}');
@@ -92,7 +92,7 @@ if (process.argv[2] === 'hook:session-start') {
 }
 `,
     );
-    chmodSync(join(distDir, 'mcp-server.bundle.js'), 0o755);
+    chmodSync(join(distDir, 'mcp-launcher.js'), 0o755);
   }
 
   return {
@@ -333,7 +333,7 @@ for (const host of ['codex', 'claude', 'cursor', 'cursor-with-claude']) {
         if (runtime !== 'missing') {
           const serializerUrl = new URL('../../dist/tools/ingestion/session-start-hook.js', import.meta.url).href;
           writeFileSync(
-            join(staged.root, 'dist/mcp-server.bundle.js'),
+            join(staged.root, 'dist/mcp-launcher.js'),
             runtime === 'failed'
               ? 'process.stdout.write("partial-output"); process.exit(1);'
               : `import { serializeSessionStartHook } from ${JSON.stringify(serializerUrl)};

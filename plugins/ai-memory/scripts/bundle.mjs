@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +21,22 @@ await build({
   target: 'node24',
 });
 cpSync(resolve(root, 'packages/ai-memory/migrations'), resolve(plugin, 'migrations'), { recursive: true });
-writeFileSync(
-  resolve(dist, 'mcp-launcher.js'),
-  "import { spawn } from 'node:child_process';\nimport { dirname, resolve } from 'node:path';\nimport { fileURLToPath } from 'node:url';\nconst root = dirname(fileURLToPath(import.meta.url));\nconst child = spawn(process.execPath, [resolve(root, 'mcp-server.bundle.js'), ...process.argv.slice(2)], { stdio: 'inherit', env: process.env });\nchild.on('exit', code => { process.exitCode = code ?? 1; });\n",
-);
+await build({
+  bundle: true,
+  entryPoints: [resolve(plugin, 'scripts/launcher.mjs')],
+  external: ['node:*'],
+  format: 'esm',
+  outfile: resolve(dist, 'mcp-launcher.js'),
+  platform: 'node',
+  target: 'node24',
+});
+
+// Keep npm's embedded plugin and the existing GitHub plugin archive identical.
+// This runs after the canonical runtime/bundle build; installation never builds.
+const manifest = /** @type {{files: string[]}} */ (JSON.parse(readFileSync(resolve(plugin, 'package.json'), 'utf8')));
+const stagedPlugin = resolve(root, 'packages/ai-memory/plugins/ai-memory');
+rmSync(stagedPlugin, { recursive: true, force: true });
+mkdirSync(stagedPlugin, { recursive: true });
+for (const name of ['package.json', ...manifest.files]) {
+  cpSync(resolve(plugin, name), resolve(stagedPlugin, name), { recursive: true });
+}
