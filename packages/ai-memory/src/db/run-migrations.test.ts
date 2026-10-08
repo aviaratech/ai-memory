@@ -154,6 +154,51 @@ describe('runAiMemoryMigrations', () => {
   for (const state of [
     { label: 'missing', ledgerExists: false, ledgerNames: [] },
     { label: 'pending', ledgerExists: true, ledgerNames: canonicalNames.slice(0, -1) },
+  ]) {
+    it(`read-only diagnosis refuses a ${state.label} ledger even with administrator privileges`, async () => {
+      resetMocks();
+      installQueryHandler({
+        ...state,
+        canMigrate: true,
+        legacyFinalMigrationApplied: false,
+        newTrackingCount: state.ledgerNames.length,
+      });
+      await assert.rejects(
+        runAiMemoryMigrations(createMockPool(), { readOnly: true }),
+        /administrator.*canonical migrations/iu,
+      );
+      assert.equal(runnerMock.mock.callCount(), 0);
+      assert.ok(
+        mockQuery.mock.calls.every(call =>
+          /^\s*(?:SELECT|WITH|BEGIN READ ONLY|COMMIT|ROLLBACK)\b/iu.test(call.arguments[0]),
+        ),
+      );
+    });
+  }
+
+  it('a native plugin launch requires the complete ledger even with administrator credentials', async () => {
+    resetMocks();
+    installQueryHandler({
+      canMigrate: true,
+      ledgerExists: false,
+      ledgerNames: [],
+      legacyFinalMigrationApplied: false,
+      newTrackingCount: 0,
+    });
+    const previous = process.env.AI_MEMORY_PLUGIN_MIGRATIONS_MODE;
+    process.env.AI_MEMORY_PLUGIN_MIGRATIONS_MODE = 'require_complete';
+    try {
+      await assert.rejects(runAiMemoryMigrations(createMockPool()), /administrator.*canonical migrations/iu);
+      assert.equal(runnerMock.mock.callCount(), 0);
+    } finally {
+      if (previous === undefined) delete process.env.AI_MEMORY_PLUGIN_MIGRATIONS_MODE;
+      else process.env.AI_MEMORY_PLUGIN_MIGRATIONS_MODE = previous;
+    }
+  });
+
+  for (const state of [
+    { label: 'missing', ledgerExists: false, ledgerNames: [] },
+    { label: 'pending', ledgerExists: true, ledgerNames: canonicalNames.slice(0, -1) },
     { label: 'unknown', ledgerExists: true, ledgerNames: [...canonicalNames, '999_unknown'] },
     { label: 'duplicate', ledgerExists: true, ledgerNames: [...canonicalNames, canonicalNames[0] ?? '001_baseline'] },
     { label: 'reordered', ledgerExists: true, ledgerNames: [...canonicalNames].reverse() },

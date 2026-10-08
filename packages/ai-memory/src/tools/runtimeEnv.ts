@@ -103,6 +103,8 @@ const AiMemoryServiceEnvSchema = z.looseObject({
   SHELL: OptionalEnvText,
 });
 const OPTIONAL_RUNTIME_ENV_KEYS = [
+  'AI_MEMORY_CLASSIFY_API_KEY',
+  'AI_MEMORY_CLASSIFY_MODEL',
   'AI_MEMORY_EMBEDDING_API_KEY',
   'AI_MEMORY_EMBEDDING_MODEL',
   'AI_MEMORY_EMBEDDING_PROVIDER',
@@ -359,7 +361,7 @@ function parsePostgresServiceEnv(input: { defaultValue: string; value: string | 
   return input.value;
 }
 
-function parseSimpleEnvFile(contents: string): NodeJS.ProcessEnv {
+export function parseSimpleEnvFile(contents: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const rawLine of contents.split(/\r?\n/u)) {
     const line = rawLine.trim();

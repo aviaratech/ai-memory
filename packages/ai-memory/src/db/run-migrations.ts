@@ -99,8 +99,20 @@ const migrationLogger = {
   },
 };
 
-export async function runAiMemoryMigrations(pool: DbPool): Promise<void> {
-  const migrationsDir = resolveAiMemoryMigrationsDir();
+export async function runAiMemoryMigrations(
+  pool: DbPool,
+  options: { readOnly?: boolean; migrationsDir?: string } = {},
+): Promise<void> {
+  // A bundled native plugin must require an explicitly initialized ledger even
+  // if a host manager starts its MCP process while installing/authenticating it.
+  const pluginMode = process.env.AI_MEMORY_PLUGIN_MIGRATIONS_MODE;
+  if (pluginMode !== undefined && pluginMode !== 'require_complete')
+    throw new Error('Invalid native plugin migration mode.');
+  const readOnly = options.readOnly === true || pluginMode === 'require_complete';
+  const migrationsDir =
+    options.migrationsDir === undefined
+      ? resolveAiMemoryMigrationsDir()
+      : resolveAiMemoryMigrationsDir({ env: { AI_MEMORY_MIGRATIONS_DIR: options.migrationsDir } });
   // Canonical assets are numbered SQL files. The library's published discovery
   // subpath has unresolved imports in 8.0.4; keep its executor as the sole owner
   // of applying migrations and inspect only the shipped filename inventory here.
@@ -152,7 +164,7 @@ export async function runAiMemoryMigrations(pool: DbPool): Promise<void> {
         return;
       }
     }
-    if (!state.can_migrate)
+    if (readOnly || !state.can_migrate)
       requireAdministrator(state.ledger_exists ? 'pending migrations' : 'missing migration ledger');
     await client.query('COMMIT');
     await seedExistingSchemaTracking(client);

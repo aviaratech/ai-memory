@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-server.bundle.js"
+BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-launcher.js"
 
 run_ai_memory_hook() {
   if [ -f "$BUNDLED_SERVER" ]; then

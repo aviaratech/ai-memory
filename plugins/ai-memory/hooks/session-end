@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-server.bundle.js"
+BUNDLED_SERVER="${PLUGIN_ROOT}/dist/mcp-launcher.js"
 
 emit_hook_json() {
   printf '{\n  "continue": true,\n  "suppressOutput": true\n}\n'

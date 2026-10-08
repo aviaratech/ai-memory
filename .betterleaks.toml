@@ -44,6 +44,30 @@ filter = '''
   !filter.matchesAny(finding["match"], [
     `(?i)[?&](?:host|hostaddr|port|dbname|user|password)=`
   ])
+
+) || (
+  finding["rule_id"] == "generic-credential-uri" &&
+  (
+    attributes["path"] == "packages/ai-memory/src/tools/pluginEnv.test.ts" &&
+    finding["secret"] in ["synthetic-secret", "do-not-print", "fixture"] &&
+    filter.matchesAny(finding["match"], [
+      `^postgresql://runtime:(?:synthetic-secret|fixture)@127\.0\.0\.1/ai_memory`,
+      `^postgresql://user:do-not-print@localhost/ai_memory`
+    ]) ||
+    attributes["path"] == "packages/ai-memory/src/tools/pluginDoctor.test.ts" &&
+    finding["secret"] == "do-not-print" &&
+    filter.matchesAny(finding["match"], [
+      `^postgresql://admin:do-not-print@127\.0\.0\.1/ai_memory`
+    ]) ||
+    attributes["path"] == "packages/ai-memory/src/tools/plugin-process.test.ts" &&
+    finding["secret"] == "fixture" &&
+    filter.matchesAny(finding["match"], [
+      `^postgresql://runtime:fixture@127\.0\.0\.1/ai_memory`
+    ])
+  ) &&
+  !filter.matchesAny(finding["match"], [
+    `(?i)[?&](?:host|hostaddr|port|dbname|user|password)=`
+  ])
 ) || (
   attributes["path"] == ".github/workflows/ci.yml" &&
   finding["secret"] == "ci_only" &&

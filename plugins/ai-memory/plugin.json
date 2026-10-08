@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ai-memory",
+  "version": "0.2.3",
+  "description": "Durable local PostgreSQL memory, lifecycle skills and session hooks",
+  "author": {
+    "name": "AviaraTech"
+  },
+  "repository": "https://github.com/aviaratech/ai-memory",
+  "license": "MIT"
+}

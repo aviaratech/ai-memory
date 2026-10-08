@@ -63,11 +63,9 @@ test('a placeholder URL with a connection-target override is detected', () => {
   assert.equal(result.status, 1, 'a target override must not be treated as a local fixture');
 });
 
-const recoveryFixtureUrl = [
-  'postgresql:',
-  '//synthetic:private-password@',
-  '127.0.0.1:5432/ai_memory_dr_source',
-].join('');
+const recoveryFixtureUrl = ['postgresql:', '//synthetic:private-password@', '127.0.0.1:5432/ai_memory_dr_source'].join(
+  '',
+);
 
 test('synthetic recovery fixture is accepted only in current and historical test files', () => {
   for (const path of [
@@ -93,4 +91,37 @@ test('recovery fixture with a target override is detected', () => {
     'packages/ai-memory/src/tools/backup-s3.test.ts',
   );
   assert.equal(result.status, 1);
+});
+
+const pluginFixtureUris = [
+  [
+    'packages/ai-memory/src/tools/pluginEnv.test.ts',
+    ['postgresql:', '//runtime:synthetic-secret@', '127.0.0.1/ai_memory'].join(''),
+  ],
+  [
+    'packages/ai-memory/src/tools/pluginEnv.test.ts',
+    ['postgresql:', '//user:do-not-print@', 'localhost/ai_memory'].join(''),
+  ],
+  [
+    'packages/ai-memory/src/tools/pluginDoctor.test.ts',
+    ['postgresql:', '//admin:do-not-print@', '127.0.0.1/ai_memory'].join(''),
+  ],
+  [
+    'packages/ai-memory/src/tools/plugin-process.test.ts',
+    ['postgresql:', '//runtime:fixture@', '127.0.0.1/ai_memory'].join(''),
+  ],
+];
+
+test('only exact local plugin fixture credentials are accepted', () => {
+  for (const [path, url] of pluginFixtureUris) {
+    assert.equal(scan(`${url}\n`, path).status, 0);
+    assert.equal(scan(`${url}?host=production.example.com\n`, path).status, 1);
+    assert.equal(scan(`${url}\n`, 'packages/ai-memory/src/tools/pluginInstallation.ts').status, 1);
+    const password = randomBytes(24).toString('hex');
+    assert.equal(scan(`${url.replace(/:[^:@]+@/u, `:${password}@`)}\n`, path).status, 1);
+    const token = `github_pat_${randomBytes(41).toString('hex')}`;
+    const provider = scan(`token = ${token}\n`, path);
+    assert.equal(provider.status, 1);
+    assert.doesNotMatch(`${provider.stdout}${provider.stderr}`, new RegExp(token, 'u'));
+  }
 });

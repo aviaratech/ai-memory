@@ -20,22 +20,60 @@ npm ci
 npm run build
 ```
 
-For a versioned npm installation, create a separate local directory and install the single core package (0.2.1 after its reviewed release):
+For the 0.2.3 helper release, install the exact runtime package in a dedicated local directory. It contains the built native plugin as well as the engine and operational commands; installation needs no source checkout or build:
 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact @aviaratech/ai-memory@0.2.1
+npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.3
+npx --no-install ai-memory --version
 ```
 
-The installed package provides `node_modules/@aviaratech/ai-memory/dist/tools/server.js` as its MCP stdio server. Keep this installation with its matching migration files for recovery. After a reviewed 0.2.1 release, the optional plugin is distributed as `aviaratech-ai-memory-plugin-0.2.1.tgz` on its matching GitHub release. After downloading that archive, extract it to a dedicated directory before configuring a compatible plugin host:
+The helper and the native MCP server report the same package version. The matching GitHub release also provides `aviaratech-ai-memory-plugin-0.2.3.tgz`; its plugin files are identical to `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve their manual configurations until you explicitly choose a migration.
+
+## Install the native plugin
+
+Use the same interface for Codex and Claude Code. Select the host and scope explicitly, and require the version of the runtime package invoking the helper:
 
 ```sh
-mkdir ai-memory-plugin
-tar -xzf aviaratech-ai-memory-plugin-0.2.1.tgz -C ai-memory-plugin --strip-components=1
+npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.3 --dry-run --json
+npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.3 --json
+npx --no-install ai-memory plugin doctor --host codex --scope user --json
 ```
 
-The archive includes the bundled MCP launcher, migrations, license, and third-party notices.
+For Claude Code, replace `--host codex` with `--host claude-code`. Its native manager supports `user`, `project` and `local` scopes; run project/local operations from the same project directory. The validated Codex CLI supports user scope. Other Codex scopes report `unsupported` without changing files. A missing or incompatible native manager reports the required action. The helper registers a local marketplace using the selected host's native commands and reads back the selected version and actual installed launcher bytes before reporting `installed`.
+
+Installation does not grant hook trust or restart a running host. Review the native host's hook permissions and reload/restart it explicitly. Results keep native plugin discovery, hook trust/restart, MCP connection and database readiness separate. A successful installation alone leaves MCP and database states `not_checked`.
+
+The helper preserves unrelated host entries, manual ai-memory MCP registrations, plugin data and protected credentials. An existing ai-memory plugin without its matching owned receipt, a disabled/custom policy, conflicting marketplace or corrupt snapshot reports `conflict` for inspection. It does not silently replace that configuration. Dry-run describes the selected operation without invoking the native manager or writing state.
+
+## Configure the plugin runtime
+
+Create a dedicated, regular `~/.config/ai-memory/plugin.env` file owned by your user with mode `0600`; its parent directory must be owned by your user and not writable by other users. Set the explicit loopback database URL there using your trusted editor/protected credential workflow:
+
+```dotenv
+AI_MEMORY_DATABASE_URL=postgresql://ai_memory_runtime:YOUR_PASSWORD@127.0.0.1/ai_memory
+```
+
+Use a runtime role after the administrator initialization below. The plugin launcher reads this dedicated file using the existing environment parser; native hosts do not consistently forward arbitrary environment variables to plugin MCP processes. Symlinks and exposed credential files are rejected. The installer does not create credentials, start PostgreSQL, initialize a database, install a service or enable a provider. Keep optional provider keys unset for local-only storage/search.
+
+`plugin doctor` reads native registration and installed bytes, validates protected configuration, checks the selected plugin's migration ledger in a read-only transaction, and attempts an MCP handshake only when prerequisites are ready. Its diagnostic MCP process is constrained to read-only database transactions and has provider settings removed. Missing or pending migrations report an administrator requirement even if the configured login is an administrator; diagnosis never applies migrations. Hook trust remains an explicit native-host action after a successful handshake.
+
+## Update, rollback and remove
+
+First install the exact reviewed runtime version you intend to use in this local directory, then invoke `plugin update` with that same `--version`. For example, an installation moving to 0.2.3 uses:
+
+```sh
+npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.3
+npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.3 --dry-run --json
+npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.3 --json
+npx --no-install ai-memory plugin rollback --host codex --scope user --json
+npx --no-install ai-memory plugin remove --host codex --scope user --json
+```
+
+The helper binds immutable plugin snapshots and an installation receipt to the host, native configuration root, user and scope (and project directory for project/local scope). Repeating an installation verifies the current native registration and bytes. Update retains the previous verified snapshot; rollback selects its exact launcher bytes rather than fetching a mutable version. An interrupted mutation retains a pending receipt and requires `plugin rollback` before another mutation. An interrupted first installation can be unwound without a prior version. Recovery reuses a recognized lock only after its owner and recorded native process groups are absent; active or unrecognized locks are preserved for inspection. If interruption leaves an `operation.reclaim` guard, inspect the recorded owner and state before removing that exact guard; the helper preserves it rather than guessing ownership. Corrupt snapshots are never reused.
+
+Rollback changes plugin code, not the database schema. A release with an older migration inventory cannot use a newer ledger; doctor reports that incompatibility. Preserve your database and backups and use an explicitly compatible release rather than reversing migrations automatically. Remove unregisters only the owned native plugin and marketplace, requests Claude's `--keep-data`, and preserves protected environment, plugin data and retained recovery snapshots. Restart/reload the host after update, rollback or removal.
 
 For bootstrap and upgrades, provide `AI_MEMORY_DATABASE_URL` for the database-owning administrator role through your host's protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated `ai_memory` database. The package does not infer a URL from another service or load a shared `.env` file. After setting it, run these commands from the standalone checkout:
 
@@ -74,7 +112,7 @@ Give that server process the same protected `AI_MEMORY_DATABASE_URL`; keep crede
 
 No provider key is needed for basic local storage and text search. `AI_MEMORY_EMBEDDING_PROVIDER=openai` enables the optional OpenAI embedding path and requires `AI_MEMORY_EMBEDDING_API_KEY`; `AI_MEMORY_EMBEDDING_MODEL` defaults to `text-embedding-3-small`. Optional classification uses `AI_MEMORY_CLASSIFY_API_KEY` (or the embedding key) and `AI_MEMORY_CLASSIFY_MODEL`. These features call an external provider and may incur provider charges. Leave them unset for a local-only installation. See [operations](operations.md) before enabling backups.
 
-For a dependency and import mapping from the published 0.1.x tools package, see [Migrating from 0.1.x](api-architecture.md#migrating-from-01x). Existing 0.1.x installs remain usable; the 0.2.1 commands above apply only after that version is published.
+For a dependency and import mapping from the published 0.1.x tools package, see [Migrating from 0.1.x](api-architecture.md#migrating-from-01x). Existing 0.1.x installs remain usable. The native helper starts with the 0.2.3 release; earlier versions retain their existing manual setup.
 
 ## Protected Codex registration
 

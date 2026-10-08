@@ -50,6 +50,7 @@ import { ensurePostgresRunning, formatPostgresRecoveryHint } from './ensure-post
 import { buildContinuityPackDebugPayload } from './ingestion/continuity-pack.js';
 import { runIngestPipeline } from './ingestion/pipeline.js';
 import { getAiMemoryRuntimeDiagnostics, initializeAiMemoryRuntimeEnv, loadAiMemoryMcpEnvConfig } from './runtimeEnv.js';
+import { getPackageVersion } from '../version.js';
 import { extractTimedOutSteps, summarizeToolArgs } from './telemetry-summary.js';
 import {
   appendAiMemoryWarningsToTextResult,
@@ -61,7 +62,7 @@ import {
 
 export const server = new McpServer({
   name: 'ai-memory',
-  version: '0.2.0',
+  version: getPackageVersion(),
 });
 
 let startupInitialization: Promise<void> = Promise.resolve();
