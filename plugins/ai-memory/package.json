@@ -4,6 +4,7 @@
   "private": true,
   "license": "MIT",
   "files": [
+    "LICENSE",
     "plugin.json",
     "mcp.json",
     ".claude-plugin",

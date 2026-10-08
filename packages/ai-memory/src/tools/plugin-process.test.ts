@@ -4,12 +4,53 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { it } from 'vitest';
 
 import { getPackageVersion } from '../version.js';
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '../../dist/tools/pluginCli.js');
+
+it('preserves host provenance and the existing agent-writer gate through the protected launcher', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-memory-plugin-provenance-'));
+  try {
+    const root = join(home, 'plugin/dist');
+    mkdirSync(root, { recursive: true });
+    mkdirSync(join(home, '.config/ai-memory'), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, '.config/ai-memory/plugin.env'),
+      'AI_MEMORY_DATABASE_URL=postgresql://runtime:fixture@127.0.0.1/ai_memory\nAI_MEMORY_CLASSIFY_API_KEY=fixture-only\nAI_MEMORY_CLASSIFY_MODEL=fixture-model\n',
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(root, 'mcp-launcher.js'),
+      readFileSync(join(dirname(cli), '../../plugins/ai-memory/dist/mcp-launcher.js')),
+    );
+    const server = pathToFileURL(join(dirname(cli), 'server.js')).href;
+    writeFileSync(
+      join(root, 'mcp-server.bundle.js'),
+      `import {detectAgentContext,memoryFlushInputSchema,mergeDetectedDefaults} from ${JSON.stringify(server)}; const context=detectAgentContext();console.log(JSON.stringify({context, accepted:memoryFlushInputSchema.safeParse(mergeDetectedDefaults({summary:'fixture'},context)).success,classify:process.env.AI_MEMORY_CLASSIFY_API_KEY,model:process.env.AI_MEMORY_CLASSIFY_MODEL}));`,
+    );
+    const result = spawnSync(process.execPath, [join(root, 'mcp-launcher.js')], {
+      env: { HOME: home, CLAUDECODE: '1', CLAUDE_MODEL: 'fixture-host-model' },
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const value = JSON.parse(result.stdout) as {
+      context: { agent: string; source: string; model: string };
+      accepted: boolean;
+      classify: string;
+      model: string;
+    };
+    assert.deepEqual(value.context, { agent: 'claude-code', source: 'claude-code', model: 'fixture-host-model' });
+    assert.equal(value.accepted, false);
+    assert.equal(value.classify, 'fixture-only');
+    assert.equal(value.model, 'fixture-model');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);

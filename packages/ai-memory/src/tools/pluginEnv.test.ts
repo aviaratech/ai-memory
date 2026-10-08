@@ -18,6 +18,17 @@ function fixture(): { home: string; file: string } {
 }
 
 describe('protected standalone plugin configuration', () => {
+  it('retains explicitly configured classification settings without calling a provider', () => {
+    const { home, file } = fixture();
+    writeFileSync(
+      file,
+      'AI_MEMORY_DATABASE_URL=postgresql://runtime:fixture@127.0.0.1/ai_memory\nAI_MEMORY_CLASSIFY_API_KEY=fixture-only\nAI_MEMORY_CLASSIFY_MODEL=fixture-model\n',
+      { mode: 0o600 },
+    );
+    const result = loadPluginRuntimeEnv({ home, env: {} });
+    assert.equal(result.env.AI_MEMORY_CLASSIFY_API_KEY, 'fixture-only');
+    assert.equal(result.env.AI_MEMORY_CLASSIFY_MODEL, 'fixture-model');
+  });
   it('loads only the dedicated protected file through the established runtime parser', () => {
     const { home, file } = fixture();
     writeFileSync(file, "AI_MEMORY_DATABASE_URL='postgresql://runtime:synthetic-secret@127.0.0.1/ai_memory'\n", {

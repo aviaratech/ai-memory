@@ -318,6 +318,14 @@ function checkConflicts(ctx: Context, state?: State): void {
       (state === undefined || record(marketplace.source).path !== resolve(ctx.root, 'marketplace'))
     )
       throw new Error('Existing marketplace ownership differs.');
+    const settings = json(
+      ctx.options.scope === 'user'
+        ? resolve(configRoot, 'settings.json')
+        : resolve(ctx.cwd, ctx.options.scope === 'project' ? '.claude/settings.json' : '.claude/settings.local.json'),
+    );
+    const enabled = record(settings.enabledPlugins)[id];
+    if (enabled !== undefined && enabled !== true)
+      throw new Error('Preserve disabled or unsupported native plugin policy before replacement.');
     for (const path of [resolve(ctx.home, '.claude.json'), resolve(ctx.cwd, '.mcp.json')]) {
       if (record(json(path).mcpServers)['ai-memory'] !== undefined)
         throw new Error('An existing manual ai-memory MCP registration is preserved.');
@@ -563,6 +571,28 @@ async function verifyAbsent(ctx: Context): Promise<void> {
     throw new Error('Native removal is not verified.');
 }
 
+function operationConflict(ctx: Context, state?: State): PluginResult | undefined {
+  const options = ctx.options;
+  if (state?.pending !== undefined && options.operation !== 'rollback')
+    return result(
+      ctx,
+      'pending_recovery',
+      'Replacement is incomplete. Run plugin rollback before another mutation.',
+      state.current,
+    );
+  if ((options.operation === 'update' || options.operation === 'remove') && state?.current === undefined)
+    return result(ctx, 'not_installed', 'No owned installation exists for this host and scope.');
+  if (
+    options.operation === 'rollback' &&
+    state?.pending === undefined &&
+    (state?.pending === undefined ? state?.previous : state.current) === undefined
+  )
+    return result(ctx, 'not_installed', 'No retained previous installation is available.');
+  if (options.operation === 'install' && state?.current !== undefined && state.current.version !== options.version)
+    return result(ctx, 'conflict', 'Use plugin update to replace the existing owned version.', state.current);
+  return undefined;
+}
+
 export async function runPluginOperation(options: PluginOptions, input: PluginContext = {}): Promise<PluginResult> {
   const ctx = makeContext(options, input);
   if (options.host === 'codex' && options.scope !== 'user')
@@ -626,29 +656,45 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
     }
     return diagnostic;
   }
-  if (state?.pending !== undefined && options.operation !== 'rollback')
-    return result(
-      ctx,
-      'pending_recovery',
-      'Replacement is incomplete. Run plugin rollback before another mutation.',
-      state.current,
-    );
-  if ((options.operation === 'update' || options.operation === 'remove') && state?.current === undefined)
-    return result(ctx, 'not_installed', 'No owned installation exists for this host and scope.');
-  if (
-    options.operation === 'rollback' &&
-    state?.pending === undefined &&
-    (state?.pending === undefined ? state?.previous : state.current) === undefined
-  )
-    return result(ctx, 'not_installed', 'No retained previous installation is available.');
-  if (options.operation === 'install' && state?.current !== undefined && state.current.version !== options.version)
-    return result(ctx, 'conflict', 'Use plugin update to replace the existing owned version.', state.current);
+  const admission = operationConflict(ctx, state);
+  if (admission !== undefined) return admission;
   try {
     if (state?.current !== undefined) verify(state.current);
     if (options.operation === 'install' || options.operation === 'update') asset(ctx.pluginRoot, ctx.runtimeVersion);
     const help = await ctx.nativeRun(options.host, ['plugin', '--help']);
     if (!help.includes('marketplace') || !help.includes(options.host === 'codex' ? 'add' : 'install'))
       return result(ctx, 'unsupported', 'The selected host lacks supported native plugin management.');
+  } catch {
+    return result(ctx, 'conflict', 'Native capabilities, released assets or existing snapshot could not be verified.');
+  }
+  mkdirSync(ctx.root, { recursive: true, mode: 0o700 });
+  if (
+    !lstatSync(ctx.root).isDirectory() ||
+    (statSync(ctx.root).mode & 0o022) !== 0 ||
+    statSync(ctx.root).uid !== process.getuid?.()
+  )
+    return result(ctx, 'conflict', 'Installation state directory is not protected.');
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireLock(ctx);
+  } catch {
+    return result(
+      ctx,
+      'conflict',
+      'Another operation or interrupted lock exists; inspect the owned state before retrying.',
+    );
+  }
+  let mutationStarted = false;
+  try {
+    // Recheck under the exclusive owned lock before changing native state.
+    state = loadState(ctx);
+    checkConflicts(ctx, state);
+    const lockedAdmission = operationConflict(ctx, state);
+    if (lockedAdmission !== undefined) return lockedAdmission;
+    if (state?.current !== undefined) {
+      verify(state.current);
+      if (state.pending === undefined) await readBack(ctx, state.current);
+    }
     if (
       (options.operation === 'install' || options.operation === 'update') &&
       state?.current !== undefined &&
@@ -670,36 +716,13 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
         current,
       );
     }
-  } catch {
-    return result(ctx, 'conflict', 'Native capabilities, released assets or existing snapshot could not be verified.');
-  }
-  mkdirSync(ctx.root, { recursive: true, mode: 0o700 });
-  if (
-    !lstatSync(ctx.root).isDirectory() ||
-    (statSync(ctx.root).mode & 0o022) !== 0 ||
-    statSync(ctx.root).uid !== process.getuid?.()
-  )
-    return result(ctx, 'conflict', 'Installation state directory is not protected.');
-  let releaseLock: () => void;
-  try {
-    releaseLock = acquireLock(ctx);
-  } catch {
-    return result(
-      ctx,
-      'conflict',
-      'Another operation or interrupted lock exists; inspect the owned state before retrying.',
-    );
-  }
-  try {
-    // Recheck under the exclusive owned lock before changing native state.
-    state = loadState(ctx);
-    checkConflicts(ctx, state);
     const receipt: State = state ?? { schema: 1, binding: ctx.binding, marketplace: ctx.marketplace };
     const path = resolve(ctx.root, 'state.json');
     if (options.operation === 'remove') {
       if (receipt.current === undefined) throw new Error('Missing owned installation.');
       await readBack(ctx, receipt.current);
       atomicJson(path, { ...receipt, pending: receipt.current });
+      mutationStarted = true;
       await removeRegistration(ctx);
       await verifyAbsent(ctx);
       await ctx.nativeRun(options.host, [
@@ -720,6 +743,7 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
       const selected = receipt.pending === undefined ? receipt.previous : receipt.current;
       if (selected === undefined && receipt.pending !== undefined) {
         verify(receipt.pending);
+        mutationStarted = true;
         if (hasMarketplace(ctx)) {
           const raw: unknown = JSON.parse(
             await ctx.nativeRun(
@@ -755,6 +779,8 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
       }
       if (selected === undefined) throw new Error('Missing retained rollback snapshot.');
       verify(selected);
+      atomicJson(path, { ...receipt, pending: selected });
+      mutationStarted = true;
       pointMarketplace(ctx, selected);
       if (!hasMarketplace(ctx))
         await ctx.nativeRun(options.host, [
@@ -766,7 +792,15 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
         ]);
       // Codex selects its highest cached version; native removal before reinstall
       // makes a lower retained version unambiguous without deleting host files.
-      if (options.host === 'codex') await removeRegistration(ctx);
+      if (options.host === 'codex') {
+        const raw: unknown = JSON.parse(
+          await ctx.nativeRun(options.host, ['plugin', 'list', '--marketplace', ctx.marketplace, '--json']),
+        );
+        const entries = record(raw).installed;
+        if (!Array.isArray(entries)) throw new Error('Native plugin inventory is unsupported.');
+        if (entries.map(record).some(entry => entry.pluginId === `ai-memory@${ctx.marketplace}`))
+          await removeRegistration(ctx);
+      }
       const current = await add(ctx, selected, options.host === 'claude-code');
       atomicJson(path, { ...receipt, current, previous: receipt.current, pending: undefined });
       return result(
@@ -778,6 +812,7 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
     }
     const selected = stage(ctx);
     atomicJson(path, { ...receipt, pending: selected });
+    mutationStarted = true;
     pointMarketplace(ctx, selected);
     if (receipt.current === undefined)
       await ctx.nativeRun(options.host, [
@@ -803,8 +838,10 @@ export async function runPluginOperation(options: PluginOptions, input: PluginCo
   } catch {
     return result(
       ctx,
-      'pending_recovery',
-      'Native replacement is incomplete; retained snapshots are preserved. Run plugin rollback with this same host and scope.',
+      mutationStarted ? 'pending_recovery' : 'conflict',
+      mutationStarted
+        ? 'Native replacement is incomplete; retained snapshots are preserved. Run plugin rollback with this same host and scope.'
+        : 'Current native policy, registration or bytes changed; preserve them and resolve the conflict before mutation.',
       state?.current,
     );
   } finally {

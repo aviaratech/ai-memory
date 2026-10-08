@@ -121,6 +121,96 @@ function inventory(root: string): string[] {
 }
 
 describe('owned standalone plugin installation lifecycle', () => {
+  it('preserves a manually disabled Claude plugin before any native mutation', async () => {
+    const f = fixture('claude-code');
+    await runPluginOperation(f.options('install'), f.context);
+    const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+    assert.ok(statePath);
+    const state = JSON.parse(readFileSync(join(f.home, statePath), 'utf8')) as { marketplace: string };
+    const path = join(f.home, 'claude/settings.json');
+    mkdirSync(dirname(path), { recursive: true });
+    const original = JSON.stringify({ enabledPlugins: { [`ai-memory@${state.marketplace}`]: false }, unrelated: 42 });
+    writeFileSync(path, original);
+    f.version('0.2.3');
+    f.context.runtimeVersion = '0.2.3';
+    const before = f.calls.length;
+    assert.equal((await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context)).state, 'conflict');
+    assert.equal(f.calls.length, before);
+    assert.equal(readFileSync(path, 'utf8'), original);
+  });
+  for (const operation of ['update', 'rollback'] as const) {
+    it(`preserves changed native launcher bytes during ${operation}`, async () => {
+      const f = fixture();
+      await runPluginOperation(f.options('install'), f.context);
+      f.version('0.2.3');
+      f.context.runtimeVersion = '0.2.3';
+      if (operation === 'rollback') await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context);
+      const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+      assert.ok(statePath);
+      const state = JSON.parse(readFileSync(join(f.home, statePath), 'utf8')) as { current: { installedPath: string } };
+      const path = join(state.current.installedPath, 'dist/mcp-launcher.js');
+      writeFileSync(path, 'user-changed-native-launcher');
+      const before = f.calls.filter(args => !args.includes('--help') && args[1] !== 'list').length;
+      const result = await runPluginOperation(
+        f.options(operation, operation === 'update' ? { version: '0.2.3' } : {}),
+        f.context,
+      );
+      assert.equal(result.state, 'conflict');
+      assert.equal(readFileSync(path, 'utf8'), 'user-changed-native-launcher');
+      assert.equal(f.calls.filter(args => !args.includes('--help') && args[1] !== 'list').length, before);
+    });
+  }
+  it('records an interrupted rollback before native removal and recovers the last completed version', async () => {
+    const f = fixture();
+    await runPluginOperation(f.options('install'), f.context);
+    f.version('0.2.3');
+    f.context.runtimeVersion = '0.2.3';
+    await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context);
+    f.interrupt();
+    assert.equal((await runPluginOperation(f.options('rollback'), f.context)).state, 'pending_recovery');
+    const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+    assert.ok(statePath);
+    assert.ok((JSON.parse(readFileSync(join(f.home, statePath), 'utf8')) as { pending?: unknown }).pending);
+    assert.equal((await runPluginOperation(f.options('doctor'), f.context)).state, 'pending_recovery');
+    const recovered = await runPluginOperation(f.options('rollback'), f.context);
+    assert.equal(recovered.state, 'installed');
+    assert.equal(recovered.plugin.version, '0.2.3');
+  });
+  it('rechecks pending state after waiting for native capability discovery', async () => {
+    const f = fixture();
+    await runPluginOperation(f.options('install'), f.context);
+    f.version('0.2.3');
+    f.context.runtimeVersion = '0.2.3';
+    let release: () => void = () => {};
+    let ready: () => void = () => {};
+    const reached = new Promise<void>(resolve => {
+      ready = resolve;
+    });
+    const barrier = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const waitingContext = {
+      ...f.context,
+      nativeRun: async (host: PluginOptions['host'], args: string[]) => {
+        if (args.includes('--help')) {
+          ready();
+          await barrier;
+        }
+        return await f.context.nativeRun(host, args);
+      },
+    };
+    const waiting = runPluginOperation(f.options('update', { version: '0.2.3' }), waitingContext);
+    await reached;
+    f.interrupt();
+    assert.equal(
+      (await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context)).state,
+      'pending_recovery',
+    );
+    const before = f.calls.filter(args => !args.includes('--help')).length;
+    release();
+    assert.equal((await waiting).state, 'pending_recovery');
+    assert.equal(f.calls.filter(args => !args.includes('--help')).length, before);
+  });
   it('recovers a valid dead-owner lock and preserves a live owner lock', async () => {
     const f = fixture();
     await runPluginOperation(f.options('install'), f.context);

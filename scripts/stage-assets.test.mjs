@@ -81,6 +81,7 @@ test('ships the same self-contained plugin bytes inside the runtime package', ()
   assert.equal(claude.version, core.version);
   assert.equal(plugin.version, core.version);
   for (const name of [
+    'LICENSE',
     'plugin.json',
     'mcp.json',
     '.mcp.json',

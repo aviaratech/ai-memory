@@ -22,6 +22,10 @@ try {
     'TMPDIR',
     'TZ',
     'NODE_OPTIONS',
+    'AI_AGENT_IDENTITY',
+    'CLAUDECODE',
+    'CODEX',
+    'CLAUDE_MODEL',
   ]) {
     if (process.env[name] !== undefined) inherited[name] = process.env[name];
   }

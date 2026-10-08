@@ -4,7 +4,8 @@
     "ai-memory": {
       "type": "stdio",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/dist/mcp-launcher.js"]
+      "args": ["${PLUGIN_ROOT}/dist/mcp-launcher.js"],
+      "env": { "AI_AGENT_IDENTITY": "codex" }
     }
   }
 }
