@@ -2,14 +2,13 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
 
+import { recallMemories, searchMemories, storeMemory } from '@aviaratech/ai-memory';
 import {
   assertLocalDatabaseUrl,
   closePool,
   getCapabilities,
   initializeDatabase,
   resetEmbeddingProvider,
-  searchMemories,
-  storeMemory,
 } from '@aviaratech/ai-memory/internal';
 import { Pool } from 'pg';
 
@@ -355,17 +354,26 @@ test('pgvector memory write and search round trip', { skip: databaseUrl === unde
       project,
       source: 'integration-test',
     });
-    const stored = await verificationPool.query<{ distance: number }>(
-      'SELECT embedding <=> $2::vector AS distance FROM ai_memory_entries WHERE id = $1',
+    const stored = await verificationPool.query<{ distance: number; embedding: string }>(
+      'SELECT embedding, embedding <=> $2::vector AS distance FROM ai_memory_entries WHERE id = $1',
       [target.id, JSON.stringify(vector(0))],
     );
-    assert.equal(stored.rows[0]?.distance, 0);
+    const storedRow = stored.rows[0];
+    assert.ok(storedRow);
+    assert.equal(storedRow.distance, 0);
+    assert.equal(typeof storedRow.embedding, 'string');
+    assert.deepEqual(JSON.parse(storedRow.embedding), vector(0));
+    assert.deepEqual(target.embedding, vector(0));
+
+    const recalled = await recallMemories({ project });
+    assert.deepEqual(recalled.find(memory => memory.id === target.id)?.embedding, vector(0));
 
     const withoutVector = await searchMemories({ includeEmbedding: false, project, query });
     assert.deepEqual(withoutVector, []);
     const results = await searchMemories({ project, query });
     assert.equal(results[0]?.id, target.id);
-    console.log('Synthetic vector write/search round trip returned the nearest memory');
+    assert.deepEqual(results[0]?.embedding, vector(0));
+    console.log('Synthetic vector write/recall/search round trip preserved the persisted embedding');
   } finally {
     globalThis.fetch = originalFetch;
     if (originalProvider === undefined) delete process.env.AI_MEMORY_EMBEDDING_PROVIDER;
