@@ -162,10 +162,25 @@ function toMemoryTypeOrNull(value: unknown): null | string {
 }
 
 function toNumberArrayOrNull(value: unknown): null | number[] {
-  if (Array.isArray(value)) {
-    return value as number[];
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
   }
-  return null;
+
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+
+  for (const element of parsed as unknown[]) {
+    if (typeof element !== 'number' || !Number.isFinite(element)) {
+      return null;
+    }
+  }
+  return parsed as number[];
 }
 
 function toNumberOrUndefined(value: unknown) {
