@@ -697,40 +697,32 @@ test('orientMemory overlaps independent recovery reads after resolving session s
 });
 
 test('orientMemory settles healthy memory reads before a synchronous environment probe', async () => {
-  const previousStepTimeout = process.env.AI_MEMORY_ORIENT_STEP_TIMEOUT_MS;
-  process.env.AI_MEMORY_ORIENT_STEP_TIMEOUT_MS = '20';
+  let recallSettled = false;
+  let recallSettledAtProbe = false;
+  const result = await orientMemory(
+    { envProbe: 'local' },
+    createDependencies({
+      probeEnvironment: () => {
+        recallSettledAtProbe = recallSettled;
+        return {
+          capability: 'local',
+          environment: { ...DEFAULT_ENVIRONMENT },
+          status: 'local',
+          warnings: [],
+        };
+      },
+      recallMemories: async () => {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        recallSettled = true;
+        return [{ id: 1 }];
+      },
+    }),
+  );
 
-  try {
-    const result = await orientMemory(
-      { envProbe: 'local' },
-      createDependencies({
-        probeEnvironment: () => {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60);
-          return {
-            capability: 'local',
-            environment: { ...DEFAULT_ENVIRONMENT },
-            status: 'local',
-            warnings: [],
-          };
-        },
-        recallMemories: () =>
-          new Promise(resolve => {
-            setImmediate(() => {
-              setTimeout(() => {
-                resolve([{ id: 1 }]);
-              }, 1);
-            });
-          }),
-      }),
-    );
-
-    assert.equal(result.status, 'ok');
-    assert.deepEqual(result.orientation.recentMemories, [{ id: 1 }]);
-    assert.ok(!result.warnings.some(warning => warning.includes('recall')));
-  } finally {
-    if (previousStepTimeout === undefined) delete process.env.AI_MEMORY_ORIENT_STEP_TIMEOUT_MS;
-    else process.env.AI_MEMORY_ORIENT_STEP_TIMEOUT_MS = previousStepTimeout;
-  }
+  assert.equal(recallSettledAtProbe, true, 'environment probe must start after healthy recall settles');
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.orientation.recentMemories, [{ id: 1 }]);
+  assert.ok(!result.warnings.some(warning => warning.includes('recall')));
 });
 
 test('orientMemory lets direct search complete after its bounded embedding phase before timing out', async () => {
