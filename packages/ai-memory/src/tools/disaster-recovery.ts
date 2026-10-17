@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // The only backup/restore implementation. Secrets and provider errors never enter CLI output.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream, promises as fs } from 'node:fs';
+import { constants as fsConstants, createReadStream, promises as fs, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Client as PgClient } from 'pg';
@@ -176,6 +176,212 @@ async function secureDirectory() {
   const stat = await fs.stat(real);
   if (!stat.isDirectory() || inside(real, REPO_ROOT) || (stat.mode & 0o077) !== 0) fail('BACKUP_PATH_UNSAFE');
   return real;
+}
+
+type BackupOwnerRecord = {
+  schema: 1;
+  token: string;
+  pid: number;
+  birth: string;
+  host: string;
+  directory: { dev: number; ino: number; uid: number };
+  phase: 'pre-work' | 'active' | 'quiescent';
+};
+type BackupOwnership = { beginWork: () => Promise<void>; release: (quiescent: boolean) => Promise<void> };
+let backupOwnership: BackupOwnership | undefined;
+
+// This private backup protocol uses the same exclusive-create/reclamation pattern
+// as plugin operations. Every ownership mutation shares the short gate, including
+// first creation and release; an interrupted gate is never recursively reclaimed.
+export async function acquireBackupOwnership(dir: string): Promise<BackupOwnership> {
+  const uncertain = () => fail('BACKUP_OWNER_UNCERTAIN');
+  const ownerPath = join(dir, '.backup-owner.json');
+  const gatePath = join(dir, '.backup-reclaim.json');
+  const directory = await fs.lstat(dir);
+  const uid = process.getuid?.();
+  if (
+    uid === undefined ||
+    !directory.isDirectory() ||
+    directory.isSymbolicLink() ||
+    directory.uid !== uid ||
+    (directory.mode & 0o077) !== 0 ||
+    (await fs.realpath(dir)) !== dir ||
+    inside(dir, REPO_ROOT)
+  )
+    uncertain();
+  const same = (a: Stats, b: { dev: number; ino: number }) => a.dev === b.dev && a.ino === b.ino;
+  const checkDirectory = async () => {
+    const current = await fs.lstat(dir).catch(uncertain);
+    if (!same(current, directory) || !current.isDirectory() || current.uid !== uid || (current.mode & 0o077) !== 0)
+      uncertain();
+  };
+  const birth = (pid: number) => {
+    const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+      encoding: 'utf8',
+      timeout: 1000,
+      maxBuffer: 4096,
+    });
+    if (result.error || result.status !== 0 || !result.stdout.trim()) return uncertain();
+    return result.stdout.trim();
+  };
+  const live = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if (errorCode(error) === 'ESRCH') return false;
+      return uncertain();
+    }
+  };
+  const identity: BackupOwnerRecord = {
+    schema: 1,
+    token: randomUUID(),
+    pid: process.pid,
+    birth: birth(process.pid),
+    host: hostname(),
+    directory: { dev: directory.dev, ino: directory.ino, uid: directory.uid },
+    phase: 'pre-work',
+  };
+  const privateFile = (stat: Stats) =>
+    stat.isFile() && stat.uid === uid && stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && stat.size <= 4096;
+  const readOwner = async () => {
+    let file: FileHandle;
+    try {
+      file = await fs.open(ownerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return null;
+      return uncertain();
+    }
+    try {
+      const stat = await file.stat();
+      if (!privateFile(stat)) return uncertain();
+      const value = JSON.parse(await file.readFile('utf8')) as Partial<BackupOwnerRecord> | null;
+      if (
+        !value ||
+        value.schema !== 1 ||
+        typeof value.token !== 'string' ||
+        !/^[a-f0-9-]{36}$/u.test(value.token) ||
+        !Number.isSafeInteger(value.pid) ||
+        Number(value.pid) <= 0 ||
+        typeof value.birth !== 'string' ||
+        !value.birth ||
+        value.birth.length > 200 ||
+        value.host !== identity.host ||
+        !value.directory ||
+        !same(directory, value.directory) ||
+        value.directory.uid !== uid ||
+        !['pre-work', 'active', 'quiescent'].includes(value.phase ?? '')
+      )
+        return uncertain();
+      return { value: value as BackupOwnerRecord, stat };
+    } catch {
+      return uncertain();
+    } finally {
+      await file.close();
+    }
+  };
+  const withGate = async <T>(operation: () => Promise<T>, ownerTransition = false): Promise<T> => {
+    await checkDirectory();
+    let gate: FileHandle;
+    // A contender refuses immediately. The verified owner can briefly wait for
+    // a contender's gate to close, but never removes it or waits indefinitely
+    // on an interrupted reclamation. This bounds lock contention, not backup work.
+    const gateDeadline = Date.now() + 2000;
+    for (;;) {
+      try {
+        gate = await fs.open(gatePath, 'wx', 0o600);
+        break;
+      } catch (error) {
+        if (errorCode(error) !== 'EEXIST') return uncertain();
+        if (!ownerTransition) fail('BACKUP_BUSY');
+        await owned();
+        if (Date.now() >= gateDeadline) return uncertain();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        await checkDirectory();
+      }
+    }
+    const stat = await gate.stat();
+    const bytes = `${JSON.stringify({ schema: 1, token: randomUUID(), pid: identity.pid, birth: identity.birth })}\n`;
+    try {
+      await gate.writeFile(bytes);
+      await gate.sync();
+      await checkDirectory();
+      return await operation();
+    } finally {
+      await gate.close();
+      await checkDirectory();
+      const current = await fs.lstat(gatePath).catch(uncertain);
+      if (!same(current, stat) || !privateFile(current) || (await fs.readFile(gatePath, 'utf8')) !== bytes) uncertain();
+      await fs.unlink(gatePath);
+    }
+  };
+  let ownedStat: Stats;
+  const createOwner = async () => {
+    const file = await fs.open(ownerPath, 'wx', 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(identity)}\n`);
+      await file.sync();
+      ownedStat = await file.stat();
+    } finally {
+      await file.close();
+    }
+  };
+  await withGate(async () => {
+    const previous = await readOwner();
+    if (previous) {
+      if (live(previous.value.pid)) {
+        if (birth(previous.value.pid) !== previous.value.birth) uncertain();
+        fail('BACKUP_BUSY');
+      }
+      // A dead root cannot prove detached backup work stopped. Only an owner
+      // that had not begun work, or durably completed its drain, is reclaimable.
+      if (previous.value.phase === 'active') uncertain();
+      const current = await readOwner();
+      if (
+        !current ||
+        !same(current.stat, previous.stat) ||
+        current.value.token !== previous.value.token ||
+        live(previous.value.pid)
+      )
+        uncertain();
+      await fs.unlink(ownerPath);
+    }
+    await createOwner();
+  });
+  const owned = async () => {
+    await checkDirectory();
+    const current = await readOwner();
+    if (!current || !same(current.stat, ownedStat) || current.value.token !== identity.token) return uncertain();
+    return current;
+  };
+  const phase = async (value: BackupOwnerRecord['phase']) => {
+    await owned();
+    const file = await fs.open(ownerPath, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+    try {
+      if (!same(await file.stat(), ownedStat)) uncertain();
+      const bytes = `${JSON.stringify({ ...identity, phase: value })}\n`;
+      await file.write(bytes, 0, 'utf8');
+      await file.truncate(Buffer.byteLength(bytes));
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  };
+  return {
+    beginWork: async () => {
+      await withGate(async () => {
+        await phase('active');
+      }, true);
+    },
+    release: async quiescent => {
+      if (!quiescent) uncertain();
+      await withGate(async () => {
+        await phase('quiescent');
+        await owned();
+        await fs.unlink(ownerPath);
+      }, true);
+    },
+  };
 }
 
 async function secureSecretFile(name: string | undefined, pathRoot: string, label: string) {
@@ -858,6 +1064,9 @@ async function pendingCandidate(
 async function backup() {
   const started = Date.now();
   const dir = await secureDirectory();
+  // Failed acquisition must never enter the catch that writes failed status.
+  backupOwnership = await acquireBackupOwnership(dir);
+  await backupOwnership.beginWork();
   let key: Buffer | undefined;
   const attemptPath = join(dir, 'last-attempt.json');
   let stage = 'preflight';
@@ -1217,6 +1426,10 @@ async function main() {
   } catch (error) {
     const code = cancellation.signal.aborted ? 'COMMAND_CANCELLED' : errorCode(error);
     process.stderr.write(`[ai-memory-dr] ${command ?? 'command'} failed: ${code}\n`);
+    if (code === 'BACKUP_OWNER_UNCERTAIN' || code === 'BACKUP_BUSY')
+      process.stderr.write(
+        '[ai-memory-dr] Preserve backup ownership/recovery files. Retry after the owner stops; uncertain or interrupted ownership requires identity and resource verification. See docs/operations.md.\n',
+      );
     if (!cancellation.signal.aborted) process.exitCode = 1;
   } finally {
     // Promise.all can reject while other preflight commands are still alive.
@@ -1233,6 +1446,19 @@ async function main() {
     ) {
       process.stderr.write('[ai-memory-dr] resource cleanup failed: RESOURCE_CLEANUP_FAILED\n');
       if (!cancellation.signal.aborted) process.exitCode = 1;
+    }
+    if (backupOwnership) {
+      try {
+        await backupOwnership.release(
+          !processResults.includes('PROCESS_CLEANUP_FAILED') &&
+            !clientResults.some(result => result.status === 'rejected'),
+        );
+      } catch {
+        process.stderr.write(
+          '[ai-memory-dr] backup ownership preserved: BACKUP_OWNER_UNCERTAIN; verify owner/resource closure before manual recovery (docs/operations.md).\n',
+        );
+        if (!cancellation.signal.aborted) process.exitCode = 1;
+      }
     }
     ownedClients.clear();
     process.removeListener('SIGINT', interrupt);

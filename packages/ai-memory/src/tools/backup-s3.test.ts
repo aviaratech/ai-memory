@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -10,6 +10,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'vitest';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const packageRoot = process.env.AI_MEMORY_DR_PACKAGE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = join(packageRoot, 'dist', 'tools', 'disaster-recovery.js');
 const migrations = join(packageRoot, 'migrations');
 
@@ -48,6 +49,10 @@ const value = flag => args[args.indexOf(flag) + 1];
 const output = value => process.stdout.write(JSON.stringify(value) + '\\n');
 const objectPath = key => path.join(root, key);
 fs.appendFileSync(process.env.FAKE_AWS_LOG, op + '\\n');
+if (op === 'get-bucket-versioning' && process.env.FAKE_BARRIER_READY) {
+  fs.writeFileSync(process.env.FAKE_BARRIER_READY, 'entered');
+  while (!fs.existsSync(process.env.FAKE_BARRIER_RELEASE)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+}
 if (args[1] === 's3' && op === 'cp') {
   const source = args[3];
   const destination = args[4];
@@ -86,6 +91,94 @@ else if (op === 'delete-object') { process.stderr.write('AccessDenied\\n'); proc
 else process.exit(2);
 `;
 
+function pendingFixture(root: string, interruption = 'failure', recoveryScript = script) {
+  const backups = join(root, 'backups');
+  const bin = join(root, 'bin');
+  const remote = join(root, 'remote');
+  mkdirSync(backups, { mode: 0o700 });
+  mkdirSync(bin);
+  mkdirSync(remote);
+  const aws = join(bin, 'aws');
+  writeFileSync(aws, fakeAws, { mode: 0o700 });
+  const pgDump = join(bin, 'pg_dump');
+  writeFileSync(pgDump, '#!/bin/sh\necho "pg_dump (PostgreSQL) 17.0"\n', { mode: 0o700 });
+  const key = randomBytes(32);
+  const keyFile = join(root, 'key');
+  writeFileSync(keyFile, `${key.toString('base64')}\n`, { mode: 0o600 });
+  const dump = join(root, 'synthetic.dump');
+  writeFileSync(dump, 'synthetic disposable database archive');
+  const backupId = randomUUID();
+  const archive = join(backups, `${backupId}.aimdr`);
+  const createdAt = new Date().toISOString();
+  const metadata = {
+    format: 1,
+    backupId,
+    sourceId: 'synthetic-source-001',
+    createdAt,
+    databaseName: 'ai_memory_dr_source',
+    sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_dr_source'),
+    migrationCodeSha256: codeDigest(),
+    dumpSha256: sha(readFileSync(dump)),
+    dumpBytes: statSync(dump).size,
+  };
+  const seal = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      'const {encryptArchive}=await import(process.env.DR_MODULE); await encryptArchive(process.env.DR_DUMP,process.env.DR_ARCHIVE,JSON.parse(process.env.DR_METADATA),Buffer.from(process.env.DR_KEY,"base64"));',
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DR_MODULE: pathToFileURL(recoveryScript).href,
+        DR_DUMP: dump,
+        DR_ARCHIVE: archive,
+        DR_METADATA: JSON.stringify(metadata),
+        DR_KEY: key.toString('base64'),
+      },
+    },
+  );
+  assert.equal(seal.status, 0, seal.stderr);
+  const manifest = {
+    format: 1,
+    backupId,
+    createdAt,
+    archiveSha256: sha(readFileSync(archive)),
+    archiveBytes: statSync(archive).size,
+  };
+  writeFileSync(
+    join(backups, 'pending.json'),
+    JSON.stringify({
+      manifest,
+      bucket: 'synthetic-bucket',
+      prefix: 'synthetic',
+      sourceIdSha256: sha('synthetic-source-001'),
+      keySha256: sha(key),
+      sourceTargetSha256: metadata.sourceTargetSha256,
+      migrationCodeSha256: metadata.migrationCodeSha256,
+      scriptSha256: sha(readFileSync(recoveryScript)),
+    }),
+  );
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH ?? ''}`,
+    AI_MEMORY_BACKUP_DIR: backups,
+    AI_MEMORY_BACKUP_KEY_FILE: keyFile,
+    AI_MEMORY_BACKUP_SOURCE_ID: 'synthetic-source-001',
+    AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_dr_source',
+    AI_MEMORY_BACKUP_DATABASE_URL_FILE: undefined,
+    AI_MEMORY_S3_BUCKET: 'synthetic-bucket',
+    AI_MEMORY_S3_PREFIX: 'synthetic',
+    FAKE_S3_ROOT: remote,
+    FAKE_AWS_LOG: join(root, 'aws.log'),
+    FAKE_FAIL_ONCE: join(root, 'fail-once'),
+    FAKE_INTERRUPT: interruption,
+  };
+  return { backups, bin, remote, aws, key, keyFile, backupId, archive, manifest, metadata, env };
+}
+
 test.each(['failure', 'cancellation'])(
   '%s during S3 upload retries only authenticated compatible archive and publishes manifest last',
   { timeout: 20_000 },
@@ -93,92 +186,15 @@ test.each(['failure', 'cancellation'])(
     const root = mkdtempSync(join(tmpdir(), 'ai-memory-s3-test-'));
     chmodSync(root, 0o700);
     try {
-      const backups = join(root, 'backups');
-      const bin = join(root, 'bin');
-      const remote = join(root, 'remote');
-      mkdirSync(backups, { mode: 0o700 });
-      mkdirSync(bin);
-      mkdirSync(remote);
-      const aws = join(bin, 'aws');
-      writeFileSync(aws, fakeAws, { mode: 0o700 });
-      const pgDump = join(bin, 'pg_dump');
-      writeFileSync(pgDump, '#!/bin/sh\necho "pg_dump (PostgreSQL) 17.0"\n', { mode: 0o700 });
-      const key = randomBytes(32);
-      const keyFile = join(root, 'key');
-      writeFileSync(keyFile, `${key.toString('base64')}\n`, { mode: 0o600 });
-      const dump = join(root, 'synthetic.dump');
-      writeFileSync(dump, 'synthetic disposable database archive');
-      const backupId = randomUUID();
-      const archive = join(backups, `${backupId}.aimdr`);
-      const createdAt = new Date().toISOString();
-      const metadata = {
-        format: 1,
-        backupId,
-        sourceId: 'synthetic-source-001',
-        createdAt,
-        databaseName: 'ai_memory_dr_source',
-        sourceTargetSha256: sha('postgresql://synthetic@127.0.0.1:5432/ai_memory_dr_source'),
-        migrationCodeSha256: codeDigest(),
-        dumpSha256: sha(readFileSync(dump)),
-        dumpBytes: statSync(dump).size,
-      };
-      const seal = spawnSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          'const {encryptArchive}=await import(process.env.DR_MODULE); await encryptArchive(process.env.DR_DUMP,process.env.DR_ARCHIVE,JSON.parse(process.env.DR_METADATA),Buffer.from(process.env.DR_KEY,"base64"));',
-        ],
-        {
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            DR_MODULE: pathToFileURL(script).href,
-            DR_DUMP: dump,
-            DR_ARCHIVE: archive,
-            DR_METADATA: JSON.stringify(metadata),
-            DR_KEY: key.toString('base64'),
-          },
-        },
+      const { backups, remote, aws, key, backupId, archive, manifest, metadata, env } = pendingFixture(
+        root,
+        interruption,
       );
-      assert.equal(seal.status, 0, seal.stderr);
-      const manifest = {
-        format: 1,
-        backupId,
-        createdAt,
-        archiveSha256: sha(readFileSync(archive)),
-        archiveBytes: statSync(archive).size,
-      };
-      writeFileSync(
-        join(backups, 'pending.json'),
-        JSON.stringify({
-          manifest,
-          bucket: 'synthetic-bucket',
-          prefix: 'synthetic',
-          sourceIdSha256: sha('synthetic-source-001'),
-          keySha256: sha(key),
-          sourceTargetSha256: metadata.sourceTargetSha256,
-          migrationCodeSha256: metadata.migrationCodeSha256,
-          scriptSha256: sha(readFileSync(script)),
-        }),
-      );
-      const env = {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        AI_MEMORY_BACKUP_DIR: backups,
-        AI_MEMORY_BACKUP_KEY_FILE: keyFile,
-        AI_MEMORY_BACKUP_SOURCE_ID: 'synthetic-source-001',
-        AI_MEMORY_DATABASE_URL: 'postgresql://synthetic:private-password@127.0.0.1:5432/ai_memory_dr_source',
-        AI_MEMORY_S3_BUCKET: 'synthetic-bucket',
-        AI_MEMORY_S3_PREFIX: 'synthetic',
-        FAKE_S3_ROOT: remote,
-        FAKE_AWS_LOG: join(root, 'aws.log'),
-        FAKE_FAIL_ONCE: join(root, 'fail-once'),
-        FAKE_INTERRUPT: interruption,
-      };
       const command = () => spawnSync(process.execPath, [script, 'backup'], { encoding: 'utf8', env });
       const first = command();
       assert.notEqual(first.status, 0);
+      assert.equal(existsSync(join(backups, '.backup-owner.json')), false);
+      assert.equal(existsSync(join(backups, '.backup-reclaim.json')), false);
       assert.match(first.stderr, interruption === 'cancellation' ? /COMMAND_CANCELLED/u : /S3_UPLOAD_FAILED/u);
       assert.doesNotMatch(first.stderr, /synthetic-private-marker|private-password/u);
       assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), false);
@@ -190,6 +206,7 @@ test.each(['failure', 'cancellation'])(
       const checkpoint = readFileSync(join(backups, 'pending.json'));
       const second = command();
       assert.equal(second.status, 0, second.stderr);
+      assert.equal(existsSync(join(backups, '.backup-owner.json')), false);
       assert.match(second.stdout, /reused_encrypted_archive/u);
       assert.equal(existsSync(join(backups, 'pending.json')), false);
       assert.equal(existsSync(join(backups, `${backupId}.manifest.json`)), true);
@@ -324,5 +341,110 @@ test.each(['failure', 'cancellation'])(
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  },
+);
+
+function startBackup(args: string[], env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (bytes: Buffer) => {
+    stdout += bytes.toString();
+  });
+  child.stderr.on('data', (bytes: Buffer) => {
+    stderr += bytes.toString();
+  });
+  const result = new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', status => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+  return { child, result };
+}
+
+async function barrierReady(path: string) {
+  const deadline = Date.now() + 5000;
+  while (!existsSync(path)) {
+    assert.ok(Date.now() < deadline, 'synthetic provider did not reach its barrier');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+async function overlap(entry: 'compiled' | 'manual' | 'scheduled' | 'alias') {
+  const root = mkdtempSync(join(tmpdir(), 'ai-memory-overlap-test-'));
+  chmodSync(root, 0o700);
+  const f = pendingFixture(root);
+  writeFileSync(f.env.FAKE_FAIL_ONCE, 'allow uploads');
+  const ready = join(root, 'owner-ready');
+  const release = join(root, 'owner-release');
+  const owner = startBackup([script, 'backup'], { ...f.env, FAKE_BARRIER_READY: ready, FAKE_BARRIER_RELEASE: release });
+  try {
+    await barrierReady(ready);
+    const before = new Map(readdirSync(f.backups).map(name => [name, readFileSync(join(f.backups, name))]));
+    const alias = join(root, 'alias');
+    if (entry === 'alias') symlinkSync(f.backups, alias);
+    const contender = spawnSync(
+      entry === 'scheduled' ? '/bin/bash' : process.execPath,
+      entry === 'scheduled'
+        ? [join(packageRoot, 'scripts', 'backup-db.sh')]
+        : entry === 'manual'
+          ? [join(packageRoot, 'dist', 'tools', 'backup-launchd-agent.js'), 'run-once']
+          : [script, 'backup'],
+      {
+        env: {
+          ...f.env,
+          AI_MEMORY_BACKUP_DIR: entry === 'alias' ? alias : f.backups,
+          FAKE_AWS_LOG: join(root, 'contender-provider.log'),
+        },
+        encoding: 'utf8',
+        timeout: 3000,
+      },
+    );
+    assert.match(
+      contender.stderr,
+      /BACKUP_BUSY/u,
+      JSON.stringify({
+        expected: 'bounded ownership refusal',
+        status: contender.status,
+        stdout: contender.stdout,
+        providerEntered: existsSync(join(root, 'contender-provider.log')),
+        changedRecoveryFiles: [...before]
+          .filter(
+            ([name, bytes]) => !existsSync(join(f.backups, name)) || !readFileSync(join(f.backups, name)).equals(bytes),
+          )
+          .map(([name]) => name),
+      }),
+    );
+    assert.notEqual(contender.status, 0);
+    assert.equal(existsSync(join(root, 'contender-provider.log')), false, 'overlap started provider work');
+    assert.deepEqual(readdirSync(f.backups).sort(), [...before.keys()].sort());
+    for (const [name, bytes] of before) assert.deepEqual(readFileSync(join(f.backups, name)), bytes, name);
+  } finally {
+    owner.child.kill('SIGTERM');
+    try {
+      const cancelled = await owner.result;
+      assert.notEqual(cancelled.status, 0);
+      assert.match(cancelled.stderr, /COMMAND_CANCELLED/u);
+      assert.equal(existsSync(join(f.backups, '.backup-owner.json')), false);
+      assert.equal(existsSync(join(f.backups, '.backup-reclaim.json')), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+test(
+  'an overlapping canonical backup refuses before changing the active owner recovery state',
+  { timeout: 15_000 },
+  async () => {
+    await overlap('compiled');
+  },
+);
+test.each(['manual', 'scheduled', 'alias'] as const)(
+  '%s invocation shares canonical ownership',
+  { timeout: 15_000 },
+  async entry => {
+    await overlap(entry);
   },
 );
