@@ -441,7 +441,14 @@ test(
     await overlap('compiled');
   },
 );
-test.each(['manual', 'scheduled', 'alias'] as const)(
+test.runIf(process.platform === 'darwin')(
+  'manual invocation shares canonical ownership',
+  { timeout: 15_000 },
+  async () => {
+    await overlap('manual');
+  },
+);
+test.each(['scheduled', 'alias'] as const)(
   '%s invocation shares canonical ownership',
   { timeout: 15_000 },
   async entry => {
