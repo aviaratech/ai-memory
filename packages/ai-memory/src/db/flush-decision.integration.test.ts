@@ -27,6 +27,7 @@ test(
   'flush decisions isolate sessions, preserve first expiry and durable rows, and recover atomically',
   {
     skip: databaseUrl === undefined,
+    timeout: 0,
   },
   async () => {
     assert.ok(databaseUrl);
@@ -40,6 +41,7 @@ test(
     const deltas = new Set<string>();
     const decisionText = 'Retry the synthetic fixture only after verifying its recorded input.';
     const vector = Array.from({ length: 1536 }, (_, index) => Number(index === 17));
+    const controlVector = vector.map((value, index) => (index === 18 ? 0.4 : value * 0.9));
     let now = new Date(Date.now() - 30 * DAY_MS);
     let releases = 0;
     let generated = 0;
@@ -162,14 +164,14 @@ test(
       });
       await verification.query('UPDATE ai_memory_entries SET embedding = $2::vector WHERE id = $1', [
         keyed.id,
-        JSON.stringify(vector),
+        JSON.stringify(controlVector),
       ]);
       const controls = [keyed.id];
       for (const hash of [null, `sha256:synthetic-${suffix}`]) {
         const inserted = await verification.query<{ id: string }>(
           `INSERT INTO ai_memory_entries (content, project, category, memory_type, confidence, dedupe_hash, embedding)
          VALUES ($1, $2, 'decision', 'semantic', 0.8, $3, $4::vector) RETURNING id`,
-          [decisionText, project, hash, JSON.stringify(vector)],
+          [decisionText, project, hash, JSON.stringify(controlVector)],
         );
         assert.ok(inserted.rows[0]);
         controls.push(Number(inserted.rows[0].id));
@@ -197,6 +199,72 @@ test(
       await Promise.all([flush(sessionA), flush(sessionA)]);
       assert.equal((await fragments()).length, 3);
       assert.deepEqual(await rowSnapshot(first.id), firstSnapshot);
+
+      // Separate audited-store transactions avoid checkpoint locks masking the
+      // decision's cold-insert race. The second writer must wait for the first.
+      const concurrentSession = `synthetic-${suffix}-cold-race`;
+      sessions.add(concurrentSession);
+      const firstClient = await trackedPool.connect();
+      const secondClient = await trackedPool.connect().catch((error: unknown) => {
+        firstClient.release();
+        throw error;
+      });
+      let concurrentSettled: Promise<unknown> | undefined;
+      try {
+        await firstClient.query('BEGIN');
+        await secondClient.query('BEGIN');
+        const input = {
+          category: 'decision',
+          confidence: 0.8,
+          content: decisionText,
+          embedding: vector,
+          expiresAt: firstExpiry,
+          memoryType: 'episodic',
+          project,
+          sessionId: concurrentSession,
+          source: 'synthetic-fixture',
+        };
+        const inserted = await storeMemoryWithAuditEvent(firstClient, input, 'flush-session-decision');
+        const backend = await secondClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        const secondPid = backend.rows[0]?.pid;
+        assert.ok(secondPid);
+        const concurrentWrite = storeMemoryWithAuditEvent(
+          secondClient,
+          { ...input, expiresAt: new Date(now.getTime() + 14 * DAY_MS).toISOString() },
+          'flush-session-decision',
+        );
+        concurrentSettled = Promise.allSettled([concurrentWrite]);
+        await vi.waitFor(
+          async () => {
+            const waiting = await verification.query<{ waiting: boolean }>(
+              "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND NOT granted) AS waiting",
+              [secondPid],
+            );
+            assert.equal(waiting.rows[0]?.waiting, true, 'cold decision writer must wait on its scoped lock');
+          },
+          { interval: 25, timeout: 5000 },
+        );
+        await firstClient.query('COMMIT');
+        const replayed = await concurrentWrite;
+        await secondClient.query('COMMIT');
+        assert.equal(replayed.id, inserted.id);
+        const raced = (await fragments()).filter(row => row.session_id === concurrentSession);
+        assert.equal(raced.length, 1);
+        assert.equal(raced[0]?.id, inserted.id);
+        assert.equal(raced[0]?.expires_at.toISOString(), firstExpiry);
+      } finally {
+        try {
+          await firstClient.query('ROLLBACK');
+        } finally {
+          await concurrentSettled;
+          try {
+            await secondClient.query('ROLLBACK');
+          } finally {
+            firstClient.release();
+            secondClient.release();
+          }
+        }
+      }
       for (const status of ['expired', 'superseded', 'archived']) {
         await verification.query('UPDATE ai_memory_entries SET status = $2 WHERE id = $1', [first.id, status]);
         const retired = await rowSnapshot(first.id);
@@ -238,7 +306,7 @@ test(
       assert.notEqual(omittedA.sessionId, omittedB.sessionId);
       assert.ok(omittedA.warnings?.some(warning => warning.includes('not an attested host identity')));
       assert.ok(omittedB.warnings?.some(warning => warning.includes('not an attested host identity')));
-      assert.equal((await fragments()).length, 5);
+      assert.equal((await fragments()).length, 6);
 
       const embeddingStub = vi.spyOn(embeddings, 'getEmbedding').mockResolvedValue(vector);
       const classifyStub = vi.spyOn(classifier, 'classifyMemoryPair').mockResolvedValue({
