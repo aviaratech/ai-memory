@@ -10,6 +10,40 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 `npm run smoke -w @aviaratech/ai-memory` uses bundled fictional fixtures and writes to the selected database. Run it only against an isolated disposable database. `npm run pg:ensure -w @aviaratech/ai-memory` can start a local service when `AI_MEMORY_POSTGRES_START_COMMAND` is configured; it does not choose a remote database or Docker fallback.
 
+## Verified project-scope backfill
+
+From a matching reviewed source workspace, `backfill:project-scope` can reunite eligible bare-name scope projections with a qualified `owner/repo` scope. It requires an explicitly configured, already initialized loopback database. It never initializes or repairs a schema, starts a service, calls a provider, or scans every project. Source verification on disposable data does not authorize running it against an installed corpus.
+
+Dry-run is the default and uses a read-only repeatable-read transaction. Select the exact qualified repository and its basename; an optional `--session-id` is an exact native producing-session ID, distinct from a logical task ID. Discovery and the entire dependency closure must fit `--limit` (default 200, maximum 5,000). An incomplete unit refuses; narrow it with an exact session rather than raising the bound or accepting a partial unit.
+
+```sh
+npm run backfill:project-scope -w @aviaratech/ai-memory -- \
+  --project example/catalog --legacy-project catalog \
+  --session-id actual-producing-session --out new-reviewed-plan.json
+```
+
+`--dry-run` may be explicit. The bounded JSON plan contains native IDs, evidence classifications, before/after fingerprints, scope/hash transitions and a digest; it omits memory content, raw historical payloads and credentials. Treat native IDs and repository evidence as protected local operational data. `--out` atomically creates a new owner-only file and refuses existing files or symlinks. Stdout is also supported; arrange its destination without overwriting existing evidence. Output and plan input are limited to 32 MiB; input must be a regular non-symlink file.
+
+The target is a selector, not evidence that an arbitrary bare row belongs to it. Eligibility requires consistent repository fields on that row or its exact producing session. Supported assertions are `owner/repo` and explicit lowercase `github.com/owner/repo`; raw repository fields remain preserved. Existing hostless slugs do not independently attest a provider. Unknown and wholly foreign same-basename records stay isolated. Mixed repository claims and contradictory session dependencies refuse the unit. A memory's own claim never grants authority to an unqualified session, sibling memory or continuity pack. No task/title/recency/sole-row inference or global basename alias is created.
+
+Before apply, establish writer quiescence through your separately authorized host procedure. This is offline maintenance. Short existing-table `SHARE ROW EXCLUSIVE` locks with `NOWAIT` protect the checked transaction state; a busy table refuses immediately with `maintenance_lock_busy` and `retryable: true`. These locks do not establish host quiescence or stop a previously reading client from submitting a later stale write. This command does not stop writers or grant operational admission.
+
+Review the complete plan and its limitations, then apply those exact bytes with its printed digest:
+
+```sh
+npm run backfill:project-scope -w @aviaratech/ai-memory -- \
+  --apply --plan-file new-reviewed-plan.json --expect-plan sha256:<digest> \
+  --out new-apply-receipt.json
+```
+
+Apply rejects changed selectors, code/artifacts, migration history, schema/namespace, input rows and newly occupied targets. There is no force mode. It updates only verified project/session repository/continuity-key projections and reproducible unkeyed dedupe hashes. Native IDs, source/client/session/logical-task provenance, durable keys, content, status, first expiry, timestamps, references, lineage and historical JSON stay intact. PostgreSQL maintains its generated search vector. Scope-key suffixes, including colons, are preserved. Canonical key, dedupe or continuity collisions refuse the complete unit; records are never overwritten, semantically consolidated, superseded or deleted by this command.
+
+Historical generated durable keys and keyed-row dedupe hashes remain opaque historical identities. Explicit-key lookup/upsert continues to reach the original ID. A caller that discards that key and derives a new canonical key may create a separate future keyed row; universal implicit-key coalescence is not provided. The plan exposes prospective canonical keys and refuses existing collisions rather than inventing aliases or rekeying caller references. Legacy NULL unkeyed hashes remain NULL; unknown or unreproducible non-NULL hashes refuse.
+
+Versioned `project-scope-backfill:v1` transition events and `project-scope-backfill-unit:v1` completion events append to existing audit tables in the same transaction as updates. A completion uses an actual native session or memory anchor; no synthetic host session is fabricated. Replaying the original plan skips a compatible committed unit without duplicate audit. Uncommitted interruption rolls back and the original complete plan can be retried. Changed/corrupt/missing/conflicting receipts, incompatible code/schema/namespace or changed post-state refuse and require deliberate replanning. PostgreSQL sequence gaps after a failed apply are expected and must not be reset. Dry-run allocates no sequence values.
+
+Plans bind the executing source or packaged module bytes, Node version and resolved database timeouts, so rebuilding or switching artifacts/configuration requires replanning. Preflight requires compatible column types, generated search expressions, integrity/query indexes, constraints and the canonical append-only trigger; additional columns remain fingerprinted. Database rows transferred for one unit, including committed replay, are capped at 32 MiB; oversized input refuses before changes. Native JSON numbers must survive an exact decimal round trip through the runtime; otherwise `native_numeric_precision` refuses the unit rather than rounding its integrity fingerprint. Collision-only rows remain observations and never expand the chosen mutation scope. Multiple narrowed units are independent invocations, not an automatic batch job. Keep reviewed plans and receipts; a committed unit has no automatic destructive inverse. If result-file publication fails after a commit, use a new output path and replay the original plan to recover its recorded completion. Existing backup/restore procedures and any live corpus or consolidation work require their own operational scope.
+
 ## Stored search-vector migration
 
 Source migration `007_stored_search_vector` follows the six migrations in the released 0.2.0 package. It adds a generated stored text-search vector using the existing search expression. PostgreSQL maintains it on inserts and updates; adoption backfills existing records, rewrites the table and requires an exclusive table lock. Allow for the additional storage and write cost when scheduling an approved upgrade with its matching package. A canceled migration rolls back its column and ledger entry; initialization discards the failed connection so a retry can resume the pending migration.

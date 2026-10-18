@@ -47,6 +47,7 @@
     "retention:purge": "node dist/retention-purge.js",
     "backfill:embeddings": "node dist/tools/scripts/backfill-embeddings.js",
     "backfill:patch-snapshots": "node dist/tools/backfill-patch-snapshots.js",
+    "backfill:project-scope": "node dist/tools/backfill-project-scope.js",
     "backup:install": "node dist/tools/backup-launchd-agent.js install",
     "backup:run-once": "node dist/tools/backup-launchd-agent.js run-once",
     "backup:status": "node dist/tools/backup-launchd-agent.js status",
