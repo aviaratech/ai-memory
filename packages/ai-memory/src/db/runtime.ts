@@ -53,6 +53,7 @@ export const SENSITIVITY_VALUES = ['public', 'internal', 'confidential', 'restri
 export const UNSAFE_JSON_POINTER_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export const DERIVED_MEMORY_KEY_PREFIX = 'derived-memory';
 export const MEMORY_IDENTITY_HASH_VERSION = 'v1';
+export const FLUSH_SESSION_DECISION_DEDUPE_PREFIX = 'flush-session-decision:v1:';
 export const MIN_DURABLE_CONTENT_CHARS = 24;
 export const MIN_HIGH_CONFIDENCE_DURABLE = 0.5;
 export const SESSION_SUMMARY_CATEGORY = 'session-summary';

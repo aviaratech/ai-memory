@@ -44,6 +44,7 @@ export interface FlushSessionCoreDependencies {
   storeMemoryWithAuditEvent: (
     client: DbClient,
     input: unknown,
+    storeMode?: 'flush-session-decision',
   ) => Promise<{
     calibratedConfidence?: unknown;
     calibration?: unknown;
@@ -76,6 +77,7 @@ export interface StoredMemoryInfo {
   id: number;
   memoryKey?: null | string | undefined;
   memoryType?: null | string;
+  storeMode?: 'flush-session-decision';
 }
 
 interface PreparedCoreWrites {
@@ -189,7 +191,7 @@ export async function prepareCoreWrites(input: {
   });
 
   const actionableWrites = await attachEmbeddingsToWrites(
-    buildActionableMemoryWrites({ parsed, sessionId }),
+    buildActionableMemoryWrites({ now, parsed, sessionId }),
     dependencies,
   );
   return { actionableWrites, checkpointInput };
@@ -201,12 +203,13 @@ export async function runConsolidation(input: {
   sessionId: string | undefined;
 }): Promise<ConsolidationRunMetrics | undefined> {
   const { dependencies, memories, sessionId } = input;
-  if (memories.length === 0 || !dependencies.isEmbeddingAvailable()) {
+  const eligibleMemories = memories.filter(memory => memory.storeMode !== 'flush-session-decision');
+  if (eligibleMemories.length === 0 || !dependencies.isEmbeddingAvailable()) {
     return undefined;
   }
 
   try {
-    const metrics = await dependencies.consolidateMemories(memories, sessionId);
+    const metrics = await dependencies.consolidateMemories(eligibleMemories, sessionId);
     return metrics;
   } catch (error) {
     dependencies.logError('flush_session.consolidation_failed', {
@@ -287,7 +290,7 @@ async function storePreparedActionableMemories(input: {
 }): Promise<StoredMemoryInfo[]> {
   const stored: StoredMemoryInfo[] = [];
   for (const write of input.writes) {
-    const memory = await input.dependencies.storeMemoryWithAuditEvent(input.client, write.input);
+    const memory = await input.dependencies.storeMemoryWithAuditEvent(input.client, write.input, write.storeMode);
     stored.push({
       calibration: buildStoredCalibration({
         category: write.category,
@@ -299,6 +302,7 @@ async function storePreparedActionableMemories(input: {
       id: memory.id,
       memoryKey: typeof memory.memoryKey === 'string' ? memory.memoryKey : null,
       memoryType: typeof memory.memoryType === 'string' ? memory.memoryType : null,
+      ...(write.storeMode !== undefined ? { storeMode: write.storeMode } : {}),
     });
   }
 
