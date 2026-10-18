@@ -18,7 +18,8 @@ const USAGE = `ai-memory plugin install|doctor|update|rollback|remove --host cod
 Install/update require the exact version of this released runtime package.
 Codex supports user scope; unsupported scopes are reported without mutation.
 Doctor is read-only. Installation never initializes PostgreSQL or trusts hooks.
-See the installation guide for protected configuration and required host restart/trust.`;
+See the installation guide for protected configuration and required host restart/trust.
+ai-memory consolidate --help describes explicit reviewed fragment consolidation.`;
 
 export function parsePluginArguments(args: string[]): PluginOptions {
   const [command, operation, ...flags] = args;
@@ -64,6 +65,11 @@ export function parsePluginArguments(args: string[]): PluginOptions {
 async function main(args: string[]): Promise<void> {
   if (args.length === 1 && args[0] === '--version') {
     process.stdout.write(`${getPackageVersion()}\n`);
+    return;
+  }
+  if (args[0] === 'consolidate') {
+    const { runConsolidateCli } = await import('./consolidate.js');
+    await runConsolidateCli(args.slice(1));
     return;
   }
   if (args.length === 0 || args.includes('--help')) {
