@@ -488,11 +488,29 @@ test('normal prose, 30-letter words and opaque identifiers do not produce compre
     'finalOwnedCleanupWithReleaseVerification',
     'long_narrative_identifier_with_release_verification',
     '/workspace/releaseverificationandfinalownedcleanup/file.ts',
+    '/releaseverificationandfinalownedcleanup',
+    '@releaseverificationandfinalownedcleanup',
     'https://example.invalid/releaseverificationandfinalownedcleanup',
     'a'.repeat(64),
   ]) {
     const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} ${text}` });
     assert.ok(!collectContinuityQualityWarnings(parsed).some(warning => warning.includes('compressed')), text);
+  }
+});
+
+test('Unicode prose punctuation and Markdown emphasis do not hide compressed narrative', () => {
+  for (const text of [
+    '«releaseverificationandfinalownedcleanup».',
+    '**releaseverificationandfinalownedcleanup**',
+    'releaseverificationandfinalownedcleanup—',
+    `${'é'.repeat(31)}。`,
+  ]) {
+    const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} Review ${text}` });
+    const before = structuredClone(parsed);
+    const warnings = collectContinuityQualityWarnings(parsed).filter(warning => warning.includes('compressed'));
+    assert.equal(warnings.length, 1, text);
+    assert.ok(!warnings[0]?.includes(text));
+    assert.deepEqual(parsed, before);
   }
 });
 

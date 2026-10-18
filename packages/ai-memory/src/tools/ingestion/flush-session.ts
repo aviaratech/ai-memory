@@ -154,7 +154,8 @@ export function collectContinuityQualityWarnings(parsed: ParsedFlushInput): stri
   ];
   const hasCompressedText = narrative.some(text =>
     text.split(/\s+/u).some(token => {
-      const word = token.replace(/^[("'“‘[]+|[.,!?;:)"'”’\]]+$/gu, '');
+      if (token.includes('/') || token.includes('\\') || token.startsWith('@')) return false;
+      const word = token.replace(/^\p{P}+|\p{P}+$/gu, '');
       return /^\p{L}{31,}$/u.test(word) && !/\p{Ll}\p{Lu}/u.test(word) && !/^[a-fA-F]{32,}$/u.test(word);
     }),
   );
