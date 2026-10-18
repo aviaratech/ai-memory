@@ -145,7 +145,7 @@ Search→get attribution is unknown unless an existing session identity proves t
   - `activeGoal` is written as `x_active_goal`.
   - `stateModel` is written as `x_state_model`.
   - `envModel` is written as `x_env_model`.
-- Agent-writer calls (`agent`, `claude-code`, `codex`, or builder/reviewer/retro identities) are rejected unless they include non-empty `nextActions` and either non-empty `openQuestions` or at least one `stateModel.assumptions` entry. Manual flushes and hook/auto-ingest sources remain backward-compatible and may provide sparse continuity fields.
+- Agent-writer calls (`agent`, `claude-code`, `codex`, or builder/reviewer/retro identities) require non-empty `nextActions`. Missing `openQuestions` or assumptions produce advisory quality warnings; leave them empty when none exist instead of inventing content. Compressed narrative text also returns an advisory without rewriting the payload. Manual flushes and hook/auto-ingest sources remain backward-compatible and may provide sparse continuity fields.
 - Continuity fields `nextActions`, `contextNeeded`, `openQuestions`, `stateModel`, and `envModel` are expected in agent-authored flush payloads. Missing rich continuity fields can still generate named quality warnings in the flush response -- agents should treat these warnings as actionable, not informational.
 - **`stateModel` is especially important**: it seeds `x_state_model` for resume continuity. Missing state model data is visible in snapshot continuity adoption, while launch-gate health now tracks agent-writer payload completeness from `memory_flush` tool telemetry (target: >= 95%).
 - `stateModel` v2 contract: `strategy_confidence` must be `"high"`, `"medium"`, or `"low"` (string literals). If missing or invalid, it is normalized to `"medium"` with a named warning in the flush response. New temporal fields: `updated_at` (ISO timestamp) and `confidence_history` (array of `{value, reason}` entries) are optional. `envModel` gains `probed_at` (ISO timestamp) for staleness tracking.
@@ -434,7 +434,7 @@ These fields are populated by the session-end hook caller (Claude Code hook, Cod
 - The snapshot anchors (`related_links` for evidence refs and transcript paths)
 
 Callers should populate these fields for implementation sessions to improve cross-session continuity.
-Agent writers must include `nextActions` and either `openQuestions` or `stateModel.assumptions`; hook/auto-ingest callers may still omit them for backward compatibility.
+Agent writers must include `nextActions`. `openQuestions` and `stateModel.assumptions` are advisory and may be empty when none exist; hook/auto-ingest callers may still omit continuity fields for backward compatibility.
 
 ## Pre-Compaction / Pre-Handoff Flush
 

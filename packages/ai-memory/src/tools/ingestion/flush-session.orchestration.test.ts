@@ -138,7 +138,7 @@ test('flushSession emits non-blocking continuity warnings for missing optional c
   );
   assert.ok(
     warnings.includes(
-      'Continuity quality warning: openQuestions is missing or empty. Add openQuestions to this memory_flush call to preserve unresolved decisions for the next session.',
+      'Continuity quality warning: openQuestions is missing or empty. Include unresolved questions when present; leave this empty when none remain.',
     ),
   );
   assert.ok(
@@ -160,6 +160,33 @@ test('flushSession emits non-blocking continuity warnings for missing optional c
   assert.ok(
     harness.warnings.some(message => message.includes('Continuity payload is missing optional quality fields.')),
   );
+});
+
+test('sparse agent checkpoint commits unchanged narrative and returns advisory warnings', async () => {
+  const harness = createHarness('none');
+  const nextActions = ['Review releaseverificationandfinalownedcleanup.'];
+  harness.dependencies.refreshContinuityPack = input => {
+    assert.deepEqual(input.parsed.nextActions, nextActions);
+    assert.deepEqual(input.parsed.openQuestions, []);
+    return Promise.resolve({ reason: 'missing_project', status: 'skipped' });
+  };
+  const result = await flushSession(
+    {
+      source: 'codex',
+      sessionId: TEST_SESSION_ID,
+      nextActions,
+      summary:
+        'The verified checkpoint has no unresolved questions or assumptions. Review the remaining delivery work before proceeding.',
+    },
+    harness.dependencies,
+  );
+  assert.equal(result.flushed, true);
+  assert.equal(harness.state.commits, 1);
+  assert.equal(harness.state.rollbacks, 0);
+  assert.equal(harness.state.committedCoreRows, 2);
+  assert.ok(result.warnings?.some(warning => warning.includes('openQuestions')));
+  assert.equal(result.warnings?.filter(warning => warning.includes('compressed')).length, 1);
+  assert.ok(!result.warnings?.some(warning => warning.includes('releaseverificationandfinalownedcleanup')));
 });
 
 test('flushSession refreshes continuity pack after core commit and reflection', async () => {

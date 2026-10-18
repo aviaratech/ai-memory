@@ -217,17 +217,28 @@ test('memory_flush schema rejects agent writers without nextActions', () => {
   );
 });
 
-test('memory_flush schema rejects agent writers without openQuestions or assumptions', () => {
-  assert.throws(
-    () =>
-      memoryFlushInputSchema.parse({
-        nextActions: ['Continue validation.'],
-        source: 'gpt-builder',
-        stateModel: { strategy_confidence: 'medium' },
-        summary: 'Agent writer flush without unresolved questions or explicit assumptions should fail validation.',
-      }),
-    /openQuestions.*stateModel\.assumptions/u,
+test('memory_flush schema accepts agent writers without questions or fabricated assumptions', () => {
+  const parsed = memoryFlushInputSchema.parse({
+    nextActions: ['Continue validation.'],
+    source: 'gpt-builder',
+    stateModel: { strategy_confidence: 'medium' },
+    summary: 'The checkpoint has a concrete next action and no unresolved questions or assumptions.',
+  });
+  assert.equal(parsed.openQuestions, undefined);
+  assert.equal(parsed.stateModel?.assumptions, undefined);
+});
+
+test('memory_flush schema still rejects empty summary and empty agent next actions', () => {
+  assert.equal(
+    memoryFlushInputSchema.safeParse({ summary: '', nextActions: ['Continue.'], source: 'codex' }).success,
+    false,
   );
+  for (const nextActions of [[], ['   ']]) {
+    assert.equal(
+      memoryFlushInputSchema.safeParse({ summary: 'Checkpoint.', nextActions, source: 'codex' }).success,
+      false,
+    );
+  }
 });
 
 test('memory_flush schema accepts agent writers with nextActions and assumptions when openQuestions is empty', () => {

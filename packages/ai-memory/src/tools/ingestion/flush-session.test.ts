@@ -467,7 +467,80 @@ test('parseFlushInput normalizationWarnings is always an array', () => {
 
 // --- collectContinuityQualityWarnings ---
 
-const LONG_SUMMARY = 'A'.repeat(120);
+const LONG_SUMMARY =
+  'The checkpoint preserves verified outcomes and concrete next actions. No unresolved design questions remain after this review.';
+
+test('compressed narrative warns at 31 Unicode letters without rewriting or echoing text', () => {
+  for (const word of ['z'.repeat(31), 'é'.repeat(31), 'releaseverificationandfinalownedcleanup']) {
+    const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} ${word}. ${word}!` });
+    const before = structuredClone(parsed);
+    const warnings = collectContinuityQualityWarnings(parsed).filter(warning => warning.includes('compressed'));
+    assert.equal(warnings.length, 1);
+    assert.ok(!warnings[0]?.includes(word));
+    assert.deepEqual(parsed, before);
+  }
+});
+
+test('normal prose, 30-letter words and opaque identifiers do not produce compressed-text warnings', () => {
+  for (const text of [
+    LONG_SUMMARY,
+    'z'.repeat(30),
+    'finalOwnedCleanupWithReleaseVerification',
+    'long_narrative_identifier_with_release_verification',
+    '/workspace/releaseverificationandfinalownedcleanup/file.ts',
+    '/releaseverificationandfinalownedcleanup',
+    '@releaseverificationandfinalownedcleanup',
+    '"@releaseverificationandfinalownedcleanup"',
+    '«@releaseverificationandfinalownedcleanup»',
+    '`releaseverificationandfinalownedcleanup`',
+    'stage.releaseverificationandfinalownedcleanup',
+    'stage-releaseverificationandfinalownedcleanup',
+    'FLAG=releaseverificationandfinalownedcleanup',
+    'https://example.invalid/releaseverificationandfinalownedcleanup',
+    'a'.repeat(64),
+  ]) {
+    const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} ${text}` });
+    assert.ok(!collectContinuityQualityWarnings(parsed).some(warning => warning.includes('compressed')), text);
+  }
+});
+
+test('Unicode prose punctuation and Markdown emphasis do not hide compressed narrative', () => {
+  for (const text of [
+    '«releaseverificationandfinalownedcleanup».',
+    '**releaseverificationandfinalownedcleanup**',
+    'releaseverificationandfinalownedcleanup—',
+    'Review—releaseverificationandfinalownedcleanup.',
+    'Review,releaseverificationandfinalownedcleanup.',
+    'Review;releaseverificationandfinalownedcleanup.',
+    `Review。${'é'.repeat(31)}。`,
+    `${'é'.repeat(31)}。`,
+  ]) {
+    const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} Review ${text}` });
+    const before = structuredClone(parsed);
+    const warnings = collectContinuityQualityWarnings(parsed).filter(warning => warning.includes('compressed'));
+    assert.equal(warnings.length, 1, text);
+    assert.ok(!warnings[0]?.includes(text));
+    assert.deepEqual(parsed, before);
+  }
+});
+
+test('compressed-text warnings inspect narrative fields and assumptions, not opaque state or environment values', () => {
+  const word = 'releaseverificationandfinalownedcleanup';
+  for (const field of ['decisions', 'rootCauses', 'nextActions', 'openQuestions', 'contextNeeded']) {
+    const parsed = parseFlushInput({ summary: LONG_SUMMARY, [field]: [`Review ${word}.`] });
+    assert.ok(
+      collectContinuityQualityWarnings(parsed).some(warning => warning.includes('compressed')),
+      field,
+    );
+  }
+  const parsed = parseFlushInput({
+    summary: LONG_SUMMARY,
+    stateModel: { assumptions: [`Verify ${word}.`], strategy_confidence: 'high' },
+  });
+  assert.ok(collectContinuityQualityWarnings(parsed).some(warning => warning.includes('compressed')));
+  const opaque = parseFlushInput({ summary: LONG_SUMMARY, envModel: { revision: word }, stateModel: { token: word } });
+  assert.ok(!collectContinuityQualityWarnings(opaque).some(warning => warning.includes('compressed')));
+});
 
 test('collectContinuityQualityWarnings emits warning when nextActions is empty', () => {
   const parsed = parseFlushInput({

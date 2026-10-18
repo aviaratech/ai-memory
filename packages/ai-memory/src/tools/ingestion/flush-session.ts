@@ -127,7 +127,7 @@ export function collectContinuityQualityWarnings(parsed: ParsedFlushInput): stri
   if (parsed.openQuestions.length === 0) {
     warnings.push(
       'Continuity quality warning: openQuestions is missing or empty. ' +
-        'Add openQuestions to this memory_flush call to preserve unresolved decisions for the next session.',
+        'Include unresolved questions when present; leave this empty when none remain.',
     );
   }
   if (parsed.stateModel === undefined) {
@@ -140,6 +140,31 @@ export function collectContinuityQualityWarnings(parsed: ParsedFlushInput): stri
     warnings.push(
       'Continuity quality warning: envModel is missing. ' +
         'Add envModel (branch, workspaceDirty, openPrs, failingChecks) to this memory_flush call for environment continuity.',
+    );
+  }
+
+  const narrative = [
+    parsed.summary,
+    ...parsed.decisions,
+    ...parsed.rootCauses,
+    ...parsed.nextActions,
+    ...parsed.openQuestions,
+    ...parsed.contextNeeded,
+    ...readStringArray(parsed.stateModel?.assumptions),
+  ];
+  const hasCompressedText = narrative.some(text =>
+    text.split(/\s+/u).some(token => {
+      if (token.includes('/') || token.includes('\\') || token.includes('@') || token.includes('`')) return false;
+      return token.split(/[^\p{L}\p{N}_.+$=-]+/u).some(part => {
+        const word = part.replace(/^\p{P}+|\p{P}+$/gu, '');
+        return /^\p{L}{31,}$/u.test(word) && !/\p{Ll}\p{Lu}/u.test(word) && !/^[a-fA-F]{32,}$/u.test(word);
+      });
+    }),
+  );
+  if (hasCompressedText) {
+    warnings.push(
+      'Continuity quality warning: narrative may contain compressed text (a word over 30 letters). ' +
+        'Preserve spaces between words for reliable retrieval.',
     );
   }
 
