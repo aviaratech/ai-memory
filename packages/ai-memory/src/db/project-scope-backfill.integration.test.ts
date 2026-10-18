@@ -16,6 +16,7 @@ import {
 } from './hashing.js';
 import { getMemoryEntries, searchMemories, storeMemoryWithAuditEvent } from './memory-api.js';
 import { getContinuityPack } from './continuity-pack-api.js';
+import { getSessionProject } from './session-api.js';
 import { assertLocalDatabaseUrl, createPool, type DbPool } from './pool.js';
 import {
   applyProjectScopeBackfill,
@@ -345,6 +346,7 @@ test(
         },
         {
           getEmbedding: () => Promise.resolve(null),
+          getSessionProject,
           isEmbeddingAvailable: () => false,
           pool,
           now: () => new Date('2026-10-18T00:00:00Z'),
@@ -999,11 +1001,13 @@ test(
           assert.deepEqual(await snapshot(pool), before);
           assert.equal(releases, 1);
           let native: { birth: string; database: string; pid: number } | undefined;
+          let interruptedClientDiscarded = false;
           const marker = `${schema}:interrupted`;
           const terminated: DbPool = {
             ...pool,
             async connect() {
               const client = await pool.connect();
+              let discarded = false;
               await client.query(`SET application_name TO '${marker}'`);
               native = (
                 await client.query<{ birth: string; database: string; pid: number }>(
@@ -1028,26 +1032,37 @@ test(
                         stage: 'after_updates_audit_before_commit',
                       }),
                     );
-                    await client.query(
-                      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                    try {
+                      await client.query(
+                        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
               WHERE pid=pg_backend_pid() AND pid=$1 AND backend_start::text=$2 AND datname=$3 AND application_name=$4`,
-                      [native.pid, native.birth, native.database, marker],
-                    );
+                        [native.pid, native.birth, native.database, marker],
+                      );
+                    } catch (error) {
+                      // Retire the deliberately killed connection before the
+                      // runner attempts rollback and its ordinary release.
+                      discarded = true;
+                      interruptedClientDiscarded = true;
+                      client.release(true);
+                      throw error;
+                    }
                     throw new Error('synthetic_backend_was_not_terminated');
                   }
                   return client.query<T>(sql, params);
                 },
                 release(error?: boolean | Error) {
                   releases++;
-                  client.release(error);
+                  if (!discarded) client.release(error);
                 },
               };
             },
           };
           await assert.rejects(
             () => applyProjectScopeBackfill({ pool: terminated, plan: b, expectedDigest: b.digest }),
-            /terminat/iu,
+            error => typeof error === 'object' && error !== null && 'code' in error && error.code === '57P01',
           );
+          assert.equal(interruptedClientDiscarded, true);
+          assert.equal(releases, 2, 'both failed attempts release their owned client exactly once');
           assert.ok(native);
           assert.equal(
             (
