@@ -380,16 +380,6 @@ export const memoryFlushInputSchema = z.object(memoryFlushInputShape).superRefin
       path: ['nextActions'],
     });
   }
-
-  const assumptions = isRecord(input.stateModel) ? input.stateModel.assumptions : undefined;
-  if (!hasNonEmptyStringArray(input.openQuestions) && !hasNonEmptyStringArray(assumptions)) {
-    ctx.addIssue({
-      code: 'custom',
-      message:
-        'Agent memory_flush requires openQuestions with at least one non-empty entry or stateModel.assumptions with at least one non-empty entry.',
-      path: ['openQuestions'],
-    });
-  }
 });
 
 server.registerTool(

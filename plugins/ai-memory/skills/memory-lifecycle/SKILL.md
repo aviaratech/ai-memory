@@ -107,7 +107,7 @@ memory_flush({
 })
 ```
 
-**Agent-writer gate:** `memory_flush` calls from agent identities require `summary`, non-empty `nextActions`, and either non-empty `openQuestions` or at least one `stateModel.assumptions` entry. Include `contextNeeded` when outside input or operator state matters, include `decisions` when choices were made, and include `stateModel`/`envModel` whenever available; missing rich continuity fields can still generate quality warnings.
+**Agent-writer gate:** `memory_flush` calls from agent identities require `summary` and non-empty `nextActions`. Missing `openQuestions` or assumptions are advisory: leave them empty when none exist instead of inventing content. Compressed narrative text also returns a quality warning; preserve spaces between words. Include `contextNeeded` when outside input or operator state matters, include `decisions` when choices were made, and include `stateModel`/`envModel` whenever available; missing rich continuity fields can still generate quality warnings.
 
 `memory_flush` is also the continuity-pack write path. After the core transaction commits, the existing reflection stage runs, then ai-memory refreshes the bounded project continuity pack used by future session-start hooks. Explicit `lead`, `outcome`, and `task` values additionally write their separate scoped packs. Do not add a separate long-term-memory/reflection pass unless this path proves insufficient.
 
