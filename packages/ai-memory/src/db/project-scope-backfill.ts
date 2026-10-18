@@ -454,7 +454,7 @@ export function parseBackfillNativeRow(value: string): Record<string, unknown> {
   return row;
 }
 
-async function readNativeRows(
+export async function readNativeRows(
   client: DbClient,
   input: {
     table: string;
@@ -481,7 +481,7 @@ async function readNativeRows(
   };
 }
 
-async function artifactIdentity() {
+export async function artifactIdentity() {
   const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
   const modules = [
     'project-scope-backfill',
@@ -710,7 +710,7 @@ function assertCompatibleSchema(
     throw new Error('incompatible_schema');
 }
 
-async function databaseIdentity(
+export async function databaseIdentity(
   client: DbClient,
   artifact: Awaited<ReturnType<typeof artifactIdentity>>,
 ): Promise<BackfillIdentity> {
