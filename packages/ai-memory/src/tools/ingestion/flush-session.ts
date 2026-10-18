@@ -154,9 +154,11 @@ export function collectContinuityQualityWarnings(parsed: ParsedFlushInput): stri
   ];
   const hasCompressedText = narrative.some(text =>
     text.split(/\s+/u).some(token => {
-      if (token.includes('/') || token.includes('\\') || token.startsWith('@')) return false;
-      const word = token.replace(/^\p{P}+|\p{P}+$/gu, '');
-      return /^\p{L}{31,}$/u.test(word) && !/\p{Ll}\p{Lu}/u.test(word) && !/^[a-fA-F]{32,}$/u.test(word);
+      if (token.includes('/') || token.includes('\\') || token.includes('@') || token.includes('`')) return false;
+      return token.split(/[^\p{L}\p{N}_.+$=-]+/u).some(part => {
+        const word = part.replace(/^\p{P}+|\p{P}+$/gu, '');
+        return /^\p{L}{31,}$/u.test(word) && !/\p{Ll}\p{Lu}/u.test(word) && !/^[a-fA-F]{32,}$/u.test(word);
+      });
     }),
   );
   if (hasCompressedText) {

@@ -490,6 +490,12 @@ test('normal prose, 30-letter words and opaque identifiers do not produce compre
     '/workspace/releaseverificationandfinalownedcleanup/file.ts',
     '/releaseverificationandfinalownedcleanup',
     '@releaseverificationandfinalownedcleanup',
+    '"@releaseverificationandfinalownedcleanup"',
+    '«@releaseverificationandfinalownedcleanup»',
+    '`releaseverificationandfinalownedcleanup`',
+    'stage.releaseverificationandfinalownedcleanup',
+    'stage-releaseverificationandfinalownedcleanup',
+    'FLAG=releaseverificationandfinalownedcleanup',
     'https://example.invalid/releaseverificationandfinalownedcleanup',
     'a'.repeat(64),
   ]) {
@@ -503,6 +509,10 @@ test('Unicode prose punctuation and Markdown emphasis do not hide compressed nar
     '«releaseverificationandfinalownedcleanup».',
     '**releaseverificationandfinalownedcleanup**',
     'releaseverificationandfinalownedcleanup—',
+    'Review—releaseverificationandfinalownedcleanup.',
+    'Review,releaseverificationandfinalownedcleanup.',
+    'Review;releaseverificationandfinalownedcleanup.',
+    `Review。${'é'.repeat(31)}。`,
     `${'é'.repeat(31)}。`,
   ]) {
     const parsed = parseFlushInput({ summary: `${LONG_SUMMARY} Review ${text}` });
