@@ -331,10 +331,14 @@ export function normalizeProjectScope(input: { project?: unknown; repoId?: unkno
   const project = normalizeOptionalText(input.project);
   const repoSlug = normalizeOptionalText(input.repoSlug);
   const repoId = normalizeOptionalText(input.repoId);
-  const repositories = [repoSlug, repoId].filter(
-    (value): value is string => value !== undefined && /^[^/\s]+\/[^/\s]+$/u.test(value),
+  const claims = [repoSlug, repoId].filter((value): value is string => value !== undefined);
+  const repositories = claims
+    .map(value => (/^[^/\s]+\/[^/\s]+$/u.test(value) ? value : /^github\.com\/([^/\s]+\/[^/\s]+)$/u.exec(value)?.[1]))
+    .filter((value): value is string => value !== undefined);
+  const foreignHostClaim = claims.some(
+    value => /^[^/\s]+\/[^/\s]+\/[^/\s]+$/u.test(value) && !value.startsWith('github.com/'),
   );
-  if (new Set(repositories).size > 1)
+  if (new Set(repositories).size > 1 || (repositories.length > 0 && foreignHostClaim))
     throw new Error('Conflicting repository identities; supply one verified repository scope.');
   const repository = repositories[0];
   if (repository === undefined) return project;

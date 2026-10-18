@@ -4,7 +4,7 @@ import {
   DEFAULT_SIMILARITY_THRESHOLD,
   normalizeFingerprintText,
   SIMILARITY_CATEGORIES,
-  stableJsonHash,
+  createFlushSessionDecisionDedupeHash,
 } from './hashing.js';
 import { computeInitialImportance, detectReviewerDecisionImportance } from './importance.js';
 import {
@@ -78,11 +78,17 @@ export async function storeMemoryWithClient(
   const sourceInput = remapApprovedReviewerDecisionToAuditLogInput(input);
   let memory = normalizeMemoryInput(sourceInput);
   if (memory.sessionId !== undefined && !memory.project?.includes('/')) {
+    const sessionRepository = await getSessionProjectWithClient(client, memory.sessionId);
     const project = normalizeProjectScope({
       project: memory.project,
-      repoId: await getSessionProjectWithClient(client, memory.sessionId),
+      repoId: sessionRepository,
     });
-    if (project !== memory.project && isRecord(sourceInput)) memory = normalizeMemoryInput({ ...sourceInput, project });
+    if (project !== memory.project && isRecord(sourceInput)) {
+      for (const repoId of [memory.repoId, memory.repoSlug]) {
+        normalizeProjectScope({ repoId, repoSlug: sessionRepository });
+      }
+      memory = normalizeMemoryInput({ ...sourceInput, project });
+    }
   }
   if (storeMode === 'flush-session-decision') {
     if (
@@ -94,9 +100,7 @@ export async function storeMemoryWithClient(
     ) {
       throw new Error('Scoped flush decisions require an unkeyed episodic decision, sessionId and explicit expiresAt.');
     }
-    memory.dedupeHash =
-      FLUSH_SESSION_DECISION_DEDUPE_PREFIX +
-      stableJsonHash({ identity: memory.dedupeHash, sessionId: memory.sessionId });
+    memory.dedupeHash = createFlushSessionDecisionDedupeHash(memory.dedupeHash, memory.sessionId);
   }
   const calibration = await computeWriteCalibration(client, memory);
   const calibratedMemory: CalibrationAwareMemoryInput = {

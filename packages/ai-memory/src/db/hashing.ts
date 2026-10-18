@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import { DERIVED_MEMORY_KEY_PREFIX, MEMORY_IDENTITY_HASH_VERSION } from './runtime.js';
+import {
+  DERIVED_MEMORY_KEY_PREFIX,
+  FLUSH_SESSION_DECISION_DEDUPE_PREFIX,
+  MEMORY_IDENTITY_HASH_VERSION,
+} from './runtime.js';
 
 const SIMILARITY_CATEGORIES = new Set(['architecture', 'bugfix', 'convention', 'decision', 'preference', 'root-cause']);
 const DEFAULT_SIMILARITY_THRESHOLD = 0.6;
@@ -77,6 +81,10 @@ export function normalizeFingerprintText(value?: string) {
 
 export function stableJsonHash(value: unknown) {
   return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+export function createFlushSessionDecisionDedupeHash(identity: string, sessionId: string) {
+  return FLUSH_SESSION_DECISION_DEDUPE_PREFIX + stableJsonHash({ identity, sessionId });
 }
 
 function bigramSimilarity(tokensA: string[], tokensB: string[]): number {

@@ -18,6 +18,22 @@ const MEMORY_KEY_SHOULD_BE_DERIVED = 'memoryKey should be auto-derived';
 const VALID_CONTENT = 'This is a durable memory payload that is long enough.';
 const VALID_EVIDENCE_REFS = ['packages/foo/src/bar.ts'];
 
+test('a verified GitHub host-qualified identity resolves its own repository basename', () => {
+  assert.equal(normalizeProjectScope({ project: 'catalog', repoId: 'github.com/example/catalog' }), 'example/catalog');
+});
+
+test('a qualified slug cannot conceal conflicting host-qualified repository evidence', () => {
+  assert.throws(
+    () =>
+      normalizeProjectScope({
+        project: 'catalog',
+        repoId: 'foreign.example/other/catalog',
+        repoSlug: 'example/catalog',
+      }),
+    /Conflicting repository/u,
+  );
+});
+
 test('verified repository identity unifies basename writes without aliasing other repositories', () => {
   assert.equal(normalizeProjectScope({ project: 'catalog', repoSlug: 'example/catalog' }), 'example/catalog');
   assert.equal(normalizeProjectScope({ project: 'catalog', repoId: 'other/catalog' }), 'other/catalog');
@@ -44,6 +60,36 @@ test('verified repository identity unifies basename writes without aliasing othe
     assert.equal(memory.threadId, 'logical-task');
     assert.equal(memory.repoSlug, 'example/catalog');
   }
+});
+
+test('host-qualified resolution preserves explicit projects, raw provenance and unknown scopes', () => {
+  for (const [input, expected] of [
+    [{ repoId: 'github.com/example/catalog', repoSlug: 'example/catalog' }, 'example/catalog'],
+    [{ project: 'team-project', repoId: 'github.com/example/catalog' }, 'team-project'],
+    [{ project: 'other/catalog', repoId: 'github.com/example/catalog' }, 'other/catalog'],
+    [{ project: 'catalog', repoId: 'foreign.example/example/catalog' }, 'catalog'],
+    [{ project: 'catalog', repoId: 'opaque' }, 'catalog'],
+    [{ project: 'Catalog', repoId: 'github.com/example/catalog' }, 'Catalog'],
+  ] as const) {
+    assert.equal(normalizeProjectScope(input), expected);
+  }
+  assert.throws(
+    () => normalizeProjectScope({ repoId: 'github.com/Example/catalog', repoSlug: 'example/catalog' }),
+    /Conflicting repository/u,
+  );
+  const memory = normalizeMemoryInput({
+    category: 'decision',
+    content: VALID_CONTENT,
+    project: 'catalog',
+    repoId: 'github.com/example/catalog',
+    sessionId: 'Host-Session',
+    threadId: 'logical:task',
+    source: 'codex',
+  });
+  assert.equal(memory.project, 'example/catalog');
+  assert.equal(memory.repoId, 'github.com/example/catalog');
+  assert.equal(memory.sessionId, 'Host-Session');
+  assert.equal(memory.threadId, 'logical:task');
 });
 
 test('normalizeMemoryInput preserves non-repo project identifiers without runtime canonicalization', () => {
