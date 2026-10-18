@@ -1,6 +1,6 @@
 {
   "name": "@aviaratech/ai-memory-plugin",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "license": "MIT",
   "files": [
@@ -21,6 +21,6 @@
     "build": "node scripts/bundle.mjs"
   },
   "dependencies": {
-    "@aviaratech/ai-memory": "0.2.4"
+    "@aviaratech/ai-memory": "0.2.5"
   }
 }

@@ -20,24 +20,24 @@ npm ci
 npm run build
 ```
 
-For the 0.2.4 helper release, install the exact runtime package in a dedicated local directory. It contains the built native plugin as well as the engine and operational commands; installation needs no source checkout or build:
+For the 0.2.5 helper release, install the exact runtime package in a dedicated local directory. It contains the built native plugin as well as the engine and operational commands; installation needs no source checkout or build:
 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.4
+npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.5
 npx --no-install ai-memory --version
 ```
 
-The helper and the native MCP server report the same package version. The matching GitHub release also provides `aviaratech-ai-memory-plugin-0.2.4.tgz`; its plugin files are identical to `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve their manual configurations until you explicitly choose a migration.
+The helper and the native MCP server report the same package version. The matching GitHub release also provides `aviaratech-ai-memory-plugin-0.2.5.tgz`; its plugin files are identical to `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve their manual configurations until you explicitly choose a migration.
 
 ## Install the native plugin
 
 Use the same interface for Codex and Claude Code. Select the host and scope explicitly, and require the version of the runtime package invoking the helper:
 
 ```sh
-npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.4 --dry-run --json
-npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.4 --json
+npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.5 --dry-run --json
+npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.5 --json
 npx --no-install ai-memory plugin doctor --host codex --scope user --json
 ```
 
@@ -61,12 +61,12 @@ Use a runtime role after the administrator initialization below. The plugin laun
 
 ## Update, rollback and remove
 
-First install the exact reviewed runtime version you intend to use in this local directory, then invoke `plugin update` with that same `--version`. For example, an installation moving to 0.2.4 uses:
+First install the exact reviewed runtime version you intend to use in this local directory, then invoke `plugin update` with that same `--version`. For example, an installation moving to 0.2.5 uses:
 
 ```sh
-npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.4
-npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.4 --dry-run --json
-npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.4 --json
+npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.5
+npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.5 --dry-run --json
+npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.5 --json
 npx --no-install ai-memory plugin rollback --host codex --scope user --json
 npx --no-install ai-memory plugin remove --host codex --scope user --json
 ```
