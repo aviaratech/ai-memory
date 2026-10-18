@@ -17,7 +17,7 @@ import {
 import { assertLocalDatabaseUrl, createPool, type DbPool } from './pool.js';
 import { runAiMemoryMigrations } from './run-migrations.js';
 import { normalizeMemoryInput } from './normalization.js';
-import { createFlushSessionDecisionDedupeHash } from './hashing.js';
+import { createFlushSessionDecisionDedupeHash, stableJsonHash } from './hashing.js';
 import { storeMemoryWithAuditEvent } from './memory-api.js';
 import { resetEmbeddingProvider } from './embeddings.js';
 
@@ -155,7 +155,7 @@ async function fixture(run: (value: Fixture) => Promise<void>) {
           input.content,
           input.category,
           input.confidence,
-          input.memoryType,
+          normalized.memoryType,
           input.project,
           input.sensitivity,
           input.sessionId,
@@ -431,6 +431,14 @@ test(
             [f.ids],
           )
         ).rows;
+        const readSources = async () =>
+          (
+            await f.pool.query<{ id: string; native: Record<string, unknown> }>(
+              "SELECT id::text,to_jsonb(t)||jsonb_build_object('id',t.id::text) AS native FROM ai_memory_entries t WHERE id=ANY($1::bigint[]) ORDER BY id",
+              [f.ids],
+            )
+          ).rows;
+        const originalSources = await readSources();
         const receipt = JSON.parse(
           (await runCli(f, ['--apply', '--plan-file', path, '--expect-plan', `sha256:${plan.digest}`], 'forbid', true))
             .stdout,
@@ -442,7 +450,13 @@ test(
             id: string;
             memory_key: string;
             supersedes_id: number;
-            metadata_json: { consolidation: { supersedes: string[]; planDigest: string } };
+            metadata_json: {
+              consolidation: {
+                supersedes: string[];
+                planDigest: string;
+                sources: { id: string; fingerprint: string; provenance: Record<string, unknown> }[];
+              };
+            };
             memory_type: string;
           }>(
             'SELECT id::text,memory_key,supersedes_id,metadata_json,memory_type FROM ai_memory_entries WHERE id=ANY($1::bigint[]) ORDER BY id',
@@ -460,7 +474,21 @@ test(
         for (const row of created) {
           assert.equal(row.metadata_json.consolidation.planDigest, plan.digest);
           assert.equal(String(row.supersedes_id), row.metadata_json.consolidation.supersedes[0]);
+          assert.deepEqual(
+            row.metadata_json.consolidation.sources,
+            row.metadata_json.consolidation.supersedes.map(id => {
+              const { search_vector: _derived, ...provenance } = originalSources.find(
+                source => source.id === id,
+              )!.native;
+              return { id, fingerprint: stableJsonHash(provenance), provenance };
+            }),
+          );
         }
+        const retiredSources = await readSources();
+        assert.deepEqual(
+          retiredSources.map(({ native: { status: _status, updated_at: _updated, ...native } }) => native),
+          originalSources.map(({ native: { status: _status, updated_at: _updated, ...native } }) => native),
+        );
         assert.equal(
           (
             await f.pool.query(
@@ -479,15 +507,65 @@ test(
           ).rows,
           priorRows,
         );
-        assert.equal(
-          (
-            await f.pool.query(
-              "SELECT id FROM ai_memory_events WHERE event_type='consolidation_fragment_superseded:v1' AND payload_json->>'planDigest'=$1",
-              [plan.digest],
-            )
-          ).rowCount,
-          50,
+        const sourceEvents = (
+          await f.pool.query<{
+            source_id: string;
+            payload_json: {
+              version: number;
+              planDigest: string;
+              sourceId: string;
+              factId: string;
+              before: string;
+              after: string;
+            };
+          }>(
+            "SELECT memory_id::text AS source_id,payload_json FROM ai_memory_events WHERE event_type='consolidation_fragment_superseded:v1' AND payload_json->>'planDigest'=$1 ORDER BY memory_id",
+            [plan.digest],
+          )
+        ).rows;
+        assert.deepEqual(
+          sourceEvents.map(event => event.source_id),
+          f.ids,
         );
+        for (const event of sourceEvents) {
+          const fact = created.find(row => row.metadata_json.consolidation.supersedes.includes(event.source_id))!;
+          const { search_vector: _beforeDerived, ...sourceBefore } = originalSources.find(
+            row => row.id === event.source_id,
+          )!.native;
+          const { search_vector: _afterDerived, ...sourceAfter } = retiredSources.find(
+            row => row.id === event.source_id,
+          )!.native;
+          assert.deepEqual(event.payload_json, {
+            version: 1,
+            planDigest: plan.digest,
+            sourceId: event.source_id,
+            factId: fact.id,
+            before: stableJsonHash(sourceBefore),
+            after: stableJsonHash(sourceAfter),
+          });
+        }
+        const factEvents = (
+          await f.pool.query<{
+            fact_id: string;
+            payload_json: { factId: string; supersedes: string[]; sources: { id: string; fingerprint: string }[] };
+          }>(
+            "SELECT memory_id::text AS fact_id,payload_json FROM ai_memory_events WHERE event_type='consolidation_fact_created:v1' AND payload_json->>'planDigest'=$1 ORDER BY memory_id",
+            [plan.digest],
+          )
+        ).rows;
+        assert.deepEqual(
+          factEvents.map(event => event.fact_id),
+          created.map(row => row.id),
+        );
+        for (const event of factEvents) {
+          const fact = created.find(row => row.id === event.fact_id)!;
+          assert.equal(event.payload_json.factId, fact.id);
+          assert.deepEqual(event.payload_json.supersedes, fact.metadata_json.consolidation.supersedes);
+          assert.deepEqual(
+            event.payload_json.sources,
+            fact.metadata_json.consolidation.sources.map(({ id, fingerprint }) => ({ id, fingerprint })),
+          );
+        }
         const after = await snapshot(f.pool);
         assert.equal(
           (
@@ -711,7 +789,6 @@ test(
   async () => {
     for (const reason of [
       'null-category',
-      'unknown-legacy',
       'native-precision',
       'overflow',
       'row-drift',
@@ -724,11 +801,6 @@ test(
       await fixture(async f => {
         if (reason === 'null-category')
           await f.pool.query('UPDATE ai_memory_entries SET category=NULL WHERE id=$1', [f.ids[0]]);
-        if (reason === 'unknown-legacy')
-          await f.pool.query(
-            "UPDATE ai_memory_entries SET category='unsupported-legacy',memory_type=NULL WHERE id=$1",
-            [f.ids[0]],
-          );
         if (reason === 'native-precision')
           await f.pool.query(
             `UPDATE ai_memory_entries SET metadata_json='{"unsafe":9007199254740993}'::jsonb WHERE id=$1`,
@@ -753,7 +825,7 @@ test(
           return;
         }
         const plan = await createFragmentConsolidationPlan({ pool: f.pool, selectors });
-        if (['null-category', 'unknown-legacy', 'overflow'].includes(reason)) {
+        if (['null-category', 'overflow'].includes(reason)) {
           assert.equal(plan.status, 'refused');
           assert.equal(plan.complete, false);
           assert.deepEqual(await snapshot(f.pool), beforeProposal);
@@ -768,11 +840,11 @@ test(
         if (reason === 'expiry') await f.pool.query('SELECT pg_sleep(2.1)');
         if (reason === 'calibration')
           await f.pool.query(
-            "INSERT INTO ai_memory_entries(content,category,confidence,memory_key,project,sensitivity,source) VALUES ('Synthetic prior calibration evidence changes the reviewed baseline.','architecture',0.8,'calibration-control','foreign/widget','public','consolidation')",
+            "INSERT INTO ai_memory_entries(content,category,confidence,memory_key,memory_type,project,sensitivity,source) VALUES ('Synthetic prior calibration evidence changes the reviewed baseline.','architecture',0.8,'calibration-control','semantic','foreign/widget','public','consolidation')",
           );
         if (reason === 'occupied-target')
           await f.pool.query(
-            "INSERT INTO ai_memory_entries(content,category,confidence,memory_key,project,sensitivity) VALUES ('FOREIGN_SENTINEL occupied global target must never be overwritten.','architecture',0.8,$1,'foreign/widget','public')",
+            "INSERT INTO ai_memory_entries(content,category,confidence,memory_key,memory_type,project,sensitivity) VALUES ('FOREIGN_SENTINEL occupied global target must never be overwritten.','architecture',0.8,$1,'semantic','foreign/widget','public')",
             [plan.facts[0]!.memoryKey],
           );
         if (reason === 'schema')
@@ -789,10 +861,10 @@ test(
   'altered, duplicate and missing completion evidence is never fabricated or reapplied',
   { skip: databaseUrl === undefined, timeout: 0 },
   async () => {
-    for (const reason of ['altered', 'duplicate', 'missing'])
+    for (const reason of ['altered', 'duplicate', 'missing', 'source-tamper', 'fact-tamper', 'missing-audit'])
       await fixture(async f => {
         const plan = await createFragmentConsolidationPlan({ pool: f.pool, selectors });
-        await applyFragmentConsolidation({ pool: f.pool, plan, expectedDigest: plan.digest });
+        const applied = await applyFragmentConsolidation({ pool: f.pool, plan, expectedDigest: plan.digest });
         if (reason === 'altered')
           await f.pool.query(
             "UPDATE ai_memory_events SET payload_json=jsonb_set(payload_json,'{completionDigest}','\"bad\"'::jsonb) WHERE event_type='consolidation_unit:v1'",
@@ -803,6 +875,13 @@ test(
           );
         if (reason === 'missing')
           await f.pool.query("DELETE FROM ai_memory_events WHERE event_type='consolidation_unit:v1'");
+        if (reason === 'source-tamper' || reason === 'fact-tamper')
+          await f.pool.query(
+            "UPDATE ai_memory_entries SET content=content||' Synthetic poststate tamper.' WHERE id=$1",
+            [reason === 'source-tamper' ? f.ids[0] : applied.createdFacts[0]!.id],
+          );
+        if (reason === 'missing-audit')
+          await f.pool.query('DELETE FROM ai_memory_events WHERE id=$1', [applied.auditState[0]!.id]);
         const before = await snapshot(f.pool);
         await assert.rejects(() => applyFragmentConsolidation({ pool: f.pool, plan, expectedDigest: plan.digest }));
         assert.deepEqual(await snapshot(f.pool), before);

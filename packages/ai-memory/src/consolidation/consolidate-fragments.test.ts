@@ -286,6 +286,15 @@ describe('reviewed fragment plan and complete source lineage', () => {
     assert.deepEqual(validateFragmentConsolidationPlan(JSON.parse(JSON.stringify(plan))), plan);
   });
 
+  it('resolves supported legacy NULL memory types without rewriting source evidence', () => {
+    const input = planInput();
+    input.snapshot.fragments[0]!.memory_type = null;
+    input.snapshot.fragments[0]!.category = 'decision';
+    const before = structuredClone(input.snapshot);
+    assert.equal(buildFragmentConsolidationPlan(input).status, 'ready');
+    assert.deepEqual(input.snapshot, before);
+  });
+
   it('refuses duplicate canonical target keys across disjoint source groups before application', () => {
     for (const variant of ['identical', 'case-whitespace']) {
       const input = planInput();
