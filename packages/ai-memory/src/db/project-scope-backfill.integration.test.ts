@@ -370,9 +370,17 @@ test(
       });
       assert.ok(found.some(row => row.memoryKey === generatedKey));
       assert.ok(found.every(row => row.project === selectors.project));
-      assert.ok(
-        (await getMemoryEntries({ project: 'widget', limit: 100 })).every(row => row.sessionId !== 'Host-Session'),
+      const legacyEntries = await getMemoryEntries({
+        ids: before.rows.map(({ row }) => Number(row.id)),
+        project: 'widget',
+      });
+      assert.deepEqual(
+        legacyEntries.map(row => row.id),
+        before.rows
+          .filter(({ row }) => row.project === 'widget' && row.session_id !== 'Host-Session')
+          .map(({ row }) => Number(row.id)),
       );
+      assert.ok(legacyEntries.every(row => row.sessionId !== 'Host-Session'));
       const checkpoint = await getContinuityPack({ project: selectors.project, task: 'logical:task' });
       assert.equal(checkpoint.status, 'found');
       if (checkpoint.status === 'found') assert.equal(checkpoint.pack.sessionId, 'Host-Session');
