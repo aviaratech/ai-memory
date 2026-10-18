@@ -4,6 +4,7 @@ import {
   DEFAULT_SIMILARITY_THRESHOLD,
   normalizeFingerprintText,
   SIMILARITY_CATEGORIES,
+  stableJsonHash,
 } from './hashing.js';
 import { computeInitialImportance, detectReviewerDecisionImportance } from './importance.js';
 import {
@@ -13,6 +14,7 @@ import {
 } from './memory-sql.js';
 import { normalizeMemoryInput, normalizeProjectScope } from './normalization.js';
 import { toMemoryRecord, withWriteDisposition } from './records.js';
+import { FLUSH_SESSION_DECISION_DEDUPE_PREFIX } from './runtime.js';
 import { getSessionProjectWithClient } from './session-api.js';
 import { isRecord } from './type-guards.js';
 import { computeWriteCalibration, type WriteCalibration } from './write-calibration.js';
@@ -57,6 +59,7 @@ const SIMILARITY_CANDIDATES_SQL = `
   FROM ai_memory_entries
   WHERE status = 'active'
     AND (expires_at IS NULL OR expires_at > NOW())
+    AND (dedupe_hash IS NULL OR dedupe_hash NOT LIKE '${FLUSH_SESSION_DECISION_DEDUPE_PREFIX}%')
     AND lower(category) = lower($1)
     AND coalesce(lower(project), '') = $2
     AND coalesce(lower(org_id), '') = $3
@@ -67,7 +70,11 @@ const SIMILARITY_CANDIDATES_SQL = `
   LIMIT 50
 `;
 
-export async function storeMemoryWithClient(client: DatabaseClient, input: unknown): Promise<StoredMemoryRecord> {
+export async function storeMemoryWithClient(
+  client: DatabaseClient,
+  input: unknown,
+  storeMode?: 'flush-session-decision',
+): Promise<StoredMemoryRecord> {
   const sourceInput = remapApprovedReviewerDecisionToAuditLogInput(input);
   let memory = normalizeMemoryInput(sourceInput);
   if (memory.sessionId !== undefined && !memory.project?.includes('/')) {
@@ -76,6 +83,20 @@ export async function storeMemoryWithClient(client: DatabaseClient, input: unkno
       repoId: await getSessionProjectWithClient(client, memory.sessionId),
     });
     if (project !== memory.project && isRecord(sourceInput)) memory = normalizeMemoryInput({ ...sourceInput, project });
+  }
+  if (storeMode === 'flush-session-decision') {
+    if (
+      memory.category !== 'decision' ||
+      memory.memoryType !== 'episodic' ||
+      memory.memoryKey !== undefined ||
+      memory.sessionId === undefined ||
+      memory.expiresAt === undefined
+    ) {
+      throw new Error('Scoped flush decisions require an unkeyed episodic decision, sessionId and explicit expiresAt.');
+    }
+    memory.dedupeHash =
+      FLUSH_SESSION_DECISION_DEDUPE_PREFIX +
+      stableJsonHash({ identity: memory.dedupeHash, sessionId: memory.sessionId });
   }
   const calibration = await computeWriteCalibration(client, memory);
   const calibratedMemory: CalibrationAwareMemoryInput = {
@@ -115,7 +136,8 @@ export async function storeMemoryWithClient(client: DatabaseClient, input: unkno
     ) as StoredMemoryRecord;
   }
 
-  const similarityScope = buildSimilarityScopeKey(memoryWithImportance);
+  const similarityScope =
+    storeMode === 'flush-session-decision' ? undefined : buildSimilarityScopeKey(memoryWithImportance);
   if (similarityScope !== undefined) {
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [similarityScope]);
 
@@ -158,7 +180,7 @@ export async function storeMemoryWithClient(client: DatabaseClient, input: unkno
 
   const existingResult = await client.query<MemoryIdRow>(
     `
-      SELECT id
+      SELECT ${storeMode === 'flush-session-decision' ? '*' : 'id'}
       FROM ai_memory_entries
       WHERE memory_key IS NULL AND dedupe_hash = $1
       ORDER BY updated_at DESC, id DESC
@@ -171,6 +193,13 @@ export async function storeMemoryWithClient(client: DatabaseClient, input: unkno
   const existingMemoryIdRaw = existingResult.rows[0]?.id;
   const existingMemoryId = Number(existingMemoryIdRaw);
   if (Number.isInteger(existingMemoryId) && existingMemoryId > 0) {
+    if (storeMode === 'flush-session-decision') {
+      // A replay must not extend expiry, reactivate retired state or rewrite provenance.
+      return withCalibration(
+        withWriteDisposition(toMemoryRecord(existingResult.rows[0]), 'dedupe_update'),
+        calibration,
+      ) as StoredMemoryRecord;
+    }
     const result = await client.query(memoryUpdateByIdSql, [
       ...buildMemoryWriteParams(memoryWithImportance, hasEmbeddingColumn),
       existingMemoryId,

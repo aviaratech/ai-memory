@@ -3,12 +3,81 @@ import type { DbClient, DbPool, DbResult } from '@aviaratech/ai-memory/internal'
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
+import { normalizeMemoryInput } from '../../db/normalization.js';
 import { flushSession } from './flush-session.js';
 
 type FailureStage = 'actionable' | 'checkpoint' | 'delta' | 'none';
 const TEST_DELTA_ID = 'delta-1381-test';
 const TEST_NOW_ISO = '2026-02-23T12:00:00.000Z';
 const TEST_SESSION_ID = 'session-1381-test';
+
+test('explicit flush decisions are expiring episodic fragments without changing other core writes', async () => {
+  const harness = createHarness('none');
+  const writes: ReturnType<typeof normalizeMemoryInput>[] = [];
+  const modes: unknown[] = [];
+  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
+  assert.ok(originalStore);
+  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
+    writes.push(normalizeMemoryInput(input));
+    modes.push(mode);
+    return originalStore(client, input, mode);
+  };
+  await flushSession(
+    {
+      decisions: ['Retry the bounded synthetic fixture after checking its input.'],
+      rootCauses: ['The synthetic fixture had an inconsistent input value.'],
+      sessionId: TEST_SESSION_ID,
+      summary: 'Checkpoint the synthetic fixture result and its pending verification.',
+    },
+    harness.dependencies,
+  );
+  const decision = writes.find(write => write.category === 'decision');
+  assert.ok(decision);
+  assert.equal(decision.memoryType, 'episodic');
+  assert.equal(decision.expiresAt, '2026-03-09T12:00:00.000Z');
+  assert.equal(decision.sessionId, TEST_SESSION_ID);
+  assert.equal(decision.memoryKey, undefined);
+  assert.equal(writes.find(write => write.category === 'session-summary')?.expiresAt, decision.expiresAt);
+  assert.equal(writes.find(write => write.category === 'root-cause')?.expiresAt, undefined);
+  assert.deepEqual(modes, [undefined, 'flush-session-decision', undefined]);
+});
+
+test('inline consolidation omits only prepared decisions while ordinary episodic reflection remains eligible', async () => {
+  const harness = createHarness('none');
+  harness.dependencies.isEmbeddingAvailable = () => true;
+  harness.dependencies.runReflection = () =>
+    Promise.resolve({
+      reflectionResult: undefined,
+      storedMemories: [
+        {
+          category: 'decision',
+          confidence: 0.8,
+          content: 'Independent episodic reflection remains compatible.',
+          id: 100,
+          memoryType: 'episodic',
+        },
+      ],
+    });
+  let candidates: { id: number }[] = [];
+  harness.dependencies.consolidateMemories = memories => {
+    candidates = memories;
+    return Promise.resolve(undefined);
+  };
+  await flushSession(
+    {
+      decisions: ['Retry the bounded synthetic fixture after checking its input.'],
+      rootCauses: ['The synthetic fixture had an inconsistent input value.'],
+      sessionId: TEST_SESSION_ID,
+      summary: 'Checkpoint the synthetic fixture result and its pending verification.',
+    },
+    harness.dependencies,
+  );
+  assert.deepEqual(
+    candidates.map(memory => memory.id),
+    [3, 100],
+  );
+  assert.equal(harness.state.committedCoreRows, 4);
+});
 
 test('a resumed basename flush uses only its exact attested session repository', async () => {
   const harness = createHarness('none');
@@ -363,12 +432,12 @@ test('flushSession returns consolidation dedupe metrics from post-commit consoli
 
   const result = await flushSession(
     {
-      decisions: [
+      rootCauses: [
         'Zustand stores use the singleton pattern for cross-feature state.',
         'State management uses Zustand singleton stores across features.',
       ],
       summary:
-        'Regression coverage for consolidation metrics emitted after memory_flush stores near-duplicate durable memories.',
+        'Regression coverage for consolidation metrics emitted after memory_flush stores near-duplicate root causes.',
     },
     harness.dependencies,
   );

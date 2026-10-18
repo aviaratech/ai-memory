@@ -22,7 +22,7 @@ import {
 } from '../db/failure-events.js';
 import { type MemoryType, normalizeMemoryType } from '../db/memory-types.js';
 import { runBoundedQuery } from '../db/query-runner.js';
-import { pool } from '../db/runtime.js';
+import { FLUSH_SESSION_DECISION_DEDUPE_PREFIX, pool } from '../db/runtime.js';
 import { logAiMemoryError, logAiMemoryWarn } from '../logger.js';
 import { resolveTimeoutPolicy, TimeoutError } from '../timeout-policy.js';
 import { recordAiMemoryWarningDetail } from '../warning-channel.js';
@@ -381,6 +381,7 @@ async function findSimilarCandidates(embedding: number[], excludeId: number): Pr
            1 - (embedding <=> $1::vector) AS similarity
     FROM ai_memory_entries
     WHERE status = 'active'
+      AND (dedupe_hash IS NULL OR dedupe_hash NOT LIKE '${FLUSH_SESSION_DECISION_DEDUPE_PREFIX}%')
       AND embedding IS NOT NULL
       AND id != $2
       AND (1 - (embedding <=> $1::vector)) >= $3

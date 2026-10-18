@@ -116,6 +116,7 @@ describe('consolidateMemories flush-promotion candidate timeout', () => {
     vi.doMock('../db/runtime.js', () => ({
       CONTEXT_PACK_TOOL: 'context-pack',
       DERIVED_MEMORY_KEY_PREFIX: 'derived-memory',
+      FLUSH_SESSION_DECISION_DEDUPE_PREFIX: 'flush-session-decision:v1:',
       getDatabaseUrl: () => undefined,
       MEMORY_DELTA_TOOL: 'memory-delta',
       MEMORY_IDENTITY_HASH_VERSION: 'v1',

@@ -663,8 +663,12 @@ export async function storeMemory(input: unknown) {
   });
 }
 
-export async function storeMemoryWithAuditEvent(client: Parameters<typeof storeMemoryWithClient>[0], input: unknown) {
-  const memory = await storeMemoryWithClient(client, input);
+export async function storeMemoryWithAuditEvent(
+  client: Parameters<typeof storeMemoryWithClient>[0],
+  input: unknown,
+  storeMode?: Parameters<typeof storeMemoryWithClient>[2],
+) {
+  const memory = await storeMemoryWithClient(client, input, storeMode);
   await insertMemoryEventWithClient(client, {
     actor: typeof memory.agent === 'string' ? memory.agent : undefined,
     eventType: 'stored_via_memory_store',

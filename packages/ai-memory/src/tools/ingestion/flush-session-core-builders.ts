@@ -15,9 +15,11 @@ export interface PreparedCoreMemoryWrite {
   confidence: number;
   content: string;
   input: Record<string, unknown>;
+  storeMode?: 'flush-session-decision';
 }
 
 export function buildActionableMemoryWrites(input: {
+  now: Date;
   parsed: ParsedFlushInput;
   sessionId: string;
 }): PreparedCoreMemoryWrite[] {
@@ -25,16 +27,20 @@ export function buildActionableMemoryWrites(input: {
 
   for (const decision of input.parsed.decisions) {
     const content = truncate(decision, MAX_ITEM_CHARS);
-    writes.push(
-      buildPreparedMemoryWrite({
-        category: 'decision',
-        confidence: FLUSH_DECISION_CONFIDENCE,
-        content,
-        parsed: input.parsed,
-        sessionId: input.sessionId,
-        tag: 'decision',
-      }),
-    );
+    const write = buildPreparedMemoryWrite({
+      category: 'decision',
+      confidence: FLUSH_DECISION_CONFIDENCE,
+      content,
+      parsed: input.parsed,
+      sessionId: input.sessionId,
+      tag: 'decision',
+    });
+    write.storeMode = 'flush-session-decision';
+    write.input.memoryType = 'episodic';
+    write.input.expiresAt = new Date(
+      input.now.getTime() + FLUSH_CHECKPOINT_TTL_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    writes.push(write);
   }
 
   for (const rootCause of input.parsed.rootCauses) {
