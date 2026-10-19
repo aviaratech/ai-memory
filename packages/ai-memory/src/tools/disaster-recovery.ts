@@ -459,11 +459,15 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
     let stderrBytes = 0;
     let failure: string | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let groupKillDispatched = false;
     const signalOwned = (signal: NodeJS.Signals, phase: 'terminate' | 'grace-kill' | 'exit-kill') => {
       if (child.pid === undefined) return;
       try {
         if (process.platform === 'win32') child.kill(signal);
-        else process.kill(-child.pid, signal);
+        else {
+          process.kill(-child.pid, signal);
+          if (signal === 'SIGKILL') groupKillDispatched = true;
+        }
       } catch (error) {
         if (errorCode(error) === 'ESRCH') return;
         failure = 'PROCESS_CLEANUP_FAILED';
@@ -534,7 +538,10 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
       if (status !== 0) failure ??= options.failure ?? 'COMMAND_FAILED';
       // Descendants can retain pipes after the direct child exits. Close the
       // owned group before waiting for close and releasing files/checkpoints.
-      signalOwned('SIGKILL', 'exit-kill');
+      // A successful prior SIGKILL already dispatched this cleanup. Resending
+      // against exiting/zombie members can fail even after they were killed.
+      // Dispatch alone is not drain: the close/final cleanup barriers remain.
+      if (!groupKillDispatched) signalOwned('SIGKILL', 'exit-kill');
     });
     child.once('close', status => {
       cancellation.signal.removeEventListener('abort', cancel);

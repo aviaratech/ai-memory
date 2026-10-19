@@ -47,12 +47,17 @@ registerHooks({
 // Fault injection proves reporting/retention, not the cause of an old native
 // failure. Deliver the real signal first so this fixture still owns its drain.
 const signalFault = `
+import { appendFileSync } from 'node:fs';
 const realKill = process.kill.bind(process);
-let injected = false;
+let matchingSignals = 0;
 process.kill = (pid, signal) => {
+  const matches = pid < 0 && signal === process.env.DR_FAULT_SIGNAL;
+  if (matches) {
+    matchingSignals++;
+    appendFileSync(process.env.DR_SIGNAL_LOG, JSON.stringify(pid) + '\\n');
+  }
   const result = realKill(pid, signal);
-  if (!injected && pid < 0 && signal === process.env.DR_FAULT_SIGNAL) {
-    injected = true;
+  if (matches && matchingSignals === Number(process.env.DR_FAULT_ATTEMPT)) {
     throw Object.assign(new Error('synthetic-private-marker'), {
       code: process.env.DR_FAULT_CODE, errno: -1, syscall: 'kill'
     });
@@ -555,14 +560,19 @@ test(
   },
 );
 
-for (const [phase, signal, stop, code] of [
-  ['terminate', 'SIGTERM', 'overflow', 'EPERM'],
-  ['grace-kill', 'SIGKILL', 'overflow', 'EPERM'],
-  ['exit-kill', 'SIGKILL', 'failure', 'EPERM'],
-  ['terminate', 'SIGTERM', 'SIGTERM', 'EPERM'],
-  ['exit-kill', 'SIGKILL', 'failure', 'ESRCH'],
+for (const [phase, signal, stop, code, attempt] of [
+  ['terminate', 'SIGTERM', 'overflow', 'EPERM', 1],
+  ['grace-kill', 'SIGKILL', 'overflow', 'EPERM', 1],
+  ['exit-kill', 'SIGKILL', 'failure', 'EPERM', 1],
+  ['terminate', 'SIGTERM', 'SIGTERM', 'EPERM', 1],
+  ['exit-kill', 'SIGKILL', 'failure', 'ESRCH', 1],
+  ['grace-kill', 'SIGKILL', 'overflow', 'EPERM', 2],
 ] as const) {
-  test(`${code} at ${phase} during ${stop} retains cleanup evidence and ownership`, { timeout: 20_000 }, async () => {
+  const name =
+    attempt === 2
+      ? 'successful group SIGKILL drains descendants without a redundant exit signal'
+      : `${code} at ${phase} during ${stop} retains cleanup evidence and ownership`;
+  test(name, { timeout: 20_000 }, async () => {
     const current = fixture();
     writeFileSync(join(current.root, 'preload.mjs'), preload + signalFault);
     const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
@@ -577,6 +587,8 @@ for (const [phase, signal, stop, code] of [
           DR_HOLD_PHASE: 'version',
           DR_FAULT_SIGNAL: signal,
           DR_FAULT_CODE: code,
+          DR_FAULT_ATTEMPT: String(attempt),
+          DR_SIGNAL_LOG: join(current.root, 'signals.jsonl'),
           ...(stop === 'overflow' ? { DR_OVERFLOW: '1' } : {}),
           ...(stop === 'failure' ? { DR_FAIL_EXIT: '1' } : {}),
         },
@@ -593,7 +605,17 @@ for (const [phase, signal, stop, code] of [
       assert.equal(outcomes.owned.length, 0, JSON.stringify(outcomes));
       assert.equal(outcomes.peer.length, 1, JSON.stringify(outcomes));
       const stderr = observed.output().stderr;
-      if (code === 'ESRCH') {
+      if (phase === 'grace-kill') {
+        const leader = owned[0];
+        assert.ok(leader !== undefined);
+        const attempts = readFileSync(join(current.root, 'signals.jsonl'), 'utf8')
+          .trimEnd()
+          .split('\n')
+          .map(line => JSON.parse(line) as number)
+          .filter(pid => pid === -leader);
+        assert.equal(attempts.length, attempt === 2 ? 1 : 2, stderr);
+      }
+      if (attempt === 2 || code === 'ESRCH') {
         assert.match(stderr, /PG_TOOL_UNAVAILABLE/u);
         assert.doesNotMatch(stderr, /PROCESS_CLEANUP_FAILED|process_cleanup_failed/u);
         assert.ok(!existsSync(join(current.backups, '.backup-owner.json')));
