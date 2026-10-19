@@ -1,6 +1,23 @@
 {
   "description": "ai-memory plugin session lifecycle hooks",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit\"", "timeout": 15, "type": "command" }]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [{ "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact\"", "timeout": 15, "type": "command" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(mcp__ai_memory__memory_get|mcp__ai-memory__memory_get|mcp__plugin_ai-memory_ai-memory__memory_get)$",
+        "hooks": [{ "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/memory-used\"", "timeout": 15, "type": "command" }]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

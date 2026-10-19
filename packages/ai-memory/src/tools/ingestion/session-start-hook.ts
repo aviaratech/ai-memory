@@ -8,14 +8,15 @@ import {
   initializeDatabase,
   logAiMemoryInfo,
   logAiMemoryWarn,
-  type MemoryOrientResponse,
   normalizeProjectScope,
-  orientMemory,
   recallMemories,
   recordToolInvocation,
   withTimeout,
 } from '@aviaratech/ai-memory/internal';
 import { randomUUID } from 'node:crypto';
+
+import { isRecord } from '../../db/type-guards.js';
+import { armPromptRetrieval, type MemoryHost } from '../../db/tool-invocations.js';
 
 import { ensurePostgresRunning, formatPostgresRecoveryHint } from '../ensure-postgres.js';
 import { resolveRepoIdFromCwd } from './auto-session-ingest.js';
@@ -48,12 +49,13 @@ function boundText(text: string, limit: number): string {
 const DEFAULT_RECALL_LIMIT = 8;
 const DEFAULT_SINCE_DAYS = 90;
 const SESSION_START_ORIENT_SOURCE = 'session-start-hook';
-const SESSION_START_ORIENT_TIMEOUT_MS = 22_000;
 const SESSION_START_CONTINUITY_TIMEOUT_MS = 500;
 const MAX_RECALL_LIMIT = 50;
 const MAX_SINCE_DAYS = 3650;
 
 export interface SessionStartHookContext {
+  host?: MemoryHost | undefined;
+  source?: string | undefined;
   /** Working directory for repo resolution */
   cwd?: string | undefined;
   /** Test seam / dependency override; production callers should omit */
@@ -67,6 +69,7 @@ export interface SessionStartHookContext {
 }
 
 export interface SessionStartHookDependencies {
+  armPromptRetrieval: typeof armPromptRetrieval;
   closePool: () => Promise<unknown>;
   ensurePostgresRunning: (input: {
     logProgress: boolean;
@@ -76,7 +79,6 @@ export interface SessionStartHookDependencies {
   initializeDatabase: () => Promise<unknown>;
   logAiMemoryInfo: (event: string, fields: Record<string, unknown>) => void;
   logAiMemoryWarn: (event: string, fields: Record<string, unknown>) => void;
-  orientMemory: (input: unknown) => Promise<MemoryOrientResponse>;
   recallMemories: (input: unknown) => Promise<unknown[]>;
   recordToolInvocation: typeof recordToolInvocation;
   resolveRepoIdFromCwd: (cwd: string) => Promise<string | undefined>;
@@ -113,13 +115,13 @@ export interface SessionStartPostgresStatus {
 }
 
 const DEFAULT_DEPENDENCIES: SessionStartHookDependencies = {
+  armPromptRetrieval,
   closePool,
   ensurePostgresRunning,
   getContinuityPack,
   initializeDatabase,
   logAiMemoryInfo,
   logAiMemoryWarn,
-  orientMemory,
   recallMemories,
   recordToolInvocation,
   resolveRepoIdFromCwd,
@@ -221,9 +223,13 @@ async function runSessionStartHookCore(
   );
 
   await dependencies.initializeDatabase();
+  if (context?.source === 'startup' && context.host !== undefined && sessionId !== undefined) {
+    await dependencies.armPromptRetrieval({ host: context.host, project: repoId, sessionId });
+  }
   const continuityPack = await readContinuityPackForSessionStart({
     dependencies,
     hookEventName,
+    host: context?.host,
     repoId,
     sessionId,
   });
@@ -255,21 +261,23 @@ async function runSessionStartHookCore(
     },
   });
 
-  const recallText = memories.length > 0 ? formatRecallMarkdown(memories) : undefined;
-  const orientText = await runAutoOrientForSessionStart({
-    cwd,
-    dependencies,
-    hookEventName,
-    repoId,
-    sessionId,
+  const keyedFacts = memories.filter(memory => {
+    if (!isRecordLike(memory)) return false;
+    return (
+      memory.project === repoId &&
+      typeof memory.memoryKey === 'string' &&
+      memory.memoryKey.length > 0 &&
+      !['session-summary', 'session-transcript', 'session-history'].includes(String(memory.category)) &&
+      !memory.memoryKey.includes(':turn:')
+    );
   });
+  const recallText = keyedFacts.length > 0 ? formatRecallMarkdown(keyedFacts) : undefined;
   const bootstrapText = joinBootstrapSections(
-    `scope: ${boundText(repoId, 240)}`,
-    continuityPack.text === undefined ? undefined : boundText(continuityPack.text, 5800),
+    `scope: ${boundText(repoId, 240)}; keyed durable project facts only (background)`,
+    continuityPack.text,
     recallText === undefined ? undefined : boundText(recallText, 1000),
-    orientText === undefined ? undefined : boundText(orientText.text, 700),
   );
-  const outputStatus = continuityPack.status === 'degraded' || orientText?.status === 'degraded' ? 'degraded' : 'ok';
+  const outputStatus = continuityPack.status;
 
   if (bootstrapText === undefined) {
     return {
@@ -289,13 +297,6 @@ async function runSessionStartHookCore(
 }
 
 const CONTENT_PREVIEW_LENGTH = 120;
-const ORIENT_TEXT_LIST_LIMIT = 5;
-
-interface AutoOrientText {
-  status: 'degraded' | 'ok';
-  text: string;
-}
-
 interface ClampOptions {
   fallback: number;
   max: number;
@@ -313,35 +314,6 @@ function clampPositiveInt(value: number | undefined, options: ClampOptions): num
   }
 
   return Math.min(value, options.max);
-}
-
-function formatInlineList(values: readonly string[]): string {
-  return values.slice(0, ORIENT_TEXT_LIST_LIMIT).join(', ');
-}
-
-function formatOrientMarkdown(result: MemoryOrientResponse): string {
-  const { orientation } = result;
-  const lines = [
-    '### Memory Orientation',
-    '',
-    `- status: ${result.status}`,
-    `- environmentStatus: ${orientation.environmentStatus}`,
-  ];
-
-  lines.push(
-    `- payload: ${String(orientation.memoryPayloadChars)} chars / ` +
-      `${String(orientation.memoryPayloadBudgetChars)} budget ` +
-      `(tokens≈${String(orientation.memoryPayloadApproxTokens)}, ` +
-      `budgetExceeded=${String(orientation.memoryPayloadBudgetExceeded)})`,
-  );
-  if (orientation.truncatedSections !== undefined && orientation.truncatedSections.length > 0) {
-    lines.push(`- truncatedSections: ${formatInlineList(orientation.truncatedSections)}`);
-  }
-  if (result.warnings.length > 0) {
-    lines.push(`- warnings: ${formatInlineList(result.warnings)}`);
-  }
-
-  return lines.join('\n');
 }
 
 function formatRecallMarkdown(memories: readonly unknown[]): string {
@@ -417,6 +389,7 @@ function parsePositiveIntFromEnv(rawValue: unknown): number | undefined {
 async function readContinuityPackForSessionStart(input: {
   dependencies: SessionStartHookDependencies;
   hookEventName: string;
+  host: MemoryHost | undefined;
   repoId: string | undefined;
   sessionId: string | undefined;
 }): Promise<ContinuityPackBootstrap> {
@@ -443,20 +416,21 @@ async function readContinuityPackForSessionStart(input: {
             task: input.sessionId,
           });
           if (scoped.status === 'found') {
-            if (scoped.pack.scopeKey !== taskScopeKey || scoped.pack.project !== input.repoId) {
+            if (
+              scoped.pack.scopeKey !== taskScopeKey ||
+              scoped.pack.project !== input.repoId ||
+              (scoped.pack.source === 'pre-compact' &&
+                (scoped.pack.sessionId !== input.sessionId ||
+                  input.host === undefined ||
+                  !isRecord(scoped.pack.pack.provenance) ||
+                  scoped.pack.pack.provenance.agent !== input.host))
+            ) {
               throw new Error('Task continuity lookup returned a different scope.');
             }
             return scoped;
           }
         }
-        const background = await input.dependencies.getContinuityPack({ project: input.repoId });
-        if (
-          background.status === 'found' &&
-          (background.pack.project !== input.repoId || background.pack.scopeKey !== `project:${input.repoId}`)
-        ) {
-          throw new Error('Project continuity lookup returned a different scope.');
-        }
-        return background;
+        return { status: 'missing' as const, project: input.repoId, scopeKey: taskScopeKey };
       },
       timeoutMs: SESSION_START_CONTINUITY_TIMEOUT_MS,
     });
@@ -491,7 +465,7 @@ async function readContinuityPackForSessionStart(input: {
     }
 
     const taskCheckpointFound = result.pack.scopeKey === taskScopeKey;
-    const listLimit = taskCheckpointFound ? 3 : 1;
+    const listLimit = 3;
     const listKeys = ['nextActions', 'contextNeeded', 'decisions', 'openQuestions'];
     const omittedListItems = listKeys.some(key => {
       const values: unknown = result.pack.pack[key];
@@ -514,10 +488,7 @@ async function readContinuityPackForSessionStart(input: {
           ...result.pack,
           pack: {
             ...result.pack.pack,
-            summary: boundText(
-              typeof result.pack.pack.summary === 'string' ? result.pack.pack.summary : '',
-              taskCheckpointFound ? 2000 : 600,
-            ),
+            summary: boundText(typeof result.pack.pack.summary === 'string' ? result.pack.pack.summary : '', 2000),
             ...Object.fromEntries(
               listKeys.map(key => {
                 const values: unknown = result.pack.pack[key];
@@ -556,49 +527,6 @@ async function readContinuityPackForSessionStart(input: {
     });
     return { status: 'degraded', text: 'Continuity pack unavailable; use scoped memory retrieval.' };
   }
-}
-
-async function recordAutoOrientTelemetry(input: {
-  dependencies: SessionStartHookDependencies;
-  durationMs: number;
-  error?: unknown;
-  invocationId: string;
-  repoId: string | undefined;
-  result?: MemoryOrientResponse;
-  sessionId: string | undefined;
-  status: 'error' | 'ok';
-}): Promise<void> {
-  const summaryFields =
-    input.result === undefined
-      ? {
-          detected_source: SESSION_START_ORIENT_SOURCE,
-          source: SESSION_START_ORIENT_SOURCE,
-        }
-      : summarizeOrientForTelemetry(input.result);
-
-  await input.dependencies
-    .recordToolInvocation({
-      durationMs: input.durationMs,
-      invocationId: input.invocationId,
-      project: input.repoId,
-      ...(input.result !== undefined ? { responseStatus: input.result.status } : {}),
-      sessionId: input.sessionId,
-      status: input.status,
-      summaryFields,
-      timeoutWarningCount:
-        input.result?.warnings.filter(warning => hasTimeoutWarning(warning)).length ??
-        (input.error instanceof Error && hasTimeoutWarning(input.error.message) ? 1 : 0),
-      toolCategory: 'read',
-      toolName: 'memory_orient',
-      warningCount: input.result?.warnings.length ?? 0,
-    })
-    .catch((telemetryError: unknown) => {
-      input.dependencies.logAiMemoryWarn('hook.session_start_orient_telemetry_failed', {
-        error: formatError(telemetryError),
-        message: 'Session-start auto-orient telemetry write failed; continuing hook output.',
-        tool_name: 'memory_orient',
-      });
-    });
 }
 
 async function recordContinuityPackTelemetry(input: {
@@ -643,87 +571,6 @@ async function recordContinuityPackTelemetry(input: {
     });
 }
 
-async function runAutoOrientForSessionStart(input: {
-  cwd: string;
-  dependencies: SessionStartHookDependencies;
-  hookEventName: string;
-  repoId: string | undefined;
-  sessionId: string | undefined;
-}): Promise<AutoOrientText | undefined> {
-  const orientInput = {
-    ...(input.repoId !== undefined ? { project: input.repoId } : {}),
-    cwd: input.cwd,
-    envProbe: 'local',
-    memoryDetail: 'compact',
-    source: SESSION_START_ORIENT_SOURCE,
-    stateModel: {
-      assumptions: [],
-      constraints: [],
-      strategy_confidence: 'medium',
-      uncertainty: [],
-    },
-  };
-  const startedAt = Date.now();
-  const invocationId = randomUUID();
-
-  try {
-    const result = await input.dependencies.withTimeout({
-      operation: 'memory_orient.session_start',
-      task: () => input.dependencies.orientMemory(orientInput),
-      timeoutMs: SESSION_START_ORIENT_TIMEOUT_MS,
-    });
-    await recordAutoOrientTelemetry({
-      dependencies: input.dependencies,
-      durationMs: Date.now() - startedAt,
-      invocationId,
-      repoId: input.repoId,
-      result,
-      sessionId: input.sessionId,
-      status: 'ok',
-    });
-
-    logInfoQuietly({
-      dependencies: input.dependencies,
-      event: 'hook.session_start_orient_complete',
-      fields: {
-        hook_event_name: input.hookEventName,
-        message:
-          input.repoId === undefined
-            ? 'ai-memory session-start orient completed.'
-            : `ai-memory session-start orient completed for ${input.repoId}.`,
-        repo_id: input.repoId,
-        session_id: input.sessionId,
-        status: result.status,
-      },
-    });
-
-    const text = formatOrientMarkdown(result);
-    return {
-      status: result.status === 'ok' ? 'ok' : 'degraded',
-      text,
-    };
-  } catch (error: unknown) {
-    const errorMessage = formatError(error);
-    input.dependencies.logAiMemoryWarn('hook.session_start_orient_failed', {
-      error: errorMessage,
-      hook_event_name: input.hookEventName,
-      message: `Session-start ai-memory orient failed; continuing with recall-only bootstrap. ${errorMessage}`,
-      repo_id: input.repoId,
-      session_id: input.sessionId,
-    });
-    await recordAutoOrientTelemetry({
-      dependencies: input.dependencies,
-      durationMs: Date.now() - startedAt,
-      error,
-      invocationId,
-      repoId: input.repoId,
-      sessionId: input.sessionId,
-      status: 'error',
-    });
-    return { status: 'degraded', text: 'Memory orientation unavailable; use scoped memory retrieval.' };
-  }
-}
-
 function summarizeContinuityPackForTelemetry(result: ContinuityPackReadResult): Record<string, number | string> {
   const summary: Record<string, number | string> = {
     continuity_pack_status: result.status,
@@ -734,20 +581,5 @@ function summarizeContinuityPackForTelemetry(result: ContinuityPackReadResult): 
     summary.continuity_pack_budget_chars = result.pack.budgetChars;
     summary.continuity_pack_payload_chars = result.pack.payloadChars;
   }
-  return summary;
-}
-
-function summarizeOrientForTelemetry(result: MemoryOrientResponse): Record<string, number | string> {
-  const summary: Record<string, number | string> = {
-    detected_source: SESSION_START_ORIENT_SOURCE,
-    source: SESSION_START_ORIENT_SOURCE,
-  };
-  const { orientation } = result;
-  summary.orient_payload_chars = orientation.memoryPayloadChars;
-  summary.orient_payload_tokens_estimate = orientation.memoryPayloadApproxTokens;
-  summary.orient_payload_budget_chars = orientation.memoryPayloadBudgetChars;
-  summary.orient_payload_budget_exceeded = orientation.memoryPayloadBudgetExceeded ? 1 : 0;
-  summary.environment_status = orientation.environmentStatus;
-
   return summary;
 }

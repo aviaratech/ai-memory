@@ -263,6 +263,11 @@ function createMinimalReport(overrides?: DeepPartial<HealthReport>): HealthRepor
   const report = {
     database,
     generatedAt: overrides?.generatedAt ?? '2026-01-15T00:00:00.000Z',
+    memoryConsumption: {
+      status: 'partial',
+      window: { days: 7, start: '2026-01-08T00:00:00.000Z', end: '2026-01-15T00:00:00.000Z' },
+      hosts: [],
+    },
     launchGates,
     mcpUsage,
     orchestration: {
@@ -2984,6 +2989,10 @@ MCP Usage
 - Orient calls: 0 (ok: 0, partial: 0, degraded: 0, errors: 0, timeouts: 0, timeout rate: 0.0% (target <1.0%))
 - Top tools by calls: (none in this window)
 
+Memory use observed in the last 7 days
+- Counts are observed injection/session/ID pairs; use is a lower bound from successful gets and timestamped citations. Coverage is partial.
+- No injection cohort observed; use rate unavailable.
+
 Write Calibration
 - No calibrated writes in window.
 
@@ -3197,6 +3206,10 @@ MCP Usage
 - Orient calls: 0 (ok: 0, partial: 0, degraded: 0, errors: 0, timeouts: 0, timeout rate: 0.0% (target <1.0%))
 - Top tools by calls:
   - memory_flush: calls=100 success=100.0% avg=20.0ms p95=50.0ms
+
+Memory use observed in the last 7 days
+- Counts are observed injection/session/ID pairs; use is a lower bound from successful gets and timestamped citations. Coverage is partial.
+- No injection cohort observed; use rate unavailable.
 
 Write Calibration
 - No calibrated writes in window.

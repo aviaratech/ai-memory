@@ -13,6 +13,7 @@ import {
   resolveRepoIdFromCwd,
 } from './auto-session-ingest.js';
 import { runIngestPipeline } from './pipeline.js';
+import { recordSessionCitationObservations } from './session-task-hooks.js';
 
 const CLAUDE_SESSION_END_SOURCE = 'claude-session-end';
 const GROK_SESSION_END_SOURCE = 'grok-session-end';
@@ -290,6 +291,9 @@ async function runSessionEndHookCore(
     session_id: result.sessionId,
     source,
   });
+
+  // Citation evidence is optional and ID-only. Failed/unsupported observation never fails ingestion.
+  await recordSessionCitationObservations(payload).catch(() => {});
 
   return { continue: true, ingested: true, suppressOutput: true };
 }

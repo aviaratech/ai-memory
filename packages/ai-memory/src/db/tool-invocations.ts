@@ -22,6 +22,11 @@
  */
 import type { Pool } from 'pg';
 
+import { createHash } from 'node:crypto';
+
+import { resolveTimeoutPolicy } from '../timeout-policy.js';
+import { normalizeProjectScope } from './normalization.js';
+import { runBoundedQuery } from './query-runner.js';
 import { pool } from './runtime.js';
 
 /**
@@ -43,6 +48,10 @@ export const SUMMARY_JSON_ALLOWLIST = new Set<string>([
   'event_limit',
   'events_ingested',
   'limit',
+  'injected_memory_ids',
+  'memory_host',
+  'memory_observed_at',
+  'memory_observation',
   'next_actions_count',
   'open_questions_count',
   'orient_payload_budget_chars',
@@ -65,7 +74,152 @@ export const SUMMARY_JSON_ALLOWLIST = new Set<string>([
   'stage',
   'state_model_assumptions_count',
   'timed_out_steps',
+  'used_memory_ids',
 ]);
+
+export type MemoryHost = 'claude-code' | 'codex';
+export interface MemoryHookIdentity {
+  host: MemoryHost;
+  project: string;
+  sessionId: string;
+}
+
+export function parseConsumptionMemoryIds(value: unknown): number[] | undefined {
+  try {
+    const values: unknown = typeof value === 'string' ? JSON.parse(value) : value;
+    if (
+      !Array.isArray(values) ||
+      values.length > 100 ||
+      !values.every((id: unknown) => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
+    )
+      return undefined;
+    return [...new Set(values as number[])];
+  } catch {
+    return undefined;
+  }
+}
+
+function validatedHookIdentity(input: MemoryHookIdentity): MemoryHookIdentity {
+  const project = normalizeProjectScope({ project: input.project });
+  if (
+    project === undefined ||
+    project !== input.project ||
+    project.length > 512 ||
+    !['claude-code', 'codex'].includes(input.host) ||
+    input.sessionId.trim() !== input.sessionId ||
+    input.sessionId.length === 0 ||
+    input.sessionId.length > 256
+  )
+    throw new Error('Invalid memory hook identity.');
+  return input;
+}
+
+function promptMarkerId(input: MemoryHookIdentity): string {
+  const identity = validatedHookIdentity(input);
+  return `prompt-marker:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
+}
+
+/** Startup is the only arming event. Existing consumed/unarmed markers are never reset. */
+export async function armPromptRetrieval(input: MemoryHookIdentity): Promise<void> {
+  await runBoundedQuery({
+    phase: 'db.write.prompt_marker.arm',
+    pool,
+    timeoutMs: resolveTimeoutPolicy().db.writeTimeoutMs,
+    task: async client => {
+      await client.query(
+        `INSERT INTO ai_tool_invocations
+        (tool_name, tool_category, status, invocation_id, session_id, project, write_disposition, summary_json)
+        VALUES ('memory_prompt_marker', 'lifecycle', 'ok', $1, $2, $3, 'pending', $4::jsonb)
+        ON CONFLICT (invocation_id) WHERE invocation_id IS NOT NULL DO NOTHING`,
+        [promptMarkerId(input), input.sessionId, input.project, JSON.stringify({ memory_host: input.host })],
+      );
+    },
+  });
+}
+
+/** Missing/expired startup markers become ineligible; only one pending transition can win. */
+export async function consumePromptRetrieval(input: MemoryHookIdentity): Promise<boolean> {
+  return runBoundedQuery({
+    phase: 'db.write.prompt_marker.consume',
+    pool,
+    timeoutMs: resolveTimeoutPolicy().db.writeTimeoutMs,
+    task: async client => {
+      const result = await client.query<{ write_disposition: string }>(
+        `INSERT INTO ai_tool_invocations
+        (tool_name, tool_category, status, invocation_id, session_id, project, write_disposition, summary_json)
+        VALUES ('memory_prompt_marker', 'lifecycle', 'ok', $1, $2, $3, 'unarmed', $4::jsonb)
+        ON CONFLICT (invocation_id) WHERE invocation_id IS NOT NULL DO UPDATE
+          SET write_disposition = 'consumed'
+          WHERE ai_tool_invocations.write_disposition = 'pending'
+        RETURNING write_disposition`,
+        [promptMarkerId(input), input.sessionId, input.project, JSON.stringify({ memory_host: input.host })],
+      );
+      return result.rows[0]?.write_disposition === 'consumed';
+    },
+  });
+}
+
+export interface MemoryConsumptionInput extends MemoryHookIdentity {
+  kind: 'injected' | 'used';
+  memoryIds: number[];
+  observation: 'citation' | 'get' | 'prompt';
+  observedAt?: string;
+}
+
+/** ID-only observations share the existing telemetry sanitizer and retention. */
+export async function recordMemoryConsumption(input: MemoryConsumptionInput): Promise<void> {
+  validatedHookIdentity(input);
+  let memoryIds = parseConsumptionMemoryIds(input.memoryIds);
+  if (memoryIds === undefined || memoryIds.length === 0) return;
+  const observedAt = input.observedAt ?? new Date().toISOString();
+  if (!Number.isFinite(Date.parse(observedAt))) throw new Error('Invalid observation timestamp.');
+  if (input.kind === 'used') {
+    const injected = await runBoundedQuery({
+      phase: 'db.read.injected_memory_ids',
+      pool,
+      timeoutMs: resolveTimeoutPolicy().db.readTimeoutMs,
+      task: client =>
+        client.query<{ injected_memory_ids: string; memory_observed_at: string }>(
+          `SELECT summary_json->>'injected_memory_ids' AS injected_memory_ids,
+          summary_json->>'memory_observed_at' AS memory_observed_at
+        FROM ai_tool_invocations WHERE tool_name='memory_injected' AND status='ok'
+          AND project=$1 AND session_id=$2 AND summary_json->>'memory_host'=$3
+          AND created_at <= $4::timestamptz ORDER BY created_at DESC LIMIT 100`,
+          [input.project, input.sessionId, input.host, observedAt],
+        ),
+    });
+    const allowed = new Set(
+      injected.rows.flatMap(row =>
+        Date.parse(row.memory_observed_at) < Date.parse(observedAt)
+          ? (parseConsumptionMemoryIds(row.injected_memory_ids) ?? [])
+          : [],
+      ),
+    );
+    memoryIds = memoryIds.filter(id => allowed.has(id));
+    if (memoryIds.length === 0) return;
+  }
+  const summaryFields = {
+    memory_host: input.host,
+    memory_observed_at: new Date(observedAt).toISOString(),
+    memory_observation: input.observation,
+    [input.kind === 'injected' ? 'injected_memory_ids' : 'used_memory_ids']: JSON.stringify(memoryIds),
+  };
+  const invocationId = `memory-consumption:${createHash('sha256')
+    .update(JSON.stringify([input.host, input.project, input.sessionId, input.kind, summaryFields]))
+    .digest('hex')}`;
+  await recordToolInvocation({
+    durationMs: null,
+    invocationId,
+    project: input.project,
+    sessionId: input.sessionId,
+    status: 'ok',
+    summaryFields,
+    timeoutWarningCount: 0,
+    toolCategory: 'lifecycle',
+    toolName: `memory_${input.kind}`,
+    warningCount: 0,
+  });
+}
 
 export interface ToolInvocationInput {
   durationMs: null | number;
@@ -107,6 +261,37 @@ export interface ToolInvocationRow {
   write_disposition: string;
 }
 
+export interface MemoryConsumptionRow {
+  created_at: string;
+  injected_memory_ids: string;
+  memory_host: string;
+  memory_observation: string;
+  memory_observed_at: string;
+  project: string | null;
+  session_id: string | null;
+  tool_name: string;
+  used_memory_ids: string;
+}
+
+export async function queryMemoryConsumption(input: {
+  dbPool: Pool;
+  windowStartIso: string;
+  windowEndIso: string;
+}): Promise<MemoryConsumptionRow[]> {
+  const result = await input.dbPool.query<MemoryConsumptionRow>(
+    `SELECT created_at::text AS created_at, tool_name, session_id, project,
+    COALESCE(summary_json->>'memory_host', '') AS memory_host,
+    COALESCE(summary_json->>'memory_observation', '') AS memory_observation,
+    COALESCE(summary_json->>'memory_observed_at', '') AS memory_observed_at,
+    COALESCE(summary_json->>'injected_memory_ids', '') AS injected_memory_ids,
+    COALESCE(summary_json->>'used_memory_ids', '') AS used_memory_ids
+    FROM ai_tool_invocations WHERE tool_name IN ('memory_injected', 'memory_used') AND status='ok'
+      AND created_at >= $1::timestamptz AND created_at <= $2::timestamptz`,
+    [input.windowStartIso, input.windowEndIso],
+  );
+  return result.rows;
+}
+
 /**
  * Build summary_json from a combined summary map.
  * Applies SUMMARY_JSON_ALLOWLIST: only allowlisted keys are included.
@@ -116,6 +301,28 @@ export interface ToolInvocationRow {
 export function buildSummaryJson(fields: Record<string, number | string>): Record<string, number | string> {
   const result: Record<string, number | string> = {};
   for (const [key, value] of Object.entries(fields)) {
+    if (key === 'injected_memory_ids' || key === 'used_memory_ids') {
+      const ids = parseConsumptionMemoryIds(value);
+      if (ids !== undefined) result[key] = JSON.stringify(ids);
+      continue;
+    }
+    if (key === 'memory_host') {
+      if (value === 'codex' || value === 'claude-code') result[key] = value;
+      continue;
+    }
+    if (key === 'memory_observed_at') {
+      if (
+        typeof value === 'string' &&
+        /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value) &&
+        Number.isFinite(Date.parse(value))
+      )
+        result[key] = value;
+      continue;
+    }
+    if (key === 'memory_observation') {
+      if (value === 'prompt' || value === 'get' || value === 'citation') result[key] = value;
+      continue;
+    }
     if (SUMMARY_JSON_ALLOWLIST.has(key)) {
       result[key] = value;
     }

@@ -11,6 +11,9 @@ import {
 import type { ParsedFlushInput } from './flush-session.js';
 
 export const DEFAULT_CONTINUITY_PACK_BUDGET_CHARS = 6000;
+export type CheckpointFieldProvenance = Partial<
+  Record<'summary' | 'nextActions' | 'contextNeeded' | 'decisions' | 'openQuestions', ContinuityFieldProvenance>
+>;
 
 export interface BuiltContinuityPack {
   budgetChars: number;
@@ -52,6 +55,7 @@ export interface ContinuityPackPayload extends Record<string, unknown> {
   provenance: {
     agent?: string | undefined;
     continuityFields: ContinuityFieldProvenance;
+    fields?: CheckpointFieldProvenance;
     scope: ContinuityPackScope;
     sessionId: string;
     source: string;
@@ -120,6 +124,7 @@ export function buildContinuityPackDebugPayload(result: ContinuityPackReadResult
 }
 
 export function buildContinuityPackFromFlush(input: {
+  fieldProvenance?: CheckpointFieldProvenance;
   budgetChars?: number | undefined;
   nowIso: string;
   parsed: ParsedFlushInput;
@@ -135,6 +140,7 @@ export function buildContinuityPackFromFlush(input: {
   const scope = input.scope ?? { type: 'project' };
   const source = input.parsed.source ?? 'memory_flush';
   const basePack = buildPackPayload({
+    ...(input.fieldProvenance === undefined ? {} : { fieldProvenance: input.fieldProvenance }),
     budgetChars,
     nowIso: input.nowIso,
     parsed: input.parsed,
@@ -227,6 +233,7 @@ export async function refreshContinuityPackFromFlush(input: {
 }
 
 function buildPackPayload(input: {
+  fieldProvenance?: CheckpointFieldProvenance;
   budgetChars: number;
   nowIso: string;
   parsed: ParsedFlushInput;
@@ -248,7 +255,8 @@ function buildPackPayload(input: {
     openQuestions: input.parsed.openQuestions,
     provenance: {
       ...(input.parsed.agent !== undefined ? { agent: input.parsed.agent } : {}),
-      continuityFields: 'agent-authored',
+      continuityFields: input.fieldProvenance === undefined ? 'agent-authored' : 'derived',
+      ...(input.fieldProvenance === undefined ? {} : { fields: input.fieldProvenance }),
       scope: input.scope,
       sessionId: input.sessionId,
       source: input.source,
@@ -398,6 +406,13 @@ function renderContinuityPackPayloadLines(pack: ContinuityPackPayload, compact: 
       `- scope: ${formatScope(pack.provenance.scope)}`,
       `- authority: ${pack.provenance.scope.type === 'project' ? 'background project context; not a lead/outcome/task checkpoint' : 'scoped checkpoint'}`,
       `- field provenance: ${pack.provenance.continuityFields}`,
+      ...(pack.provenance.fields === undefined
+        ? []
+        : [
+            `- fields: ${Object.entries(pack.provenance.fields)
+              .map(([key, value]) => `${key}=${value}`)
+              .join(', ')}`,
+          ]),
     );
     pushList({ label: 'Next', lines, values: pack.nextActions });
     pushList({ label: 'Context Needed', lines, values: pack.contextNeeded });
@@ -452,6 +467,17 @@ function toPayloadFromRecord(record: ContinuityPackRecord): ContinuityPackPayloa
     provenance: {
       ...(typeof rawProvenance.agent === 'string' ? { agent: rawProvenance.agent } : {}),
       continuityFields: readContinuityFieldProvenance(rawProvenance.continuityFields) ?? 'agent-authored',
+      ...(rawProvenance.fields === undefined
+        ? {}
+        : {
+            fields: Object.fromEntries(
+              Object.entries(readRecord(rawProvenance.fields)).filter(
+                ([key, value]) =>
+                  ['summary', 'nextActions', 'contextNeeded', 'decisions', 'openQuestions'].includes(key) &&
+                  readContinuityFieldProvenance(value) !== undefined,
+              ),
+            ),
+          }),
       scope: readScope(rawProvenance.scope, record.scopeKey),
       sessionId: typeof rawProvenance.sessionId === 'string' ? rawProvenance.sessionId : (record.sessionId ?? ''),
       source: typeof rawProvenance.source === 'string' ? rawProvenance.source : record.source,

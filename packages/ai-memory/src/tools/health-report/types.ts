@@ -241,6 +241,7 @@ export interface FailureWindowsMetric {
 }
 
 export interface HealthReport {
+  memoryConsumption: MemoryConsumptionMetrics;
   consolidation?: ConsolidationMetrics | undefined;
   database: ReportDatabaseMetrics;
   generatedAt: string;
@@ -254,6 +255,18 @@ export interface HealthReport {
   };
   retention: RetentionMetrics;
   usefulness?: undefined | UsefulnessMetrics;
+}
+
+export interface MemoryConsumptionMetrics {
+  status: 'partial' | 'unavailable';
+  window: { days: 7; start: string; end: string };
+  hosts: {
+    host: 'claude-code' | 'codex';
+    injectedCount: number;
+    usedCount: number;
+    useRatePct: number | null;
+    coverage: 'partial' | 'unobserved';
+  }[];
 }
 
 export type JsonRecord = Record<string, unknown>;

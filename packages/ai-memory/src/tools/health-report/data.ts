@@ -13,6 +13,13 @@ import {
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 
+import {
+  type MemoryConsumptionRow,
+  parseConsumptionMemoryIds,
+  queryMemoryConsumption,
+} from '../../db/tool-invocations.js';
+import type { MemoryConsumptionMetrics } from './types.js';
+
 import type {
   CalibrationActualOutcome,
   CalibrationSignal,
@@ -110,6 +117,91 @@ export interface ReflectCycleRow extends JsonRecord {
   created_at: unknown;
   memory_key: unknown;
   metadata_json: unknown;
+}
+
+/** Observed lower bound, never a claim that every injected memory was semantically consumed. */
+export function buildMemoryConsumptionMetrics(
+  rows: MemoryConsumptionRow[] | undefined,
+  windowEndIso: string,
+): MemoryConsumptionMetrics {
+  const end = Date.parse(windowEndIso);
+  const start = end - 7 * 24 * 60 * 60 * 1000;
+  const report: MemoryConsumptionMetrics = {
+    status: rows === undefined ? 'unavailable' : 'partial',
+    window: { days: 7, start: new Date(start).toISOString(), end: new Date(end).toISOString() },
+    hosts: [],
+  };
+  if (rows === undefined) return report;
+  const injections = new Map<string, { host: 'claude-code' | 'codex'; observed: number; identity: string }>();
+  const uses = new Map<string, number[]>();
+  const observedIdentities = new Map<string, number[]>();
+  for (const row of rows) {
+    if ((row.memory_host !== 'codex' && row.memory_host !== 'claude-code') || !row.project || !row.session_id) continue;
+    const observed = Date.parse(row.memory_observed_at);
+    const recorded = Date.parse(row.created_at);
+    if (
+      !Number.isFinite(observed) ||
+      !Number.isFinite(recorded) ||
+      observed < start ||
+      observed > end ||
+      recorded < start ||
+      recorded > end ||
+      observed > recorded
+    )
+      continue;
+    const identity = JSON.stringify([row.memory_host, row.session_id, row.project]);
+    if (row.tool_name === 'memory_injected' && row.memory_observation === 'prompt') {
+      for (const id of parseConsumptionMemoryIds(row.injected_memory_ids) ?? []) {
+        const key = JSON.stringify([identity, id]);
+        const prior = injections.get(key);
+        if (prior === undefined || observed < prior.observed)
+          injections.set(key, { host: row.memory_host, observed, identity });
+      }
+    } else if (row.tool_name === 'memory_used' && ['get', 'citation'].includes(row.memory_observation)) {
+      const ids = parseConsumptionMemoryIds(row.used_memory_ids);
+      if (ids === undefined || ids.length === 0) continue;
+      observedIdentities.set(identity, [...(observedIdentities.get(identity) ?? []), observed]);
+      for (const id of ids) {
+        const key = JSON.stringify([identity, id]);
+        uses.set(key, [...(uses.get(key) ?? []), observed]);
+      }
+    }
+  }
+  for (const host of ['claude-code', 'codex'] as const) {
+    const cohort = [...injections.entries()].filter(([, injection]) => injection.host === host);
+    if (cohort.length === 0) continue;
+    const usedCount = cohort.filter(([key, injection]) =>
+      (uses.get(key) ?? []).some(at => at > injection.observed),
+    ).length;
+    const observed = cohort.some(([, injection]) =>
+      (observedIdentities.get(injection.identity) ?? []).some(at => at > injection.observed),
+    );
+    report.hosts.push({
+      host,
+      injectedCount: cohort.length,
+      usedCount,
+      useRatePct: observed ? Math.round((usedCount / cohort.length) * 10000) / 100 : null,
+      coverage: observed ? 'partial' : 'unobserved',
+    });
+  }
+  return report;
+}
+
+export async function collectMemoryConsumptionMetrics(input: {
+  pool: DbPool;
+  windowEndIso: string;
+}): Promise<MemoryConsumptionMetrics> {
+  const windowStartIso = new Date(Date.parse(input.windowEndIso) - 7 * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    const rows = await queryMemoryConsumption({
+      dbPool: input.pool as unknown as PgPool,
+      windowStartIso,
+      windowEndIso: input.windowEndIso,
+    });
+    return buildMemoryConsumptionMetrics(rows, input.windowEndIso);
+  } catch {
+    return buildMemoryConsumptionMetrics(undefined, input.windowEndIso);
+  }
 }
 
 interface ConsolidationDailyAccumulator extends ConsolidationDailyMetric {

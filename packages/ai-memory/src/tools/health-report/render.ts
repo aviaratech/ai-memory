@@ -41,6 +41,21 @@ export function renderReport(report: HealthReport): string {
   renderIngestionSection(lines, report.database);
   renderLaunchGateSection(lines, report);
   renderMcpUsageSection(lines, report.mcpUsage);
+  lines.push('Memory use observed in the last 7 days');
+  lines.push(
+    '- Counts are observed injection/session/ID pairs; use is a lower bound from successful gets and timestamped citations. Coverage is partial.',
+  );
+  if (report.memoryConsumption?.status === 'unavailable' || report.memoryConsumption === undefined)
+    lines.push('- Consumption telemetry unavailable.');
+  else if (report.memoryConsumption.hosts.length === 0)
+    lines.push('- No injection cohort observed; use rate unavailable.');
+  else
+    for (const host of report.memoryConsumption.hosts) {
+      lines.push(
+        `- ${host.host}: injected=${String(host.injectedCount)} used=${String(host.usedCount)} use rate=${host.useRatePct === null ? 'unavailable' : `${String(host.useRatePct)}% (observed lower bound)`}; coverage=${host.coverage}`,
+      );
+    }
+  lines.push('');
   renderWriteCalibrationSection(lines, report.database.writeCalibration);
   renderReflectSection(lines, report.database.reflect);
   renderOrchestrationSection(lines, report.orchestration);
