@@ -44,6 +44,23 @@ registerHooks({
 });
 `;
 
+// Fault injection proves reporting/retention, not the cause of an old native
+// failure. Deliver the real signal first so this fixture still owns its drain.
+const signalFault = `
+const realKill = process.kill.bind(process);
+let injected = false;
+process.kill = (pid, signal) => {
+  const result = realKill(pid, signal);
+  if (!injected && pid < 0 && signal === process.env.DR_FAULT_SIGNAL) {
+    injected = true;
+    throw Object.assign(new Error('synthetic-private-marker'), {
+      code: process.env.DR_FAULT_CODE, errno: -1, syscall: 'kill'
+    });
+  }
+  return result;
+};
+`;
+
 const fakePg = `
 import { appendFileSync, writeFileSync } from 'node:fs';
 export default { Client: class {
@@ -259,6 +276,59 @@ function alive(pid: number) {
   }
 }
 
+function processStates(pids: number[]) {
+  if (pids.length === 0) return [];
+  const result = spawnSync('/bin/ps', ['-p', pids.join(','), '-o', 'pid=,ppid=,pgid=,lstart=,stat='], {
+    encoding: 'utf8',
+    timeout: 1000,
+    maxBuffer: 64 * 1024,
+  });
+  assert.ifError(result.error);
+  assert.ok(result.status === 0 || (result.status === 1 && !result.stdout.trim()), result.stderr);
+  return result.stdout
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const fields = line.trim().split(/\s+/u);
+      assert.equal(fields.length, 9, line);
+      return {
+        pid: Number(fields[0]),
+        ppid: Number(fields[1]),
+        pgid: Number(fields[2]),
+        birth: fields.slice(3, 8).join(' '),
+        state: fields[8],
+      };
+    });
+}
+
+async function recoverOwned(identities: ReturnType<typeof processStates>) {
+  for (const current of processStates(identities.map(identity => identity.pid))) {
+    if (
+      identities.some(
+        identity => identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
+      )
+    ) {
+      try {
+        process.kill(current.pid, 'SIGKILL');
+      } catch (error) {
+        assert.ok(error instanceof Error && 'code' in error && error.code === 'ESRCH');
+      }
+    }
+  }
+  await waitUntil(
+    () =>
+      !processStates(identities.map(identity => identity.pid)).some(current =>
+        identities.some(
+          identity =>
+            identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
+        ),
+      ),
+    1000,
+    'fixture recovery did not reap owned processes',
+  );
+}
+
 function observe(child: ReturnType<typeof spawn>) {
   let stdout = '',
     stderr = '';
@@ -381,6 +451,8 @@ for (const [phase, stop] of [
     });
     let child: ReturnType<typeof spawn> | undefined;
     let owned: number[] = [];
+    let identities: ReturnType<typeof processStates> = [];
+    let observed: ReturnType<typeof observe> | undefined;
     try {
       if (phase === 'list' || phase === 'restore') await restoreFixture(current);
       child = spawn(process.execPath, [script, phase === 'list' || phase === 'restore' ? 'restore' : 'backup'], {
@@ -392,30 +464,26 @@ for (const [phase, stop] of [
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      let stdout = '',
-        stderr = '';
-      child.stdout?.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      const closed = new Promise<void>((resolve, reject) => {
-        child?.once('close', () => {
-          resolve();
-        });
-        child?.once('error', reject);
-      });
+      observed = observe(child);
       const deadline = Date.now() + 5_000;
       while (!existsSync(current.env.DR_PIDS ?? '') && Date.now() < deadline) await delay(10);
-      assert.ok(existsSync(current.env.DR_PIDS ?? ''), stderr);
+      assert.ok(existsSync(current.env.DR_PIDS ?? ''), observed.output().stderr);
       owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      identities = processStates(owned);
       if (stop === 'SIGINT' || stop === 'SIGTERM') child.kill(stop);
-      await closed;
-      assert.match(stderr, stop === 'SIGINT' || stop === 'SIGTERM' ? /COMMAND_CANCELLED/u : /PG_TOOL_UNAVAILABLE/u);
-      assert.equal(child.exitCode, stop === 'SIGINT' ? 130 : stop === 'SIGTERM' ? 143 : 1);
+      await observed.closed;
+      const { stdout, stderr } = observed.output();
       const reaped = Date.now() + 1_000;
       while (owned.some(alive) && Date.now() < reaped) await delay(10);
+      // Observe resource outcomes before an error-code assertion can throw and
+      // before recovery kills anything. A failure prints these in catch below.
+      const outcomes = { owned: processStates(owned), peer: processStates(peer.pid ? [peer.pid] : []) };
+      assert.match(
+        stderr,
+        stop === 'SIGINT' || stop === 'SIGTERM' ? /COMMAND_CANCELLED/u : /PG_TOOL_UNAVAILABLE/u,
+        JSON.stringify(outcomes),
+      );
+      assert.equal(child.exitCode, stop === 'SIGINT' ? 130 : stop === 'SIGTERM' ? 143 : 1);
       assert.ok(owned.every(pid => !alive(pid)));
       assert.ok(peer.pid !== undefined && alive(peer.pid));
       assert.ok(
@@ -424,11 +492,171 @@ for (const [phase, stop] of [
       if (phase === 'restore') assert.match(stdout, /restore_target_preserved_for_inspection/u);
       else assert.doesNotMatch(stdout, /restore_verified|"stage":"complete"/u);
       assert.doesNotMatch(stderr, /private-password|synthetic-private-marker/u);
+    } catch (error) {
+      console.error(
+        'DR process outcomes before recovery',
+        JSON.stringify({
+          phase,
+          stop,
+          identities,
+          owned: processStates(owned),
+          peer: processStates(peer.pid ? [peer.pid] : []),
+          stderr: observed?.output().stderr,
+        }),
+      );
+      throw error;
     } finally {
       child?.kill('SIGKILL');
-      for (const pid of owned) if (alive(pid)) process.kill(pid, 'SIGKILL');
+      await recoverOwned(identities);
+      await observed?.closed;
       peer.kill('SIGKILL');
       await peerClosed;
+      rmSync(current.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test(
+  'abrupt CLI exit preserves ownership while fixture recovery drains only its descendants',
+  { timeout: 10_000 },
+  async () => {
+    const current = fixture();
+    const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    const peerObserved = observe(peer);
+    const child = spawn(process.execPath, [script, 'backup'], {
+      env: { ...current.env, DR_HOLD_PHASE: 'version' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const observed = observe(child);
+    let identities: ReturnType<typeof processStates> = [];
+    try {
+      await waitUntil(() => existsSync(current.env.DR_PIDS ?? ''), 5_000, 'owned fixture never became ready');
+      const owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      identities = processStates(owned);
+      assert.equal(identities.length, 2);
+      child.kill('SIGKILL');
+      await waitUntil(() => child.signalCode === 'SIGKILL', 1000, 'CLI did not terminate');
+      assert.equal(processStates(owned).length, 2, 'CLI exit unexpectedly drained detached descendants');
+      assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
+      // Their inherited pipes prevent close until recovery has signaled them.
+      await recoverOwned(identities);
+      await observed.closed;
+      assert.equal(processStates(owned).length, 0);
+      assert.ok(peer.pid !== undefined && alive(peer.pid));
+      assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
+    } finally {
+      child.kill('SIGKILL');
+      await recoverOwned(identities);
+      await observed.closed;
+      peer.kill('SIGKILL');
+      await peerObserved.closed;
+      rmSync(current.root, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const [phase, signal, stop, code] of [
+  ['terminate', 'SIGTERM', 'overflow', 'EPERM'],
+  ['grace-kill', 'SIGKILL', 'overflow', 'EPERM'],
+  ['exit-kill', 'SIGKILL', 'failure', 'EPERM'],
+  ['terminate', 'SIGTERM', 'SIGTERM', 'EPERM'],
+  ['exit-kill', 'SIGKILL', 'failure', 'ESRCH'],
+] as const) {
+  test(`${code} at ${phase} during ${stop} retains cleanup evidence and ownership`, { timeout: 20_000 }, async () => {
+    const current = fixture();
+    writeFileSync(join(current.root, 'preload.mjs'), preload + signalFault);
+    const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    const peerObserved = observe(peer);
+    let child: ReturnType<typeof spawn> | undefined;
+    let observed: ReturnType<typeof observe> | undefined;
+    let identities: ReturnType<typeof processStates> = [];
+    try {
+      child = spawn(process.execPath, [script, 'backup'], {
+        env: {
+          ...current.env,
+          DR_HOLD_PHASE: 'version',
+          DR_FAULT_SIGNAL: signal,
+          DR_FAULT_CODE: code,
+          ...(stop === 'overflow' ? { DR_OVERFLOW: '1' } : {}),
+          ...(stop === 'failure' ? { DR_FAIL_EXIT: '1' } : {}),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      observed = observe(child);
+      await waitUntil(() => existsSync(current.env.DR_PIDS ?? ''), 5_000, 'owned fixture never became ready');
+      const owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      identities = processStates(owned);
+      if (stop === 'SIGTERM') child.kill('SIGTERM');
+      await observed.closed;
+      await waitUntil(() => owned.every(pid => !alive(pid)), 1_000, 'owned descendants survived closure');
+      const outcomes = { owned: processStates(owned), peer: processStates(peer.pid ? [peer.pid] : []) };
+      assert.equal(outcomes.owned.length, 0, JSON.stringify(outcomes));
+      assert.equal(outcomes.peer.length, 1, JSON.stringify(outcomes));
+      const stderr = observed.output().stderr;
+      if (code === 'ESRCH') {
+        assert.match(stderr, /PG_TOOL_UNAVAILABLE/u);
+        assert.doesNotMatch(stderr, /PROCESS_CLEANUP_FAILED|process_cleanup_failed/u);
+        assert.ok(!existsSync(join(current.backups, '.backup-owner.json')));
+      } else {
+        const lines = stderr
+          .split('\n')
+          .filter(line => line.startsWith('{'))
+          .map(
+            line =>
+              JSON.parse(line) as {
+                event: string;
+                code: string;
+                errno: number;
+                phase: string;
+                signal: string;
+                pid: number;
+                pgid: number;
+                groupState: string;
+              },
+          );
+        const diagnostic = lines.find(line => line.event === 'process_cleanup_failed');
+        assert.deepEqual(
+          {
+            diagnosticPresent: diagnostic !== undefined,
+            ownershipRetained: existsSync(join(current.backups, '.backup-owner.json')),
+          },
+          { diagnosticPresent: true, ownershipRetained: true },
+          stderr,
+        );
+        assert.ok(diagnostic, stderr);
+        assert.equal(diagnostic.code, 'EPERM');
+        assert.equal(diagnostic.errno, -1);
+        assert.equal(diagnostic.phase, phase);
+        assert.equal(diagnostic.signal, signal);
+        assert.equal(diagnostic.pid, owned[0]);
+        assert.equal(diagnostic.pgid, owned[0]);
+        assert.ok(['present', 'absent', 'unavailable'].includes(diagnostic.groupState));
+        assert.match(stderr, /PROCESS_CLEANUP_FAILED/u);
+        assert.ok(existsSync(join(current.backups, '.backup-owner.json')), 'failed cleanup released backup ownership');
+        assert.match(stderr, /BACKUP_OWNER_UNCERTAIN/u);
+      }
+      assert.equal(child.exitCode, stop === 'SIGTERM' ? 143 : 1);
+      assert.doesNotMatch(stderr, /synthetic-private-marker/u);
+    } catch (error) {
+      console.error(
+        'Injected DR outcomes before recovery',
+        JSON.stringify({
+          phase,
+          stop,
+          code,
+          identities,
+          owned: processStates(identities.map(identity => identity.pid)),
+          peer: processStates(peer.pid ? [peer.pid] : []),
+          stderr: observed?.output().stderr,
+        }),
+      );
+      throw error;
+    } finally {
+      child?.kill('SIGKILL');
+      await recoverOwned(identities);
+      await observed?.closed;
+      peer.kill('SIGKILL');
+      await peerObserved.closed;
       rmSync(current.root, { recursive: true, force: true });
     }
   });

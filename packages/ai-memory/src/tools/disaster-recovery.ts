@@ -106,6 +106,9 @@ function isManifest(value: unknown): value is BackupManifest {
 
 const cancellation = new AbortController();
 const ownedProcesses = new Set<{ stop: (reason: string) => void; closed: Promise<string | undefined> }>();
+// A closed child leaves ownedProcesses before main drains it. Keep its failed
+// cleanup evidence until the backup ownership decision as well.
+let processCleanupFailed = false;
 const ownedClients = new Map<PgClient, () => Promise<void>>();
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const PROCESS_CLEANUP_GRACE_MS = 5_000;
@@ -456,23 +459,51 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
     let stderrBytes = 0;
     let failure: string | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const signalOwned = (signal: NodeJS.Signals) => {
+    const signalOwned = (signal: NodeJS.Signals, phase: 'terminate' | 'grace-kill' | 'exit-kill') => {
       if (child.pid === undefined) return;
       try {
         if (process.platform === 'win32') child.kill(signal);
         else process.kill(-child.pid, signal);
       } catch (error) {
-        if (errorCode(error) !== 'ESRCH') failure = 'PROCESS_CLEANUP_FAILED';
+        if (errorCode(error) === 'ESRCH') return;
+        failure = 'PROCESS_CLEANUP_FAILED';
+        processCleanupFailed = true;
+        let groupState: 'present' | 'absent' | 'unavailable' = 'present';
+        try {
+          process.kill(process.platform === 'win32' ? child.pid : -child.pid, 0);
+        } catch (probeError) {
+          groupState = errorCode(probeError) === 'ESRCH' ? 'absent' : 'unavailable';
+        }
+        const code = errorCode(error);
+        const errno =
+          error instanceof Error && 'errno' in error && Number.isSafeInteger(error.errno) ? error.errno : null;
+        // Never include command arguments, provider errors or the raw message.
+        // Three signal phases bound this diagnostic independently of output.
+        process.stderr.write(
+          `${JSON.stringify({
+            event: 'process_cleanup_failed',
+            failure,
+            code: /^[A-Z][A-Z0-9_]{0,63}$/u.test(code) ? code : 'UNKNOWN',
+            errno,
+            phase,
+            signal,
+            pid: child.pid,
+            pgid: process.platform === 'win32' ? null : child.pid,
+            groupState,
+            exitCode: child.exitCode,
+            signalCode: child.signalCode,
+          })}\n`,
+        );
       }
     };
     const stop = (reason: string) => {
       failure ??= reason;
       if (killTimer !== undefined) return;
-      signalOwned('SIGTERM');
+      signalOwned('SIGTERM', 'terminate');
       // This bounds closure of an already cancelled/failed owned process tree,
       // never the elapsed duration of useful backup or restore work.
       killTimer = setTimeout(() => {
-        signalOwned('SIGKILL');
+        signalOwned('SIGKILL', 'grace-kill');
       }, PROCESS_CLEANUP_GRACE_MS);
     };
     const cancel = () => {
@@ -503,7 +534,7 @@ async function run(command: string, args: string[], options: RunOptions = {}) {
       if (status !== 0) failure ??= options.failure ?? 'COMMAND_FAILED';
       // Descendants can retain pipes after the direct child exits. Close the
       // owned group before waiting for close and releasing files/checkpoints.
-      signalOwned('SIGKILL');
+      signalOwned('SIGKILL', 'exit-kill');
     });
     child.once('close', status => {
       cancellation.signal.removeEventListener('abort', cancel);
@@ -1441,6 +1472,7 @@ async function main() {
       Promise.allSettled([...ownedClients.values()].map(close => close())),
     ]);
     if (
+      processCleanupFailed ||
       processResults.includes('PROCESS_CLEANUP_FAILED') ||
       clientResults.some(result => result.status === 'rejected')
     ) {
@@ -1450,7 +1482,8 @@ async function main() {
     if (backupOwnership) {
       try {
         await backupOwnership.release(
-          !processResults.includes('PROCESS_CLEANUP_FAILED') &&
+          !processCleanupFailed &&
+            !processResults.includes('PROCESS_CLEANUP_FAILED') &&
             !clientResults.some(result => result.status === 'rejected'),
         );
       } catch {
