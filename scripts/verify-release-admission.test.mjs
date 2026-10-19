@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
+import { createHash } from 'node:crypto';
 
 const directory = mkdtempSync(join(tmpdir(), 'ai-memory-release-admission-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -163,4 +164,208 @@ test('the workflow rejects unaccepted source before running any npm command', ()
   });
   assert.notEqual(result.status, 0);
   assert.equal(existsSync(marker), false, 'unaccepted source executed npm');
+});
+
+function releaseSteps(names) {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const scripts = workflow.split('\n      - name: ').slice(1).flatMap(section => {
+    const lines = section.split('\n');
+    if (!names.includes(lines[0])) return [];
+    const start = lines.indexOf('        run: |');
+    assert.notEqual(start, -1);
+    const body = [];
+    for (const line of lines.slice(start + 1)) {
+      if (line && !line.startsWith('          ')) break;
+      body.push(line.slice(10));
+    }
+    return [body.join('\n')];
+  });
+  assert.equal(scripts.length, names.length);
+  return scripts.join('\n');
+}
+
+function registryFixture(options = {}) {
+  const fixture = mkdtempSync(join(directory, 'registry-'));
+  const bin = join(fixture, 'bin');
+  const releaseDirectory = join(fixture, 'ai-memory-release');
+  mkdirSync(bin);
+  mkdirSync(releaseDirectory);
+  const integrity = 'sha512-synthetic-reviewed-core';
+  const archive = 'aviaratech-ai-memory-plugin-0.2.6.tgz';
+  const plugin = 'synthetic reviewed plugin';
+  writeFileSync(join(releaseDirectory, 'core-pack.json'), JSON.stringify([{ integrity }]));
+  writeFileSync(join(releaseDirectory, archive), plugin);
+  const stateFile = join(fixture, 'registry.json');
+  const initial = {
+    accepted: false, publishes: 0, reads: 0, visibleAfter: 28, integrity,
+    tag: source,
+    release: { tagName: 'v0.2.6', name: 'ai-memory v0.2.6', body: `Reviewed ai-memory release from ${source}.`, isDraft: true, isPrerelease: false, assets: [] },
+    ...options,
+  };
+  writeFileSync(stateFile, JSON.stringify(initial));
+  const executable = (name, script) => {
+    writeFileSync(join(bin, name), script);
+    chmodSync(join(bin, name), 0o755);
+  };
+  const prelude = `#!${process.execPath}\nimport fs from 'node:fs';\nconst file = process.env.FAKE_REGISTRY;\nconst state = JSON.parse(fs.readFileSync(file, 'utf8'));\nconst save = () => fs.writeFileSync(file, JSON.stringify(state));\nconst args = process.argv.slice(2);\n`;
+  executable('npm', prelude + `
+    if (args[0] === 'publish') {
+      state.publishes++;
+      if (state.accepted) { save(); throw new Error('duplicate publish'); }
+      state.accepted = true;
+      save();
+    } else if (args[0] === 'view') {
+      state.reads++;
+      save();
+      if (state.registryError && (!state.errorAfterPublish || state.accepted)) {
+        console.error('npm error code ' + state.registryError);
+        process.exit(1);
+      }
+      if (!state.accepted || state.reads <= state.visibleAfter) {
+        console.error('npm error code E404');
+        process.exit(1);
+      }
+      console.log(JSON.stringify(state.integrity));
+    } else { throw new Error('unexpected npm invocation'); }
+  `);
+  executable('git', prelude + `
+    if (args[0] !== 'ls-remote') throw new Error('unexpected git invocation');
+    console.log(state.tag + '\\trefs/tags/v0.2.6');
+  `);
+  executable('gh', prelude + `
+    if (args[0] !== 'release') throw new Error('unexpected gh invocation');
+    if (args[1] === 'view') console.log(JSON.stringify(state.release));
+    else if (args[1] === 'upload') {
+      state.release.assets.push({ name: '${archive}', state: 'uploaded' });
+      save();
+    } else if (args[1] === 'download') {
+      fs.writeFileSync(args[args.indexOf('--dir') + 1] + '/${archive}', ${JSON.stringify(plugin)});
+    } else if (args[1] === 'edit') {
+      state.release.isDraft = false;
+      save();
+    } else { throw new Error('unexpected gh release invocation'); }
+  `);
+  executable('sleep', `#!/bin/sh\nif [ -f "$FAKE_REGISTRY.cancel" ]; then\n  rm "$FAKE_REGISTRY.cancel"\n  kill -TERM "$PPID"\nfi\n`);
+  // macOS sha256sum does not accept GNU --check/--status used by the runner.
+  executable('sha256sum', `#!${process.execPath}
+    import fs from 'node:fs';
+    import assert from 'node:assert/strict';
+    import { createHash } from 'node:crypto';
+    assert.deepEqual(process.argv.slice(2), ['--check', '--status']);
+    for (const line of fs.readFileSync(0, 'utf8').trim().split('\\n')) {
+      const [expected, file] = line.split('  ');
+      assert.equal(createHash('sha256').update(fs.readFileSync(file)).digest('hex'), expected);
+    }
+  `);
+  const read = () => JSON.parse(readFileSync(stateFile, 'utf8'));
+  const update = patch => writeFileSync(stateFile, JSON.stringify({ ...read(), ...patch }));
+  return {
+    read, update,
+    cancel: () => writeFileSync(`${stateFile}.cancel`, ''),
+    run: (environment = {}) => spawnSync('bash', ['-c', releaseSteps([
+      'Preflight registry and GitHub release conflicts',
+      'Reserve reviewed tag and draft release',
+      'Publish checked workspaces with npm OIDC',
+      'Complete reviewed plugin release',
+    ])], {
+      cwd: new URL('../', import.meta.url).pathname,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        FAKE_REGISTRY: stateFile,
+        RUNNER_TEMP: fixture,
+        RELEASE_VERSION: '0.2.6',
+        SOURCE_SHA: source,
+        PLUGIN_SHA256: createHash('sha256').update(plugin).digest('hex'),
+        ...environment,
+      },
+    }),
+  };
+}
+
+test('accepted npm publish waits beyond 25 E404 reads and completes the plugin once', () => {
+  const fixture = registryFixture();
+  const result = fixture.run();
+  assert.equal(result.status, 0, result.stderr);
+  const state = fixture.read();
+  assert.ok(state.reads > 25);
+  assert.equal(state.publishes, 1);
+  assert.equal(state.release.isDraft, false);
+  assert.equal(state.release.assets.length, 1);
+});
+
+for (const afterPublish of [false, true]) {
+  test(`registry integrity mismatch ${afterPublish ? 'after' : 'before'} publish prevents plugin completion`, () => {
+    const fixture = registryFixture({ accepted: !afterPublish, visibleAfter: 0, integrity: 'sha512-wrong' });
+    const result = fixture.run();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr + result.stdout, /integrity mismatch/);
+    assert.equal(fixture.read().publishes, afterPublish ? 1 : 0);
+    assert.equal(fixture.read().release.isDraft, true);
+    assert.deepEqual(fixture.read().release.assets, []);
+  });
+
+  test(`non-E404 registry failure ${afterPublish ? 'after' : 'before'} publish prevents plugin completion`, () => {
+    const fixture = registryFixture({ registryError: 'E503', errorAfterPublish: afterPublish });
+    const result = fixture.run();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /E503/);
+    assert.equal(fixture.read().publishes, afterPublish ? 1 : 0);
+    assert.equal(fixture.read().release.isDraft, true);
+    assert.deepEqual(fixture.read().release.assets, []);
+  });
+}
+
+test('interrupted visibility wait retains accepted core and draft; visible recovery never republishes', () => {
+  const fixture = registryFixture();
+  fixture.cancel();
+  const interrupted = fixture.run();
+  assert.equal(interrupted.signal, 'SIGTERM');
+  const checkpoint = fixture.read();
+  assert.equal(checkpoint.accepted, true);
+  assert.equal(checkpoint.publishes, 1);
+  assert.equal(checkpoint.tag, source);
+  assert.equal(checkpoint.release.isDraft, true);
+  assert.deepEqual(checkpoint.release.assets, []);
+
+  // Registry processing completes independently while the runner is stopped.
+  fixture.update({ visibleAfter: 0 });
+  const wrongSource = fixture.run({ SOURCE_SHA: head });
+  assert.notEqual(wrongSource.status, 0);
+  assert.match(wrongSource.stdout + wrongSource.stderr, /different source/);
+  fixture.update({ integrity: 'sha512-changed' });
+  assert.notEqual(fixture.run().status, 0);
+  assert.equal(fixture.read().publishes, 1);
+  assert.deepEqual(fixture.read().release.assets, []);
+
+  fixture.update({ integrity: checkpoint.integrity });
+  const resumed = fixture.run();
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(fixture.read().publishes, 1);
+  const uninterrupted = registryFixture({ visibleAfter: 0 });
+  assert.equal(uninterrupted.run().status, 0);
+  assert.deepEqual(fixture.read().release, uninterrupted.read().release);
+  assert.equal(fixture.read().tag, uninterrupted.read().tag);
+});
+
+test('plugin archive integrity mismatch prevents draft promotion', () => {
+  const fixture = registryFixture({ accepted: true, visibleAfter: 0 });
+  const result = fixture.run({ PLUGIN_SHA256: '0'.repeat(64) });
+  assert.notEqual(result.status, 0);
+  assert.equal(fixture.read().publishes, 0);
+  assert.equal(fixture.read().release.isDraft, true);
+});
+
+test('workflow retains protected main, exact source acceptance and both archive guards', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /environment: public-release/);
+  assert.match(workflow, /\[\[ "\$\(git rev-parse HEAD\)" == "\$SOURCE_SHA" \]\]/);
+  assert.match(workflow, /node scripts\/verify-release-admission\.mjs[^\n]*\n[^\n]*"\$SOURCE_SHA"[^\n]*"\$REVIEWER_ACTOR"/);
+  assert.ok(workflow.indexOf('Require independent acceptance') < workflow.indexOf('Install pinned npm'));
+  const pack = releaseSteps(['Pack and verify exact reviewed archives']);
+  assert.match(pack, /"\$CORE_SHA256" "\$release_dir\/aviaratech-ai-memory-\$RELEASE_VERSION\.tgz"/);
+  assert.match(pack, /"\$PLUGIN_SHA256" "\$release_dir\/aviaratech-ai-memory-plugin-\$RELEASE_VERSION\.tgz"/);
+  assert.match(pack, /sha256sum --check --status/);
 });
