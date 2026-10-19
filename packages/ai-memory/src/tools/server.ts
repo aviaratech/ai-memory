@@ -41,6 +41,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'node:crypto';
+import { memoryHookHost } from './ingestion/session-task-hooks.js';
 import { realpathSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
@@ -1157,6 +1158,29 @@ if (isMainModule()) {
     void import('./ingestion/codex-usage-audit.js').then(({ runCodexUsageAuditCli }) => {
       runCodexUsageAuditCli(process.argv[3]);
     });
+  } else if (['hook:user-prompt-submit', 'hook:pre-compact', 'hook:memory-used'].includes(subcommand ?? '')) {
+    void (async () => {
+      const { runUserPromptSubmitHook, runPreCompactHook, runMemoryUsedHook } =
+        await import('./ingestion/session-task-hooks.js');
+      let input = '';
+      for await (const chunk of process.stdin) {
+        input += String(chunk);
+        if (input.length > 1_000_000) throw new Error('Hook payload exceeds supported bound.');
+      }
+      const parsed: unknown = JSON.parse(input);
+      const payload = isRecord(parsed) ? parsed : {};
+      const outcome =
+        subcommand === 'hook:user-prompt-submit'
+          ? await runUserPromptSubmitHook(payload)
+          : subcommand === 'hook:pre-compact'
+            ? await runPreCompactHook(payload)
+            : await runMemoryUsedHook(payload);
+      process.stdout.write(`${JSON.stringify(outcome)}\n`);
+      process.exit(0);
+    })().catch(() => {
+      process.stdout.write('{"continue":true,"systemMessage":"ai-memory: hook unavailable."}\n');
+      process.exit(0);
+    });
   } else if (subcommand === 'hook:session-start') {
     void (async () => {
       const { runSessionStartHook, serializeSessionStartHook } = await import('./ingestion/session-start-hook.js');
@@ -1222,6 +1246,8 @@ if (isMainModule()) {
 }
 
 export interface SessionStartHookSubcommandContext {
+  host?: 'claude-code' | 'codex' | undefined;
+  source?: string | undefined;
   cwd: string;
   hookEventName?: string | undefined;
   repoId?: string | undefined;
@@ -1235,6 +1261,10 @@ export function buildSessionStartHookContextFromPayload(
   const context: SessionStartHookSubcommandContext = {
     cwd: firstDefinedText(payload.cwd, env.CLAUDE_PROJECT_DIR, env.PWD) ?? process.cwd(),
   };
+  const host = memoryHookHost(env);
+  if (host !== undefined) context.host = host;
+  const source = firstDefinedText(payload.source);
+  if (source !== undefined) context.source = source;
 
   const hookEventName = firstDefinedText(
     payload.hook_event_name,
@@ -1818,5 +1848,8 @@ function writeCliUsage(stream: NodeJS.WritableStream): void {
   stream.write('  (no args)           Start MCP server (default)\n');
   stream.write('  diagnose-env        Print sanitized runtime credential diagnostics as JSON\n');
   stream.write('  hook:session-start  Run session-start recall, output JSON\n');
+  stream.write('  hook:user-prompt-submit  Retrieve bounded task memories once after startup\n');
+  stream.write('  hook:pre-compact    Write a derived checkpoint for the producing session\n');
+  stream.write('  hook:memory-used    Observe successful ai-memory memory_get results only\n');
   stream.write('  hook:session-end    Run session-end ingestion (reads stdin)\n');
 }

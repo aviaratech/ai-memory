@@ -24,6 +24,8 @@ export type ContinuityPackReadResult =
     };
 
 export interface ContinuityPackRecord {
+  /** Exact database row token for conditional automatic checkpoint writes. */
+  revisionToken?: string | undefined;
   budgetChars: number;
   createdAt: string | undefined;
   pack: Record<string, unknown>;
@@ -63,6 +65,7 @@ export interface ContinuityPackWriteResult {
 }
 
 interface ContinuityPackRow extends QueryResultRow {
+  revision_token?: string;
   budget_chars?: number | string;
   created_at?: Date | string;
   pack_json?: unknown;
@@ -92,7 +95,10 @@ export function buildScopedContinuityPackScopeKey(input: { project: string; scop
   return `${input.scope.type}:${project}:${scopeId}`;
 }
 
-export async function getContinuityPack(input: unknown): Promise<ContinuityPackReadResult> {
+export async function getContinuityPack(
+  input: unknown,
+  options: { includeRevisionToken?: boolean } = {},
+): Promise<ContinuityPackReadResult> {
   const request = isRecord(input) ? input : {};
   const project = normalizeOptionalText(request.project) ?? normalizeOptionalText(request.repoId);
   if (project === undefined) {
@@ -105,7 +111,7 @@ export async function getContinuityPack(input: unknown): Promise<ContinuityPackR
     task: client =>
       client.query<ContinuityPackRow>(
         `
-          SELECT *
+          SELECT *, md5(row_to_json(ai_continuity_packs)::text) AS revision_token
           FROM ai_continuity_packs
           WHERE scope_key = $1
           LIMIT 1
@@ -118,7 +124,7 @@ export async function getContinuityPack(input: unknown): Promise<ContinuityPackR
     return { project, scopeKey, status: 'missing' };
   }
   return {
-    pack: toContinuityPackRecord(row),
+    pack: toContinuityPackRecord(row, options.includeRevisionToken === true),
     status: 'found',
   };
 }
@@ -179,6 +185,78 @@ export async function upsertContinuityPack(input: ContinuityPackWriteInput): Pro
   };
 }
 
+/** Automatic checkpoints never replace a row changed since its exact scoped read. */
+export async function writeAutomaticSessionCheckpoint(input: {
+  checkpoint: ContinuityPackWriteInput;
+  expected: ContinuityPackReadResult;
+}): Promise<boolean> {
+  const { checkpoint, expected } = input;
+  const project = normalizeRequiredText(checkpoint.project, 'project');
+  const sessionId = normalizeRequiredText(checkpoint.sessionId, 'sessionId');
+  if (checkpoint.scope?.type !== 'task' || checkpoint.scope.id !== sessionId || checkpoint.source !== 'pre-compact')
+    throw new Error('Automatic checkpoints require their exact producing session scope.');
+  const agent = isRecord(checkpoint.pack.provenance) ? checkpoint.pack.provenance.agent : undefined;
+  if (agent !== 'codex' && agent !== 'claude-code')
+    throw new Error('Automatic checkpoints require a recognized producer host.');
+  const scopeKey = buildScopedContinuityPackScopeKey({ project, scope: checkpoint.scope });
+  if (
+    expected.status === 'found' &&
+    (expected.pack.scopeKey !== scopeKey ||
+      expected.pack.project !== project ||
+      expected.pack.sessionId !== sessionId ||
+      expected.pack.revisionToken === undefined ||
+      (expected.pack.source === 'pre-compact' &&
+        (!isRecord(expected.pack.pack.provenance) || expected.pack.pack.provenance.agent !== agent)))
+  )
+    return false;
+  if (expected.status === 'missing' && (expected.project !== project || expected.scopeKey !== scopeKey)) return false;
+  const params = [
+    scopeKey,
+    project,
+    sessionId,
+    checkpoint.source,
+    checkpoint.payloadText.length,
+    checkpoint.budgetChars,
+    JSON.stringify({ ...checkpoint.pack, schemaVersion: CONTINUITY_PACK_SCHEMA_VERSION }),
+    checkpoint.updatedAt ?? new Date().toISOString(),
+  ];
+  return runDbWriteQuery({
+    operation: 'automatic_session_checkpoint',
+    task: async client => {
+      // The checkpoint FK needs a producing session even before the first explicit flush.
+      await client.query(
+        `INSERT INTO ai_sessions (session_id, repo_id, repo_slug, agent, task_id)
+          VALUES ($1, $2, $2, $3, $1) ON CONFLICT (session_id) DO NOTHING`,
+        [sessionId, project, agent],
+      );
+      // Preserve existing metadata/status, reject collisions and lock identity through the CAS.
+      const session = await client.query(
+        `SELECT session_id FROM ai_sessions WHERE session_id=$1 AND repo_id=$2
+          AND (repo_slug IS NULL OR repo_slug=$2) AND agent=$3 FOR SHARE`,
+        [sessionId, project, agent],
+      );
+      if (session.rows.length !== 1) return false;
+      const result =
+        expected.status === 'missing'
+          ? await client.query(
+              `INSERT INTO ai_continuity_packs
+          (scope_key, project, session_id, source, payload_chars, budget_chars, pack_json, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
+          ON CONFLICT (scope_key) DO NOTHING RETURNING scope_key`,
+              params,
+            )
+          : await client.query(
+              `UPDATE ai_continuity_packs SET
+          project=$2, session_id=$3, source=$4, payload_chars=$5, budget_chars=$6, pack_json=$7::jsonb, updated_at=$8::timestamptz
+          WHERE scope_key=$1 AND md5(row_to_json(ai_continuity_packs)::text)=$9
+          RETURNING scope_key`,
+              [...params, expected.pack.revisionToken],
+            );
+      return result.rows.length === 1;
+    },
+  });
+}
+
 function normalizeContinuityPackScope(scope: ContinuityPackScope | undefined): ContinuityPackScope {
   if (scope === undefined || scope.type === 'project') {
     return { type: 'project' };
@@ -234,10 +312,11 @@ function runDbWriteQuery<T>(input: { operation: string; task: (client: DbClient)
   });
 }
 
-function toContinuityPackRecord(row: ContinuityPackRow): ContinuityPackRecord {
+function toContinuityPackRecord(row: ContinuityPackRow, includeRevisionToken: boolean): ContinuityPackRecord {
   const project = typeof row.project === 'string' ? row.project : '';
   const scopeKey = typeof row.scope_key === 'string' ? row.scope_key : buildContinuityPackScopeKey(project);
   return {
+    ...(includeRevisionToken ? { revisionToken: row.revision_token } : {}),
     budgetChars: toNumber(row.budget_chars),
     createdAt: toIsoIfDate(row.created_at),
     pack: isRecord(row.pack_json) ? row.pack_json : {},

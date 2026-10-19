@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# The bundled owner emits bounded task context. Discard partial output on failure.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${PLUGIN_ROOT}/dist/mcp-launcher.js" ]; then
+  if output=$(node "${PLUGIN_ROOT}/dist/mcp-launcher.js" hook:user-prompt-submit 2>/dev/null); then
+    printf '%s\n' "$output"
+    exit 0
+  fi
+fi
+printf '{"continue":true,"systemMessage":"ai-memory: prompt retrieval unavailable."}\n'
+exit 0

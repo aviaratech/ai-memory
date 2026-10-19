@@ -937,6 +937,73 @@ export function parseClaudeTranscriptSummary(transcriptPath: string | undefined)
   return summary;
 }
 
+export interface HookTranscriptProjection {
+  history: AutoSessionHistoryEntry[];
+  lastAssistantMessage: string | undefined;
+  sessionSummary?: string | undefined;
+  workingDirectories: string[];
+}
+
+/** Strict projection for automatic hooks; unsupported transcript versions stay unavailable. */
+export function parseHookTranscript(input: {
+  entries: unknown[];
+  host: 'claude-code' | 'codex';
+  sessionId: string;
+}): HookTranscriptProjection | undefined {
+  const directories = new Set<string>();
+  let identified = false;
+  for (const entry of input.entries) {
+    if (!isObjectRecord(entry)) return undefined;
+    if (typeof entry.sessionId === 'string' && entry.sessionId !== input.sessionId) return undefined;
+    if (typeof entry.session_id === 'string' && entry.session_id !== input.sessionId) return undefined;
+    if (input.host === 'claude-code') {
+      if (entry.type === 'session_meta') return undefined;
+      if ((entry.type === 'assistant' || entry.type === 'user') && entry.sessionId !== input.sessionId)
+        return undefined;
+      if (entry.sessionId === input.sessionId) identified = true;
+      if (typeof entry.cwd === 'string') directories.add(entry.cwd);
+    } else if (entry.type === 'session_meta') {
+      if (!isObjectRecord(entry.payload) || entry.payload.id !== input.sessionId) return undefined;
+      identified = true;
+      if (typeof entry.payload.cwd === 'string') directories.add(entry.payload.cwd);
+    } else if (
+      entry.type === 'turn_context' &&
+      isObjectRecord(entry.payload) &&
+      typeof entry.payload.cwd === 'string'
+    ) {
+      directories.add(entry.payload.cwd);
+    }
+    if (
+      isObjectRecord(entry.payload) &&
+      typeof entry.payload.session_id === 'string' &&
+      entry.payload.session_id !== input.sessionId
+    )
+      return undefined;
+  }
+  if (!identified || directories.size === 0 || directories.size > 16) return undefined;
+  if (input.host === 'claude-code') {
+    const summary = createClaudeSummary();
+    for (const [entryIndex, entry] of input.entries.entries())
+      applyClaudeEntryToSummary({ entry, entryIndex, summary });
+    return {
+      history: summary.history.slice(-MAX_AUTO_HISTORY_TURNS),
+      lastAssistantMessage: summary.lastAssistantMessage,
+      sessionSummary: summary.sessionSummary,
+      workingDirectories: [...directories],
+    };
+  }
+  const summary = createCodexSummary(undefined);
+  let sourceModel: string | undefined;
+  for (const [entryIndex, entry] of input.entries.entries())
+    sourceModel = applyCodexEntryToSummary({ entry, entryIndex, sourceModel, summary });
+  if (summary.sessionId !== input.sessionId) return undefined;
+  return {
+    history: summary.history.slice(-MAX_AUTO_HISTORY_TURNS),
+    lastAssistantMessage: summary.lastAssistantMessage,
+    workingDirectories: [...directories],
+  };
+}
+
 export function parseCodexSessionSummary(sessionFile: string | undefined): ParsedCodexSummary {
   const summary = createCodexSummary(sessionFile);
   const sessionFileLabel = sessionFile ?? '<unknown>';
@@ -2038,7 +2105,7 @@ function sanitizeFailureDetails(value: unknown) {
   return output;
 }
 
-function sanitizeMemoryText(value: unknown) {
+export function sanitizeMemoryText(value: unknown) {
   const normalized = readOptionalText(value);
   if (normalized === undefined) {
     return undefined;

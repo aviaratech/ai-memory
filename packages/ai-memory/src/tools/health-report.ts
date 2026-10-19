@@ -16,6 +16,7 @@ import {
 import {
   collectDatabaseMetrics,
   collectMcpUsageMetrics,
+  collectMemoryConsumptionMetrics,
   collectOrchestrationMetrics,
   collectRetentionMetrics,
   computeConsolidationMetrics,
@@ -89,7 +90,7 @@ async function main() {
       windowEndIso,
       windowStartIso,
     });
-    const [mcpUsage, usefulness, consolidation] = await Promise.all([
+    const [mcpUsage, usefulness, consolidation, memoryConsumption] = await Promise.all([
       collectMcpUsageMetrics({
         logFile: args.logFile,
         logFileSource: args.logFileSource,
@@ -99,6 +100,7 @@ async function main() {
       }),
       computeUsefulnessMetrics({ pool, windowEndIso, windowStartIso }),
       computeConsolidationMetrics({ pool, windowEndIso, windowStartIso }),
+      collectMemoryConsumptionMetrics({ pool, windowEndIso }),
     ]);
     const orchestration = collectOrchestrationMetrics({
       retrosDir: args.retrosDir,
@@ -136,6 +138,7 @@ async function main() {
       generatedAt: now.toISOString(),
       launchGates,
       mcpUsage,
+      memoryConsumption,
       orchestration,
       period: {
         days: args.days,

@@ -24,6 +24,8 @@ try {
     'NODE_OPTIONS',
     'AI_AGENT_IDENTITY',
     'CLAUDECODE',
+    'CLAUDE_PLUGIN_ROOT',
+    'PLUGIN_ROOT',
     'CODEX',
     'CLAUDE_MODEL',
   ]) {

@@ -4,12 +4,116 @@ import assert from 'node:assert/strict';
 import { mock } from 'node:test';
 import { afterEach, describe, it } from 'vitest';
 
-import { buildScopedContinuityPackScopeKey, getContinuityPack, upsertContinuityPack } from './continuity-pack-api.js';
+import {
+  buildScopedContinuityPackScopeKey,
+  getContinuityPack,
+  upsertContinuityPack,
+  writeAutomaticSessionCheckpoint,
+} from './continuity-pack-api.js';
 import { mockPoolConnect } from './test-pool-mock.js';
 
 describe('continuity pack read model', () => {
   afterEach(() => {
     mock.restoreAll();
+  });
+
+  it('automatic session checkpoints preserve concurrent writes, including an absent-row race', async () => {
+    const queries: string[] = [];
+    mockPoolConnect(sql => {
+      queries.push(sql);
+      return Promise.resolve(
+        sql.includes('SELECT session_id FROM ai_sessions')
+          ? { ...emptyResult(), rows: [{ session_id: 'session-a' }], rowCount: 1 }
+          : emptyResult(),
+      );
+    });
+    const checkpoint = {
+      budgetChars: 6000,
+      pack: { summary: 'Derived current session state.', provenance: { agent: 'codex' } },
+      payloadText: 'Derived current session state.',
+      project: 'example/catalog',
+      scope: { type: 'task' as const, id: 'session-a' },
+      sessionId: 'session-a',
+      source: 'pre-compact',
+    };
+    assert.equal(
+      await writeAutomaticSessionCheckpoint({
+        checkpoint,
+        expected: { status: 'missing', project: 'example/catalog', scopeKey: 'task:example/catalog:session-a' },
+      }),
+      false,
+    );
+    assert.ok(queries.some(sql => sql.includes('ON CONFLICT (scope_key) DO NOTHING')));
+    queries.length = 0;
+    assert.equal(
+      await writeAutomaticSessionCheckpoint({
+        checkpoint,
+        expected: {
+          status: 'found',
+          pack: {
+            budgetChars: 6000,
+            pack: { summary: 'Original explicit state' },
+            payloadChars: 23,
+            project: 'example/catalog',
+            scopeKey: 'task:example/catalog:session-a',
+            sessionId: 'session-a',
+            source: 'manual-flush',
+            status: 'fresh',
+            createdAt: undefined,
+            updatedAt: '2026-10-19T00:00:00.000Z',
+            revisionToken: 'exact-database-row-token',
+          },
+        },
+      }),
+      false,
+    );
+    assert.ok(queries.some(sql => sql.includes('row_to_json') && sql.includes('RETURNING scope_key')));
+  });
+
+  it('automatic writes reject foreign or unknown producer hosts before touching the database', async () => {
+    const queries: string[] = [];
+    mockPoolConnect(sql => {
+      queries.push(sql);
+      return Promise.resolve(emptyResult());
+    });
+    const checkpoint = {
+      budgetChars: 6000,
+      pack: { summary: 'Current', provenance: { agent: 'codex' } },
+      payloadText: 'Current',
+      project: 'example/catalog',
+      scope: { type: 'task' as const, id: 'session-a' },
+      sessionId: 'session-a',
+      source: 'pre-compact',
+    };
+    for (const agent of ['claude-code', undefined]) {
+      assert.equal(
+        await writeAutomaticSessionCheckpoint({
+          checkpoint,
+          expected: {
+            status: 'found',
+            pack: {
+              ...checkpoint,
+              scopeKey: 'task:example/catalog:session-a',
+              payloadChars: 7,
+              createdAt: undefined,
+              updatedAt: undefined,
+              status: 'fresh',
+              revisionToken: 'exact-token',
+              pack: { provenance: { agent } },
+            },
+          },
+        }),
+        false,
+      );
+    }
+    assert.equal(queries.length, 0);
+    await assert.rejects(
+      writeAutomaticSessionCheckpoint({
+        checkpoint: { ...checkpoint, pack: {} },
+        expected: { status: 'missing', project: 'example/catalog', scopeKey: 'task:example/catalog:session-a' },
+      }),
+      /host/u,
+    );
   });
 
   it('upserts one project-scoped continuity pack with payload budget metadata', async () => {
@@ -76,6 +180,11 @@ describe('continuity pack read model', () => {
     const result = await getContinuityPack({ project: 'example/catalog' });
 
     assert.equal(result.status, 'found');
+    assert.equal(
+      'revisionToken' in result.pack,
+      false,
+      'internal concurrency metadata must not change ordinary pack output',
+    );
     assert.equal(result.pack.scopeKey, 'project:example/catalog');
     assert.equal(result.pack.payloadChars, 540);
     assert.equal(result.pack.updatedAt, '2026-06-28T20:00:00.000Z');

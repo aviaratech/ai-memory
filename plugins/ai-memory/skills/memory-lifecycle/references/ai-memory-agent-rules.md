@@ -11,15 +11,15 @@ These rules define how agents should use the shared `ai-memory` MCP tools.
 
 ## Native Memory Boundary
 
-- Hooks probe the task pack matching the supplied host identity and preserve the producing session provenance. A match skips unrelated project recall/orient. Otherwise startup reads small background project context within the same bounded pack-read budget. Missing project identity must not broaden to global recall.
-- Vector and hybrid retrieval are task-conditioned: use `memory_orient` or `memory_search` when there is a concrete task/query. Do not replace startup continuity with vector fanout or multi-session reads.
-- `memory_flush` remains the deliberate write path for meaning, decisions, and handoff intent. Session-end hooks provide automatic capture and derived hints, not authoritative agent commitments.
+- Hooks probe the task pack named by the supplied session identity. Automatic checkpoints require matching recognized host, project and producing session; explicit logical-task packs preserve their source session. A match wins; otherwise startup supplies bounded keyed durable project facts, excluding another session’s latest project flush. Missing project identity must not broaden to global recall.
+- A new-session startup arms one task-conditioned `UserPromptSubmit` retrieval capped at 3,200 decoded UTF-16 characters of IDs, categories, dates and excerpts. Resume, compaction, replay and expired state do not rearm it. Explicit `memory_orient` and `memory_search` remain available for additional task evidence; do not broaden startup into multi-session reads.
+- `memory_flush` remains the deliberate write path for meaning, decisions, and handoff intent. `PreCompact` derives a checkpoint only from the supplied validated session transcript, refreshes derived fields, retains explicit field lineage and preserves competing newer writes. Session-end hooks retain their capture role. Automatic hints are not authoritative agent commitments.
 
 ## Session Start Checklist (Required)
 
 Run these steps at the beginning of every non-trivial session:
 
-1. Reuse the bounded session-start checkpoint when it matches the active task. Startup probes the task pack named by the host identity, preserving its source session; only a missing match falls back to project background and compact recall/orient. Read scope, provenance and degradation notices.
+1. Reuse the bounded session-start checkpoint when it matches the active task. Startup probes the task pack named by the session identity, enforcing producer-host isolation for automatic checkpoints and preserving explicit source provenance; a missing match falls back to keyed durable project facts. Read scope, provenance and degradation notices.
 
 2. Call `memory_continuity_pack({ project: "example/docs" })` manually only when a host does not run the session-start hook. For an active checkpoint, use exactly one explicit scope, for example `memory_continuity_pack({ project: "example/docs", task: "task-42" })`; `lead` and `outcome` work the same way. Call `memory_continuity_debug` with the same single scope only when inspecting the exact payload, truncation state, or budget pressure.
 
@@ -38,12 +38,13 @@ Use this section as the source of truth for current `memory_continuity_pack`, `m
 
 ### `memory_continuity_pack` (Cross-Chat Read Path Contract)
 
-- Reads one bounded continuity pack from `ai_continuity_packs`. The default project scope is startup background context; it is explicitly rendered as non-authoritative for any active lead/outcome/task.
-- Startup hooks already read this automatically before orient, so manual calls are normally unnecessary.
+- Reads one bounded continuity pack from `ai_continuity_packs`. The default project scope is explicit background context; it is non-authoritative for any active lead/outcome/task and is not injected automatically at startup.
+- Startup hooks read the matching session task pack automatically. Use an explicit logical-task read when its identity differs from the current host session.
 - Session-start read attempts, including failures, are recorded as `memory_continuity_pack` read telemetry. The health report renders dedicated continuity-pack read quality, missing/degraded read count, and p95 latency so a materialized pack with poor or zero reads is visible.
 - Health reporting also surfaces continuity-pack budget pressure, source quality (`explicit_flush_snapshots`, `auto_hint_snapshots`, and derived/carry-forward fields), and deterministic adoption-readiness signals: pack found/missing/degraded reads, actionable-field completeness, and sessions with a flush after a pack read. Readiness is supply/lifecycle evidence, not proof that an agent semantically consumed the context.
+- The seven-day per-host consumption summary counts injected IDs and later successful configured ai-memory `memory_get` results or explicit assistant `[memory:<id>]` citations in the same project and session. Coverage is partial or unobserved, rates are lower bounds on observed use, and unobservable rates remain unset. It does not prove semantic consumption or actual seven-day operator-use acceptance.
 - Input accepts `project` or `repoId`, plus exactly one optional `lead`, `outcome`, or `task` identity. A scoped read is still one indexed lookup and returns only that checkpoint.
-- `memory_flush` always refreshes the project startup pack. When its explicit `lead`, `outcome`, or `task` identities are present, it additionally refreshes separate scoped packs. A worker that only updates project context cannot replace a lead/outcome/task checkpoint.
+- `memory_flush` always refreshes the project pack for explicit background reads. When its explicit `lead`, `outcome`, or `task` identities are present, it additionally refreshes separate scoped packs. A worker that only updates project context cannot replace a lead/outcome/task checkpoint.
 - The read path is intentionally not vector-backed. Vectors belong in task-conditioned `memory_orient`/`memory_search`, where the agent has a meaningful query.
 
 ### `memory_continuity_debug` (Exact Startup Payload Debug)
@@ -149,7 +150,7 @@ Search→get attribution is unknown unless an existing session identity proves t
 - Continuity fields `nextActions`, `contextNeeded`, `openQuestions`, `stateModel`, and `envModel` are expected in agent-authored flush payloads. Missing rich continuity fields can still generate named quality warnings in the flush response -- agents should treat these warnings as actionable, not informational.
 - **`stateModel` is especially important**: it seeds `x_state_model` for resume continuity. Missing state model data is visible in snapshot continuity adoption, while launch-gate health now tracks agent-writer payload completeness from `memory_flush` tool telemetry (target: >= 95%).
 - `stateModel` v2 contract: `strategy_confidence` must be `"high"`, `"medium"`, or `"low"` (string literals). If missing or invalid, it is normalized to `"medium"` with a named warning in the flush response. New temporal fields: `updated_at` (ISO timestamp) and `confidence_history` (array of `{value, reason}` entries) are optional. `envModel` gains `probed_at` (ISO timestamp) for staleness tracking.
-- After the core transaction commits, the existing reflection stage runs and then refreshes the bounded project continuity pack used by future session-start hooks. Explicit `lead`, `outcome`, and `task` values also refresh matching scoped packs; omit them rather than guessing identity. This keeps long-term cross-chat continuity on the existing flush/reflection path instead of adding a separate reflector.
+- After the core transaction commits, the existing reflection stage runs and then refreshes the bounded project continuity pack available for explicit background reads. Explicit `lead`, `outcome`, and `task` values also refresh matching scoped packs; omit them rather than guessing identity. This keeps long-term cross-chat continuity on the existing flush/reflection path instead of adding a separate reflector.
 - `memory_flush` response includes `warnings`, `reflection`/`consolidation`, and `continuityPack` metadata for operational visibility.
 - Automatic Codex/Claude session-end hooks and the supported Grok Build `SessionEnd` export adapter may extract bounded handoff context. They retain source/session/turn identity and evidence references, but never raw unfiltered logs or secrets. The Grok adapter requires a host that invokes `SessionEnd`; it does not install or mutate a Grok hook. Derived snapshot fields are tagged with `x_*_provenance: "derived"`; values carried forward from an explicit flush are tagged `"carry-forward"`. Derived/carry-forward fields improve continuity but do not satisfy the agent-writer `memory_flush` gate or replace an explicit flush.
 
@@ -467,8 +468,8 @@ The `summary` is stored as a `checkpoint` memory (searchable but not in recall).
 
 ## Runtime Notes
 
-- Claude Code performs a session-start recall probe plus automatic session-end ingestion; this does not replace deliberate reads/writes for critical decisions.
-- Codex relies on MCP tool usage plus wrapper/launchd post-session ingestion from `~/.codex/sessions`.
+- Supported, enabled Claude Code and Codex hooks provide bounded startup continuity, one first-prompt task retrieval, derived PreCompact checkpoints and session-end ingestion. Native host support and activation must be established separately; explicit tools remain available.
+- Existing Codex wrapper/post-session ingestion can continue alongside these hooks. Source and synthetic archive verification do not install host launchers or establish operator-use evidence.
 - Automatic durable-memory promotion is available when `AI_MEMORY_AUTO_DURABLE_PROMOTION=1` is configured for the relevant ingestion path. When Claude's compaction summary is available, it is used as the primary content source (higher signal, 1200-char limit, confidence 0.45). Without a compaction summary, the last assistant message is used (700-char limit, confidence 0.35).
 - Auto-promoted memories are `session-summary` category with TTL (default 14 days), not long-lived canonical decisions. Deliberate `memory_store` writes are still required for durable knowledge.
 - Write-time similarity detection auto-supersedes near-duplicate entries for all actionable categories (`architecture`, `bugfix`, `convention`, `decision`, `preference`, `root-cause`).
