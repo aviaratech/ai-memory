@@ -276,8 +276,10 @@ jobs:
             elif grep -q 'E404' "$release_dir/$label-registry.err"; then
               # Publishing an archive path exposes it in public _from/_resolved metadata.
               npm publish --workspace "$package" --access public --provenance
-              # npm may accept a publish before its new version is readable.
-              for attempt in {1..25}; do
+              # Acceptance is final; wait for registry processing without republishing.
+              # Cancellation/job interruption leaves the reserved tag and draft intact.
+              attempt=1
+              while true; do
                 if npm view "$package@$RELEASE_VERSION" dist.integrity --json --prefer-online \
                   > "$release_dir/$label-published.json" 2> "$release_dir/$label-published.err"; then
                   existing_integrity="$(node -e 'console.log(require(process.argv[1]))' "$release_dir/$label-published.json")"
@@ -288,12 +290,9 @@ jobs:
                   cat "$release_dir/$label-published.err"
                   exit 1
                 fi
-                if (( attempt == 25 )); then
-                  echo "Published $package@$RELEASE_VERSION is still absent after 25 reads and 120 seconds" >&2
-                  exit 1
-                fi
-                echo "Waiting for npm visibility of $package@$RELEASE_VERSION ($attempt/25)" >&2
+                echo "Accepted $package@$RELEASE_VERSION; waiting for npm visibility (read $attempt, ${SECONDS}s elapsed)" >&2
                 sleep 5
+                attempt=$((attempt + 1))
               done
             else
               cat "$release_dir/$label-registry.err"
@@ -330,5 +329,5 @@ jobs:
           gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json"
           node scripts/verify-release-state.mjs "$release_dir/github-release.json" "$tag" "$SOURCE_SHA" "$archive" final
           remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
-            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print peeled == "" ? direct : peeled }')"
+            awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"
           [[ "$remote_tag" == "$SOURCE_SHA" ]]
