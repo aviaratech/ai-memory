@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'vitest';
 
@@ -40,4 +42,28 @@ test('importing ingestion stays inert without an explicit database target', () =
     { cwd: packageRoot, encoding: 'utf8', env, timeout: 5000 },
   );
   assert.equal(output, 'ready\n');
+});
+
+test('health workflow CLI executes through a symlinked package path', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ai-memory-health-alias-'));
+  try {
+    const alias = join(root, 'health.mjs');
+    symlinkSync(join(packageRoot, 'dist/tools/health-report.js'), alias);
+    let error: unknown;
+    try {
+      execFileSync(process.execPath, [alias, '--workflow', '--project', 'invalid', '--task', 'task-1', '--json'], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH },
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.ok(error && typeof error === 'object' && 'status' in error && 'stderr' in error);
+    assert.equal(error.status, 1);
+    assert.equal(String(error.stderr), 'invalid_workflow_scope\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

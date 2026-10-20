@@ -5,6 +5,7 @@ import type { DbConfig, DbPool } from '@aviaratech/ai-memory/internal';
 import { createPool } from '@aviaratech/ai-memory/internal';
 import { type ResolvedLogPath, resolveLogFilePath } from '@aviaratech/ai-memory/internal';
 import { resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -165,7 +166,15 @@ export async function main(argv: string[] = process.argv.slice(2)) {
   }
 }
 
-const isDirectRun = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirectRun = (() => {
+  const entrypoint = process.argv[1];
+  if (entrypoint === undefined) return false;
+  try {
+    return realpathSync(entrypoint) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
 
 if (isDirectRun) {
   main().catch((error: unknown) => {
