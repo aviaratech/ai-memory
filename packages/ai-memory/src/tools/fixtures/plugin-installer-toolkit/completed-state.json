@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "binding": "$BINDING",
+  "marketplace": "$MARKETPLACE",
+  "current": {
+    "version": "0.2.2",
+    "root": "$ROOT",
+    "files": {
+      ".claude-plugin/plugin.json": "57400ddfd2076af4399afe97f870038bcdb80a8f2b8c84824b29ec8c019bdf15",
+      "dist/mcp-launcher.js": "798a8b3c5a9db1df27260eda469533569735bb9082f6a6744c730e958228f4d0",
+      "dist/mcp-server.bundle.js": "b21d03a7f4a85f40457028293a321ca423868450e184f29d821bcb4e55118ade",
+      "hooks/hooks.json": "face367c2e41440e9b0bcae0fb5d5c744c4946b4e0884633cec4e10e8766d341",
+      "migrations/001_baseline.sql": "32b461259c64163ce1ff6832a43e4ca0917706e8da4cf1704bf4a16368ce88a3",
+      "plugin.json": "57400ddfd2076af4399afe97f870038bcdb80a8f2b8c84824b29ec8c019bdf15",
+      "skills/memory-lifecycle/SKILL.md": "20ae95f5b7611ecd0d85046851bf93fdbc23daee76657911652499c31f6f7bc5",
+      "skills/memory-ops/SKILL.md": "b64e1caa1c2bb4a0e84bb9072c5b1454c810b69671fc30c1ca9b784b23f0e919"
+    },
+    "digest": "c9dd5bbb9776fb1380b79450efc1f4e7e7bfb823e7c1894dec6464e598074548",
+    "installedPath": "$INSTALLED_PATH"
+  }
+}

@@ -1,3 +1,6 @@
+import type * as NodeFs from 'node:fs';
+import type * as PluginToolkit from '@aviaratech/ai-plugin-tools';
+
 import assert from 'node:assert/strict';
 import {
   cpSync,
@@ -7,18 +10,32 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterEach, describe, it } from 'vitest';
+import { afterEach, describe, it, vi } from 'vitest';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof NodeFs>();
+  return { ...actual, renameSync: vi.fn(actual.renameSync) };
+});
+
+import { marketplaceDocuments, nativePluginArgs } from '@aviaratech/ai-plugin-tools';
+
+vi.mock('@aviaratech/ai-plugin-tools', async importOriginal => {
+  const actual = await importOriginal<typeof PluginToolkit>();
+  return { marketplaceDocuments: vi.fn(actual.marketplaceDocuments), nativePluginArgs: vi.fn(actual.nativePluginArgs) };
+});
 
 import type { PluginOptions } from './pluginCli.js';
 import { runPluginOperation } from './pluginInstallation.js';
 
 const homes: string[] = [];
 afterEach(() => {
+  vi.clearAllMocks();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 function fixture(host: PluginOptions['host'] = 'codex') {
@@ -131,6 +148,203 @@ function inventory(root: string): string[] {
 }
 
 describe('owned standalone plugin installation lifecycle', () => {
+  for (const host of ['codex', 'claude-code'] as const) {
+    it(`${host} invokes real toolkit exports with the selected catalog and native actions`, async () => {
+      const f = fixture(host);
+      assert.equal((await runPluginOperation(f.options('install'), f.context)).state, 'installed');
+      const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+      assert.ok(statePath);
+      const state = JSON.parse(readFileSync(join(f.home, statePath), 'utf8')) as {
+        marketplace: string;
+        current: { digest: string };
+      };
+      assert.deepEqual(vi.mocked(marketplaceDocuments).mock.calls, [
+        [
+          {
+            marketplaceName: state.marketplace,
+            pluginName: 'ai-memory',
+            relativeSource: `./versions/0.2.2/${state.current.digest}/plugin`,
+            version: '0.2.2',
+            ownerName: 'AviaraTech',
+            metadata: { kind: 'described', description: 'Durable local PostgreSQL memory plugin' },
+          },
+        ],
+      ]);
+      f.version('0.2.3');
+      f.context.runtimeVersion = '0.2.3';
+      assert.equal((await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context)).state, 'installed');
+      assert.equal((await runPluginOperation(f.options('remove'), f.context)).state, 'removed');
+      assert.deepEqual(
+        vi.mocked(nativePluginArgs).mock.calls,
+        ['install', 'update', 'remove'].map(action => [
+          {
+            host,
+            action,
+            pluginId: `ai-memory@${state.marketplace}`,
+            scope: 'user',
+          },
+        ]),
+      );
+      const id = `ai-memory@${state.marketplace}`;
+      assert.deepEqual(
+        f.calls.filter(args => ['add', 'install', 'update', 'remove', 'uninstall'].includes(args[1] ?? '')),
+        host === 'codex'
+          ? [
+              ['plugin', 'add', id, '--json'],
+              ['plugin', 'add', id, '--json'],
+              ['plugin', 'remove', id, '--json'],
+            ]
+          : [
+              ['plugin', 'install', id, '--scope', 'user'],
+              ['plugin', 'update', id, '--scope', 'user'],
+              ['plugin', 'uninstall', id, '--scope', 'user', '--keep-data'],
+            ],
+      );
+    });
+  }
+  for (const host of ['codex', 'claude-code'] as const) {
+    it(`${host} toolkit adoption preserves described catalog bytes and publication order`, async () => {
+      const f = fixture(host);
+      assert.equal((await runPluginOperation(f.options('install'), f.context)).state, 'installed');
+      const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+      assert.ok(statePath);
+      const state = JSON.parse(readFileSync(join(f.home, statePath), 'utf8')) as {
+        marketplace: string;
+        current: { digest: string };
+      };
+      const root = join(dirname(join(f.home, statePath)), 'marketplace');
+      const paths = [join(root, '.agents/plugins/marketplace.json'), join(root, '.claude-plugin/marketplace.json')];
+      const written = vi
+        .mocked(renameSync)
+        .mock.calls.map(call => call[1])
+        .filter(path => paths.includes(String(path)));
+      assert.deepEqual(written, paths);
+      for (const [index, name] of ['described.codex.json', 'described.claude.json'].entries()) {
+        const golden = readFileSync(new URL(`./fixtures/plugin-installer-toolkit/${name}`, import.meta.url), 'utf8')
+          .replaceAll('$MARKETPLACE', state.marketplace)
+          .replaceAll('$DIGEST', state.current.digest);
+        const path = paths[index];
+        assert.ok(path);
+        assert.equal(readFileSync(path, 'utf8'), golden);
+      }
+    });
+  }
+  it('toolkit adoption loads completed state without digest rewrite', async () => {
+    const f = fixture();
+    assert.equal((await runPluginOperation(f.options('install'), f.context)).state, 'installed');
+    const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+    assert.ok(statePath);
+    const path = join(f.home, statePath);
+    const before = readFileSync(path, 'utf8');
+    const state = JSON.parse(before) as {
+      binding: string;
+      marketplace: string;
+      current: { root: string; installedPath: string };
+    };
+    const original = JSON.parse(
+      readFileSync(new URL('./fixtures/plugin-installer-toolkit/completed-state.json', import.meta.url), 'utf8'),
+    ) as typeof state;
+    assert.deepEqual(state, {
+      ...original,
+      binding: state.binding,
+      marketplace: state.marketplace,
+      current: { ...original.current, root: state.current.root, installedPath: state.current.installedPath },
+    });
+    assert.equal((await runPluginOperation(f.options('install'), f.context)).state, 'installed');
+    assert.equal(readFileSync(path, 'utf8'), before);
+  });
+  for (const field of ['binding', 'marketplace'] as const) {
+    it(`toolkit adoption refuses mismatched pending ${field} without native replay`, async () => {
+      const f = fixture();
+      await runPluginOperation(f.options('install'), f.context);
+      f.version('0.2.3');
+      f.context.runtimeVersion = '0.2.3';
+      f.interrupt();
+      assert.equal(
+        (await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context)).state,
+        'pending_recovery',
+      );
+      const statePath = inventory(f.home).find(path => path.endsWith('/state.json'));
+      assert.ok(statePath);
+      const path = join(f.home, statePath);
+      const state = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      state[field] = 'another-context';
+      const before = JSON.stringify(state);
+      writeFileSync(path, before);
+      const calls = f.calls.length;
+      assert.equal((await runPluginOperation(f.options('rollback'), f.context)).state, 'conflict');
+      assert.equal(f.calls.length, calls);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    });
+  }
+  for (const interruption of ['second catalog publication', 'lost native acknowledgement'] as const) {
+    it(`toolkit adoption retains pending recovery after ${interruption} without replay`, async () => {
+      const f = fixture();
+      const original = await runPluginOperation(f.options('install'), f.context);
+      assert.equal(original.state, 'installed');
+      f.version('0.2.3');
+      f.context.runtimeVersion = '0.2.3';
+      const actualFs = await vi.importActual<typeof NodeFs>('node:fs');
+      let interrupted = false;
+      vi.mocked(renameSync).mockImplementation((from, to) => {
+        if (
+          interruption === 'second catalog publication' &&
+          !interrupted &&
+          String(to).endsWith('/.claude-plugin/marketplace.json')
+        ) {
+          interrupted = true;
+          throw new Error('synthetic partial publication');
+        }
+        actualFs.renameSync(from, to);
+      });
+      const context = {
+        ...f.context,
+        nativeRun: async (host: PluginOptions['host'], args: string[]) => {
+          const response = await f.context.nativeRun(host, args);
+          if (interruption === 'lost native acknowledgement' && !interrupted && args[1] === 'add') {
+            interrupted = true;
+            throw new Error('synthetic lost acknowledgement after native mutation');
+          }
+          return response;
+        },
+      };
+      try {
+        assert.equal(
+          (await runPluginOperation(f.options('update', { version: '0.2.3' }), context)).state,
+          'pending_recovery',
+        );
+        assert.equal(interrupted, true);
+        const calls = f.calls.length;
+        assert.equal(
+          (await runPluginOperation(f.options('update', { version: '0.2.3' }), f.context)).state,
+          'pending_recovery',
+        );
+        assert.equal(f.calls.length, calls);
+        const restored = await runPluginOperation(f.options('rollback'), f.context);
+        assert.equal(restored.state, 'installed');
+        assert.equal(restored.plugin.version, original.plugin.version);
+        assert.equal(restored.plugin.digest, original.plugin.digest);
+        assert.ok(restored.plugin.installedPath);
+        assert.equal(
+          readFileSync(join(restored.plugin.installedPath, 'dist/mcp-launcher.js'), 'utf8'),
+          '// actual launcher 0.2.2\n',
+        );
+      } finally {
+        vi.mocked(renameSync).mockImplementation(actualFs.renameSync);
+      }
+    });
+  }
+  it('toolkit adoption preserves early Codex scope error', async () => {
+    const f = fixture();
+    const before = inventory(f.home);
+    const result = await runPluginOperation(f.options('install', { scope: 'local' }), f.context);
+    assert.equal(result.state, 'unsupported');
+    assert.equal(result.message, 'This native Codex manager supports user scope. Select --scope user.');
+    assert.deepEqual(vi.mocked(marketplaceDocuments).mock.calls, []);
+    assert.deepEqual(vi.mocked(nativePluginArgs).mock.calls, []);
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(inventory(f.home), before);
+  });
   it('preserves the actual relocated Claude local manual MCP registration shape', async () => {
     const f = fixture('claude-code');
     const path = join(f.home, 'claude/.claude.json');

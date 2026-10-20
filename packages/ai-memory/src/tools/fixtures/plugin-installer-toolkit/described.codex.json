@@ -1,0 +1,17 @@
+{
+  "name": "$MARKETPLACE",
+  "owner": {
+    "name": "AviaraTech"
+  },
+  "plugins": [
+    {
+      "name": "ai-memory",
+      "version": "0.2.2",
+      "description": "Durable local PostgreSQL memory plugin",
+      "source": {
+        "source": "local",
+        "path": "./versions/0.2.2/$DIGEST/plugin"
+      }
+    }
+  ]
+}
