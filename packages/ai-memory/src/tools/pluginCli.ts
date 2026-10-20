@@ -19,7 +19,8 @@ Install/update require the exact version of this released runtime package.
 Codex supports user scope; unsupported scopes are reported without mutation.
 Doctor is read-only. Installation never initializes PostgreSQL or trusts hooks.
 See the installation guide for protected configuration and required host restart/trust.
-ai-memory consolidate --help describes explicit reviewed fragment consolidation.`;
+ai-memory consolidate --help describes explicit reviewed fragment consolidation.
+ai-memory setup --help describes explicit guided local PostgreSQL setup.`;
 
 export function parsePluginArguments(args: string[]): PluginOptions {
   const [command, operation, ...flags] = args;
@@ -63,6 +64,11 @@ export function parsePluginArguments(args: string[]): PluginOptions {
 }
 
 async function main(args: string[]): Promise<void> {
+  if (args[0] === 'setup') {
+    const { runSetupCli } = await import('./localPostgresSetup.js');
+    await runSetupCli(args.slice(1));
+    return;
+  }
   if (args.length === 1 && args[0] === '--version') {
     process.stdout.write(`${getPackageVersion()}\n`);
     return;

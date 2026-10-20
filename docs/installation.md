@@ -2,16 +2,7 @@
 
 Install Node.js 24 and npm 11, PostgreSQL 18 server and client tools, and pgvector for PostgreSQL 18. The validated combination is Node.js 24.21.0, npm 11.19.0, PostgreSQL 18.6, and pgvector 0.8.6. Install PostgreSQL and pgvector through your platform's maintained packages, then verify `node --version`, `npm --version`, `pg_config --version`, `pg_dump --version`, and that `SELECT default_version FROM pg_available_extensions WHERE name = 'vector'` returns the installed pgvector version. A restore host needs the exact extension versions recorded by its source backup.
 
-Create a dedicated local PostgreSQL login role that **owns** the `ai_memory` database. Ownership gives the role the schema creation rights required for `public.ai_memory_pgmigrations` and the memory tables on PostgreSQL 18. For example, from a local PostgreSQL administrator session, set the new role's password interactively and create the database with that role as owner:
-
-```sh
-createuser -h 127.0.0.1 -U postgres --login --pwprompt ai_memory_user
-createdb -h 127.0.0.1 -U postgres --owner=ai_memory_user ai_memory
-psql -h 127.0.0.1 -U postgres -d ai_memory -c 'CREATE EXTENSION IF NOT EXISTS vector'
-psql -h 127.0.0.1 -U postgres -d ai_memory -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
-```
-
-Use your own administrator role and authentication method if they differ; do not put passwords in this repository or shell history. The migrations also try to create the extensions when privileges allow; vector search is unavailable if pgvector is absent. Keep this personal database and its backups as persistent data, separate from the disposable databases used in [contributor tests](../CONTRIBUTING.md#isolated-postgresql-tests).
+The guided command below provisions its own intended database and roles after explicit confirmation. Keep that database and its backups separate from the disposable databases used in [contributor tests](../CONTRIBUTING.md#isolated-postgresql-tests). Package and plugin installation alone never provisions PostgreSQL, applies migrations or installs a persistent service.
 
 From this standalone checkout, install and build the workspaces:
 
@@ -20,24 +11,52 @@ npm ci
 npm run build
 ```
 
-For the 0.2.6 helper release, install the exact runtime package in a dedicated local directory. It contains the built native plugin as well as the engine and operational commands; installation needs no source checkout or build:
+For a released installation, choose an exact reviewed version from [GitHub releases](https://github.com/aviaratech/ai-memory/releases), replace `X.Y.Z` below, and install it in a dedicated directory. The runtime contains the built native plugin, engine and operational commands; installation needs no source checkout or build:
 
 ```sh
 mkdir ai-memory-client && cd ai-memory-client
 npm init -y
-npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.6
+AI_MEMORY_VERSION=X.Y.Z
+npm install --save-exact --ignore-scripts "@aviaratech/ai-memory@$AI_MEMORY_VERSION"
 npx --no-install ai-memory --version
 ```
 
-The helper and the native MCP server report the same package version. The matching GitHub release also provides `aviaratech-ai-memory-plugin-0.2.6.tgz`; its plugin files are identical to `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve their manual configurations until you explicitly choose a migration.
+The helper and native MCP server report the same package version. The matching GitHub release provides `aviaratech-ai-memory-plugin-X.Y.Z.tgz`; its files match `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve existing manual configurations until you explicitly choose a migration.
+
+## Guided local database setup
+
+1. Check that the selected release includes guided setup, then preview its exact target. Preview reads no credentials, connects to no database and changes nothing:
+
+   ```sh
+   npx --no-install ai-memory setup --help
+   npx --no-install ai-memory setup --dry-run --json
+   ```
+
+2. Run setup in a private interactive terminal. Select your existing PostgreSQL administrator and loopback port explicitly when they differ from `postgres` and `5432`:
+
+   ```sh
+   npx --no-install ai-memory setup --admin-user postgres --port 5432
+   ```
+
+   Numbered stages check client/server identity, inspect conflicts, explain the proposed changes and require a typed confirmation. Setup creates a dedicated non-login database owner and a separate runtime login, provisions `vector`/`pg_trgm`, applies the package's canonical migrations, and writes the runtime URL to protected `~/.config/ai-memory/plugin.env`. The runtime login has application access and only `SELECT` on the migration ledger; administrator credentials are never saved. Existing passwords are never reset.
+
+3. Follow each labelled private prompt: the **existing PostgreSQL administrator password** belongs to the selected database login; the **new memory database credential** belongs to the new runtime login and must be entered twice (12–256 printable ASCII characters, without spaces). A Homebrew administrator may use your account name; that does not make its PostgreSQL password an operating-system elevation credential. If PostgreSQL uses local trust, the administrator password can be empty. Never put passwords in command arguments, shell history or shared files.
+
+   Missing prerequisites report the next installation action without installing or starting a service. On macOS, maintained Homebrew packages are `postgresql@18` and `pgvector`. For Debian/Ubuntu, follow the [PostgreSQL APT repository setup](https://wiki.postgresql.org/wiki/Apt) and [pgvector package instructions](https://github.com/pgvector/pgvector#apt). Any `sudo` prompt for those external installation commands requires your **operating-system elevation credential**. If a different PostgreSQL major occupies the port, select a separate intended PostgreSQL 18 instance; setup never stops that service.
+
+4. Accept success only when setup reports `runtime_verified`, database `ready` and MCP `connected`. This includes a connection from the saved protected configuration and a real packaged MCP handshake/tool inventory. Native plugin installation, hook trust and host reload remain separate steps below; backup scheduling and paid providers remain separate [operations](operations.md).
+
+   After failure or interruption, rerun the **same command with the matching package**. Setup rechecks actual roles, ownership, schema history and protected configuration, preserves completed compatible work and resumes unfinished stages. It refuses populated untracked databases, incompatible migration history, unsafe configuration and changed preimages. Resolve the exact reported conflict; do not delete/reset a database or change an existing role password to force a retry. If configuration was saved before a later failure, the result says so and preserves it.
+
+The packed terminal journey has been qualified with fresh isolated configuration on macOS using Node.js 24.21.0, npm 11.19.0 and Homebrew PostgreSQL 18.3 client tools against disposable Debian PostgreSQL 18.6/pgvector 0.8.6. Linux database/MCP integration and client-discovery fixtures are separate proof; a full Linux operating-system installation journey is not implied. Windows setup is not qualified. Older releases lacking `setup --help` retain the administrator initialization path below.
 
 ## Install the native plugin
 
 Use the same interface for Codex and Claude Code. Select the host and scope explicitly, and require the version of the runtime package invoking the helper:
 
 ```sh
-npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.6 --dry-run --json
-npx --no-install ai-memory plugin install --host codex --scope user --version 0.2.6 --json
+npx --no-install ai-memory plugin install --host codex --scope user --version "$AI_MEMORY_VERSION" --dry-run --json
+npx --no-install ai-memory plugin install --host codex --scope user --version "$AI_MEMORY_VERSION" --json
 npx --no-install ai-memory plugin doctor --host codex --scope user --json
 ```
 
@@ -61,12 +80,12 @@ Use a runtime role after the administrator initialization below. The plugin laun
 
 ## Update, rollback and remove
 
-First install the exact reviewed runtime version you intend to use in this local directory, then invoke `plugin update` with that same `--version`. For example, an installation moving to 0.2.6 uses:
+First set `AI_MEMORY_VERSION` to the exact reviewed version you intend to use, install it in this directory, then invoke `plugin update` with that same version:
 
 ```sh
-npm install --save-exact --ignore-scripts @aviaratech/ai-memory@0.2.6
-npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.6 --dry-run --json
-npx --no-install ai-memory plugin update --host codex --scope user --version 0.2.6 --json
+npm install --save-exact --ignore-scripts "@aviaratech/ai-memory@$AI_MEMORY_VERSION"
+npx --no-install ai-memory plugin update --host codex --scope user --version "$AI_MEMORY_VERSION" --dry-run --json
+npx --no-install ai-memory plugin update --host codex --scope user --version "$AI_MEMORY_VERSION" --json
 npx --no-install ai-memory plugin rollback --host codex --scope user --json
 npx --no-install ai-memory plugin remove --host codex --scope user --json
 ```
@@ -75,7 +94,18 @@ The helper binds immutable plugin snapshots and an installation receipt to the h
 
 Rollback changes plugin code, not the database schema. A release with an older migration inventory cannot use a newer ledger; doctor reports that incompatibility. Preserve your database and backups and use an explicitly compatible release rather than reversing migrations automatically. Remove unregisters only the owned native plugin and marketplace, requests Claude's `--keep-data`, and preserves protected environment, plugin data and retained recovery snapshots. Restart/reload the host after update, rollback or removal.
 
-For bootstrap and upgrades, provide `AI_MEMORY_DATABASE_URL` for the database-owning administrator role through your host's protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated `ai_memory` database. The package does not infer a URL from another service or load a shared `.env` file. After setting it, run these commands from the standalone checkout:
+## Administrator initialization reference
+
+Guided setup performs fresh provisioning and initialization. For an existing deployment or an older release, use your PostgreSQL administrator tools and existing protected credential workflow. A new dedicated owner login/database can be provisioned explicitly as follows; `--pwprompt` requests the **new database-owner credential**, while administrator authentication requests the **existing PostgreSQL administrator credential**:
+
+```sh
+createuser -h 127.0.0.1 -U postgres --login --pwprompt ai_memory_user
+createdb -h 127.0.0.1 -U postgres --owner=ai_memory_user ai_memory
+psql -h 127.0.0.1 -U postgres -d ai_memory -c 'CREATE EXTENSION IF NOT EXISTS vector'
+psql -h 127.0.0.1 -U postgres -d ai_memory -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+```
+
+For explicit initialization/upgrades, provide `AI_MEMORY_DATABASE_URL` for the database-owning administrator role through protected environment. It must be an explicit `postgresql://` URL for `localhost`, `127.0.0.1`, or `::1` and the dedicated database. The package does not infer a URL from another service or load shared `.env`. After setting it, run these commands from the standalone checkout:
 
 ```sh
 npm run pg:status -w @aviaratech/ai-memory
