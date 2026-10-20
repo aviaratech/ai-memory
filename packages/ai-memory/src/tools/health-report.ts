@@ -72,9 +72,14 @@ export function resolveHealthReportPoolConfig(config: DbConfig): DbConfig {
   };
 }
 
-async function main() {
+export async function main(argv: string[] = process.argv.slice(2)) {
+  if (argv.includes('--workflow')) {
+    const { runWorkflowReportCli } = await import('./health-report/workflow.js');
+    await runWorkflowReportCli(argv.filter(value => value !== '--workflow'));
+    return;
+  }
   const defaultLogPath = resolveLogFilePath();
-  const args = parseArguments(process.argv.slice(2), defaultLogPath);
+  const args = parseArguments(argv, defaultLogPath);
   const now = new Date();
   const windowStart = new Date(now.getTime() - args.days * 24 * 60 * 60 * 1000);
   const windowStartIso = windowStart.toISOString();

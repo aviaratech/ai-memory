@@ -1154,7 +1154,13 @@ if (isMainModule()) {
 
   const subcommand = process.argv[2];
 
-  if (subcommand === 'telemetry:ingest' || subcommand === 'hook:telemetry') {
+  if (subcommand === 'telemetry:report') {
+    void import('./health-report/workflow.js')
+      .then(({ runWorkflowReportCli }) => runWorkflowReportCli(process.argv.slice(3)))
+      .catch(() => {
+        process.exitCode = 1;
+      });
+  } else if (subcommand === 'telemetry:ingest' || subcommand === 'hook:telemetry') {
     void import('./ingestion/telemetry-event.js')
       .then(async ({ runTelemetryIngestCli, runTelemetryHookCli }) => {
         if (subcommand === 'hook:telemetry') await runTelemetryHookCli();
@@ -1857,6 +1863,9 @@ function writeCliUsage(stream: NodeJS.WritableStream): void {
   stream.write('  (no args)           Start MCP server (default)\n');
   stream.write('  diagnose-env        Print sanitized runtime credential diagnostics as JSON\n');
   stream.write('  hook:session-start  Run session-start recall, output JSON\n');
+  stream.write('  hook:telemetry      Observe bounded content-free lifecycle fields (advisory)\n');
+  stream.write('  telemetry:ingest    Read one strict v1 content-free event from stdin\n');
+  stream.write('  telemetry:report    Report --project <digest> --task <id> [--days 7 --limit 20 --json]\n');
   stream.write('  hook:user-prompt-submit  Retrieve bounded task memories once after startup\n');
   stream.write('  hook:pre-compact    Write a derived checkpoint for the producing session\n');
   stream.write('  hook:memory-used    Observe successful ai-memory memory_get results only\n');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { DbPool, DbResult } from './pool.js';
-import { insertWorkflowEvent } from './workflow-events.js';
+import { insertWorkflowEvent, readWorkflowAggregates } from './workflow-events.js';
 import { parseTelemetryEvent } from '../telemetry/event.js';
 
 function fixture() {
@@ -91,3 +91,27 @@ test('fingerprint ignores caller property order after strict normalization', asy
     second.calls.find(c => c.sql.startsWith('INSERT'))?.params,
   );
 });
+
+const reportQuery = {
+  projectId: `sha256:${'a'.repeat(64)}`,
+  taskId: 'task-1',
+  windowStartIso: '2026-01-01T00:00:00.000Z',
+  windowEndIso: '2026-01-08T00:00:00.000Z',
+  limit: 20,
+  timeoutMs: 5000,
+};
+for (const extra of [
+  { projectId: 'private/project' },
+  { taskId: '../private' },
+  { limit: 101 },
+  { limit: 0 },
+  { timeoutMs: 5001 },
+  { windowStartIso: '2025-01-01T00:00:00.000Z' },
+  { windowEndIso: '2026-01-01T00:00:00.000Z' },
+  { windowStartIso: '2026-02-30T00:00:00.000Z' },
+])
+  test(`rejects invalid workflow scope before database access ${JSON.stringify(extra)}`, async () => {
+    const db = fakePool(true, []);
+    await assert.rejects(readWorkflowAggregates({ ...reportQuery, ...extra }, db.pool), /invalid_workflow_scope/u);
+    assert.equal(db.calls.length, 0);
+  });
