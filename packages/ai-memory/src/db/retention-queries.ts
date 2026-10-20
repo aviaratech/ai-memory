@@ -16,6 +16,7 @@ const PURGE_TABLE_ORDER = [
   'ai_memory_deltas',
   'ai_memory_events',
   'ai_tool_invocations',
+  'ai_workflow_events',
 ] as const;
 
 type PurgeTableKey = (typeof PURGE_TABLE_ORDER)[number];
@@ -124,6 +125,15 @@ const RETENTION_QUERY_DEFS: Record<PurgeTableKey, RetentionQueryDef> = {
     idColumn: 'id',
     orderColumn: 'created_at, id',
     table: 'ai_tool_invocations',
+  },
+  ai_workflow_events: {
+    boundsColumn: 'ingested_at',
+    buildCondition: (c: RetentionConfig) => `ingested_at < NOW() - INTERVAL '${String(c.telemetryDays)} days'`,
+    coveringIndex: 'ai_workflow_events_retention_ingested_idx',
+    displayName: 'ai_workflow_events',
+    idColumn: 'id',
+    orderColumn: 'ingested_at, id',
+    table: 'ai_workflow_events',
   },
 };
 

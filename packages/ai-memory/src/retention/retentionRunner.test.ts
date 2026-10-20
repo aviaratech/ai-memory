@@ -103,6 +103,22 @@ test('dry-run returns candidate counts with zero deleted', async () => {
   assert.equal(deleteCalls.length, 0);
 });
 
+test('workflow observations use the existing telemetry retention and ingestion-age batch order', async () => {
+  const client = createMockClient({
+    candidateCounts: { ai_workflow_events: 3 },
+    deleteRowCounts: { ai_workflow_events: 3 },
+  });
+  const result = await runRetentionPurgeWithClient(client, { dryRun: false, config: { telemetryDays: 12 } });
+  const table = result.tables.find(t => t.table === 'ai_workflow_events');
+  assert.ok(table);
+  assert.equal(table.deleted, 3);
+  const call = client.calls.find(c => c.sql.startsWith('DELETE') && c.sql.includes('ai_workflow_events'));
+  assert.ok(call);
+  assert.match(call.sql, /ingested_at < NOW\(\) - INTERVAL '12 days'/u);
+  assert.match(call.sql, /ORDER BY ingested_at, id/u);
+  assert.equal(call.sql.includes('observed_at'), false);
+});
+
 test('apply mode batches deletes and sums rowCounts', async () => {
   const client = createMockClient({
     candidateCounts: {

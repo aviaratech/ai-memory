@@ -21,6 +21,9 @@
  *   write_disposition, invocation_id, session_id, project, repo_id.
  */
 import type { Pool } from 'pg';
+import type { DbClient } from './pool.js';
+import type { WorkflowReportQuery, WorkflowMetricAggregate } from './workflow-events.js';
+import { WORKFLOW_BINDINGS_CTE, validateWorkflowReportQuery } from './workflow-events.js';
 
 import { createHash } from 'node:crypto';
 
@@ -40,6 +43,8 @@ export const SUMMARY_JSON_ALLOWLIST = new Set<string>([
   'continuity_complete',
   'continuity_pack_budget_chars',
   'continuity_pack_payload_chars',
+  'continuity_pack_projection_chars',
+  'continuity_pack_projection_truncated',
   'continuity_pack_status',
   'detected_source',
   'durable_memories_deduped',
@@ -301,6 +306,16 @@ export async function queryMemoryConsumption(input: {
 export function buildSummaryJson(fields: Record<string, number | string>): Record<string, number | string> {
   const result: Record<string, number | string> = {};
   for (const [key, value] of Object.entries(fields)) {
+    if (key === 'continuity_pack_projection_chars' || key === 'continuity_pack_projection_truncated') {
+      if (
+        typeof value === 'number' &&
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        (key === 'continuity_pack_projection_chars' || value <= 1)
+      )
+        result[key] = value;
+      continue;
+    }
     if (key === 'injected_memory_ids' || key === 'used_memory_ids') {
       const ids = parseConsumptionMemoryIds(value);
       if (ids !== undefined) result[key] = JSON.stringify(ids);
@@ -328,6 +343,89 @@ export function buildSummaryJson(fields: Record<string, number | string>): Recor
     }
   }
   return result;
+}
+
+export interface CanonicalWorkflowActivity {
+  invocations: string;
+  errors: string;
+  durationMs: WorkflowMetricAggregate;
+  packPayloadChars: WorkflowMetricAggregate;
+  packProjectionChars: WorkflowMetricAggregate;
+  projectionTruncation: { observedSamples: string; missingSamples: string; truncatedSamples: string };
+  groups: {
+    tool: string;
+    category: string;
+    invocations: string;
+    errors: string;
+    durationMs: WorkflowMetricAggregate;
+  }[];
+  omittedGroups: string;
+  invocationIds: string[];
+  omittedInvocationIds: string;
+  unattributedRows: string;
+}
+
+function workflowSummaryNumberSql(key: string, binary = false): string {
+  return `CASE WHEN jsonb_typeof(summary_json->'${key}') = 'number'
+    AND (summary_json->>'${key}') ~ '^[0-9]{1,16}$'
+    THEN CASE WHEN (summary_json->>'${key}')::numeric <= ${binary ? '1' : '9007199254740991'} THEN (summary_json->>'${key}')::numeric END END`;
+}
+
+function canonicalWorkflowMetricSql(value: string, packOnly = false): string {
+  const where = packOnly ? "WHERE tool = 'memory_continuity_pack'" : '';
+  return `jsonb_build_object('total', (sum(${value}) FILTER (${where || 'WHERE true'}))::text,
+    'observedSamples', (count(${value}) FILTER (${where || 'WHERE true'}))::text,
+    'missingSamples', ((count(*) FILTER (${where || 'WHERE true'})) - (count(${value}) FILTER (${where || 'WHERE true'})))::text)`;
+}
+
+/** Safe aggregate projection owned by the canonical invocation table. */
+export async function queryWorkflowToolActivity(
+  query: WorkflowReportQuery,
+  client: DbClient,
+): Promise<CanonicalWorkflowActivity> {
+  validateWorkflowReportQuery(query);
+  const result = await client.query<{ data: CanonicalWorkflowActivity }>(
+    `${WORKFLOW_BINDINGS_CTE}, candidates AS (
+    SELECT CASE WHEN tool_name ~ '^[A-Za-z0-9_.:-]{1,64}$' THEN tool_name ELSE 'unknown' END AS tool,
+      CASE WHEN tool_category IN ('ops','read','write') THEN tool_category ELSE 'unknown' END AS category,
+      status, CASE WHEN duration_ms >= 0 THEN duration_ms END AS duration_ms, session_id,
+      CASE WHEN invocation_id ~ '^[A-Za-z0-9_.:-]{1,128}$' THEN invocation_id END AS invocation_id,
+      CASE WHEN summary_json->>'memory_host' IN ('codex','claude-code') THEN summary_json->>'memory_host'
+        WHEN summary_json->>'detected_source' IN ('codex','claude-code') THEN summary_json->>'detected_source' END AS host,
+      ${workflowSummaryNumberSql('continuity_pack_payload_chars')} AS pack_payload,
+      ${workflowSummaryNumberSql('continuity_pack_projection_chars')} AS pack_projection,
+      ${workflowSummaryNumberSql('continuity_pack_projection_truncated', true)} AS projection_truncated
+    FROM ai_tool_invocations WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz
+      AND 'sha256:' || encode(sha256(convert_to(project,'UTF8')),'hex') = $1
+      AND session_id IN (SELECT session_id FROM target_sessions)
+  ), scoped AS (
+    SELECT c.* FROM candidates c WHERE EXISTS (
+      SELECT 1 FROM bindings b WHERE b.unambiguous AND b.host = c.host AND b.session_id = c.session_id
+    )
+  ), grouped AS (
+    SELECT tool, category, count(*)::text AS invocations, (count(*) FILTER (WHERE status='error'))::text AS errors,
+      ${canonicalWorkflowMetricSql('duration_ms')} AS duration FROM scoped GROUP BY tool,category
+  ), ids AS (SELECT DISTINCT invocation_id FROM scoped WHERE invocation_id IS NOT NULL)
+  SELECT jsonb_build_object(
+    'invocations', count(*)::text, 'errors', (count(*) FILTER (WHERE status='error'))::text,
+    'durationMs', ${canonicalWorkflowMetricSql('duration_ms')},
+    'packPayloadChars', ${canonicalWorkflowMetricSql('pack_payload', true)},
+    'packProjectionChars', ${canonicalWorkflowMetricSql('pack_projection', true)},
+    'projectionTruncation', jsonb_build_object(
+      'observedSamples', (count(projection_truncated) FILTER (WHERE tool='memory_continuity_pack'))::text,
+      'missingSamples', ((count(*) FILTER (WHERE tool='memory_continuity_pack')) - (count(projection_truncated) FILTER (WHERE tool='memory_continuity_pack')))::text,
+      'truncatedSamples', (count(*) FILTER (WHERE tool='memory_continuity_pack' AND projection_truncated=1))::text),
+    'groups', COALESCE((SELECT jsonb_agg(jsonb_build_object('tool',tool,'category',category,'invocations',invocations,'errors',errors,'durationMs',duration) ORDER BY invocations::numeric DESC,tool,category) FROM (SELECT * FROM grouped ORDER BY invocations::numeric DESC,tool,category LIMIT $5) limited), '[]'::jsonb),
+    'omittedGroups', (SELECT greatest(0,count(*)-$5)::text FROM grouped),
+    'invocationIds', COALESCE((SELECT jsonb_agg(invocation_id ORDER BY invocation_id) FROM (SELECT invocation_id FROM ids ORDER BY invocation_id LIMIT 100) limited), '[]'::jsonb),
+    'omittedInvocationIds', (SELECT greatest(0,count(*)-100)::text FROM ids),
+    'unattributedRows', ((SELECT count(*) FROM candidates) - count(*))::text
+  ) AS data FROM scoped`,
+    [query.projectId, query.taskId, query.windowStartIso, query.windowEndIso, query.limit],
+  );
+  const data = result.rows[0]?.data;
+  if (data === undefined) throw new Error('workflow_report_unavailable');
+  return data;
 }
 
 /**

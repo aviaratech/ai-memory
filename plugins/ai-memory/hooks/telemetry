@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Advisory content-free observation; the child owns the bounded input projection.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+child=''
+finish() {
+  if [ -n "$child" ]; then
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    child=''
+  fi
+  printf '{"continue":true}\n'
+  exit 0
+}
+trap finish INT TERM
+if [ -f "${PLUGIN_ROOT}/dist/mcp-launcher.js" ]; then
+  node "${PLUGIN_ROOT}/dist/mcp-launcher.js" hook:telemetry <&0 >/dev/null 2>&1 &
+  child=$!
+  wait "$child" 2>/dev/null || true
+  child=''
+fi
+finish

@@ -8,7 +8,7 @@ interface RetentionConfig {
   sessionDays: number;
   sessionSummaryDays: number;
   supersededDays: number;
-  /** Retention window for ai_tool_invocations rows (default: 90 days). Env: AI_MEMORY_RETENTION_TELEMETRY_DAYS */
+  /** Retention window for ai_tool_invocations and ai_workflow_events rows (default: 90 days). Env: AI_MEMORY_RETENTION_TELEMETRY_DAYS */
   telemetryDays: number;
 }
 

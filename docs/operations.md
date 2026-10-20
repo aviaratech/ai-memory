@@ -10,6 +10,10 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 `npm run smoke -w @aviaratech/ai-memory` uses bundled fictional fixtures and writes to the selected database. Run it only against an isolated disposable database. `npm run pg:ensure -w @aviaratech/ai-memory` can start a local service when `AI_MEMORY_POSTGRES_START_COMMAND` is configured; it does not choose a remote database or Docker fallback.
 
+## Task workflow telemetry
+
+For a build containing migration009, `ai-memory-mcp telemetry:ingest` accepts one strict content-free event from stdin. `ai-memory-mcp telemetry:report --project <digest> --task <id> --json` and `npm run health -w @aviaratech/ai-memory -- --workflow --project <digest> --task <id> --json` use the same bounded task report, before legacy collectors. See [telemetry](telemetry.md) for the event contract, source coverage, token-subset accounting, correlation, replay, retention and synthetic example. Applying migrations and enabling installed hooks require their own authorized deployment; the ingest path does not provision or activate them.
+
 ## Verified project-scope backfill
 
 From a matching reviewed source workspace, `backfill:project-scope` can reunite eligible bare-name scope projections with a qualified `owner/repo` scope. It requires an explicitly configured, already initialized loopback database. It never initializes or repairs a schema, starts a service, calls a provider, or scans every project. Source verification on disposable data does not authorize running it against an installed corpus.
