@@ -1,6 +1,6 @@
 {
   "name": "@aviaratech/ai-memory",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Durable local PostgreSQL memory engine and MCP tools for AI agents",
   "license": "MIT",
   "repository": {
