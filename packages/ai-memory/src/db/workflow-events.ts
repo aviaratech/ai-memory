@@ -171,7 +171,7 @@ SELECT jsonb_build_object(
     'unknownUsageObservations', (count(*) FILTER (WHERE kind='usage' AND NOT ${knownUsage}))::text,
     'hostObservations', (count(*) FILTER (WHERE kind='host'))::text,
     'invocationOnlyObservations', (count(*) FILTER (WHERE kind='host' AND dedup_coverage='invocation-only'))::text,
-    'uniqueHostTurns', CASE WHEN count(*) FILTER (WHERE kind='host')=0 OR count(*) FILTER (WHERE kind='host' AND dedup_coverage='invocation-only')>0 THEN NULL ELSE (count(DISTINCT (host,session_id,turn_id)) FILTER (WHERE kind='host' AND dedup_coverage='host-turn'))::text END,
+    'uniqueHostTurns', CASE WHEN count(*) FILTER (WHERE kind='host')=0 OR count(*) FILTER (WHERE kind='host' AND dedup_coverage<>'host-turn')>0 THEN NULL ELSE (count(DISTINCT (host,session_id,turn_id)) FILTER (WHERE kind='host' AND dedup_coverage='host-turn'))::text END,
     'observationsWithoutTime', (count(*) FILTER (WHERE observed_at IS NULL))::text,
     'ambiguousSessions', (SELECT count(*)::text FROM bindings WHERE NOT unambiguous)
   ) FROM scoped),

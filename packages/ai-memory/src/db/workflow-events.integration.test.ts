@@ -259,6 +259,24 @@ test(
       const timed = await readWorkflowAggregates({ ...query, taskId: timedTask }, db);
       assert.deepEqual(timed.totals.executionMs, { total: '7', observedSamples: '1', missingSamples: '0' });
       assert.deepEqual(timed.totals.queueMs, { total: '3', observedSamples: '1', missingSamples: '0' });
+      const partialTurnTask = `${taskId}-partial-turns`;
+      const partialHost = {
+        kind: 'host',
+        source: 'codex-hook',
+        edge: null,
+        taskId: partialTurnTask,
+        host: 'codex',
+        hostEvent: 'Stop',
+        sessionId: `${sessionId}-partial`,
+      };
+      await emit('producer-stable-host', partialHost);
+      const unknownTurns = await readWorkflowAggregates({ ...query, taskId: partialTurnTask }, db);
+      assert.equal(unknownTurns.coverage.hostObservations, '1');
+      assert.equal(unknownTurns.coverage.uniqueHostTurns, null);
+      await emit('covered-host', { ...partialHost, turnId: 'covered-turn', dedupCoverage: 'host-turn' });
+      const partialTurns = await readWorkflowAggregates({ ...query, taskId: partialTurnTask }, db);
+      assert.equal(partialTurns.coverage.hostObservations, '2');
+      assert.equal(partialTurns.coverage.uniqueHostTurns, null);
       const empty = await readWorkflowAggregates({ ...query, taskId: `${taskId}-empty` }, db);
       assert.deepEqual(empty.totals.inputTokens, { total: null, observedSamples: '0', missingSamples: '0' });
       assert.equal(empty.coverage.events, '0');
