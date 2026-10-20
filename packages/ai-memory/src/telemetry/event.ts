@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { types } from 'node:util';
 import * as z from 'zod/v4';
 
 const id = z
@@ -78,6 +79,7 @@ function isPlainData(value: unknown, depth = 0): boolean {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
   if (typeof value !== 'object') return false;
+  if (types.isProxy(value)) return false;
   const prototype: unknown = Object.getPrototypeOf(value);
   if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
     return false;
@@ -208,7 +210,7 @@ export function projectHostTelemetry(
   newId: () => string,
 ): TelemetryParseResult {
   try {
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload))
+    if (typeof payload !== 'object' || payload === null || types.isProxy(payload) || Array.isArray(payload))
       return { ok: false, code: 'invalid_event' };
     const prototype: unknown = Object.getPrototypeOf(payload);
     if (prototype !== Object.prototype && prototype !== null) return { ok: false, code: 'invalid_event' };

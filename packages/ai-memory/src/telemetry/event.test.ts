@@ -252,3 +252,56 @@ test('enforces UTF-8 wire bytes at the exact boundary and rejects hidden produce
     false,
   );
 });
+
+test('producer and nested usage Proxies never execute traps before rejection', () => {
+  let calls = 0;
+  const proxy = new Proxy(
+    { ...edge },
+    {
+      get(target, key, receiver) {
+        if (key === 'toJSON') {
+          calls++;
+          return () => ({});
+        }
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    },
+  );
+  const result = parseTelemetryEvent(proxy);
+  assert.equal(calls, 0);
+  assert.equal(result.ok, false);
+  const nested = new Proxy(
+    { input_tokens: 100 },
+    {
+      getPrototypeOf() {
+        calls++;
+        return Object.prototype;
+      },
+    },
+  );
+  assert.equal(parseTelemetryEvent({ ...usage, usage: nested }).ok, false);
+  assert.equal(calls, 0);
+  const revoked = Proxy.revocable({ ...edge }, {});
+  revoked.revoke();
+  assert.equal(parseTelemetryEvent(revoked.proxy).ok, false);
+});
+
+test('host Proxies never execute prototype or descriptor traps', () => {
+  let calls = 0;
+  const payload = new Proxy(
+    { hook_event_name: 'Stop', session_id: 's1', turn_id: 't1' },
+    {
+      getPrototypeOf() {
+        calls++;
+        return Object.prototype;
+      },
+      getOwnPropertyDescriptor(target, key) {
+        calls++;
+        return Object.getOwnPropertyDescriptor(target, key);
+      },
+    },
+  );
+  const result = projectHostTelemetry('codex', payload, () => 'event-1');
+  assert.equal(calls, 0);
+  assert.equal(result.ok, false);
+});

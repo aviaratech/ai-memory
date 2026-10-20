@@ -20,7 +20,7 @@ Queries run in one read-only repeatable-read snapshot with a five-second server-
 
 ## Strict event v1
 
-The existing `/ingestion` export adds `ingestTelemetryEvent(input, { dbPool? })` and its event/result types. It accepts one plain JSON data object, at most 16 KiB UTF-8 and depth four. Unknown keys, accessors, symbol properties, custom prototypes and non-enumerable producer properties are rejected before serialization. There is no generic payload, message, metadata or error field.
+The existing `/ingestion` export adds `ingestTelemetryEvent(input, { dbPool? })` and its event/result types. It accepts one plain JSON data object, at most 16 KiB UTF-8 and depth four. Unknown keys, Proxies, accessors, symbol properties, custom prototypes and non-enumerable producer properties are rejected before serialization; Proxy traps never execute. There is no generic payload, message, metadata or error field.
 
 | Field | Type and bound |
 | --- | --- |
