@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'vitest';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const thisDir = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(thisDir, '../../../..');
@@ -386,3 +387,196 @@ process.stdout.write(serializeSessionStartHook({
     });
   }
 }
+
+// Exercise the real dispatch and bundled launcher with a writable that requires
+// completion across turns, so process.exit cannot silently discard the tail.
+async function withHookPipeFixture(
+  run: (fixture: { root: string; plugin: string; env: NodeJS.ProcessEnv }) => Promise<void>,
+) {
+  const root = mkdtempSync(join(tmpdir(), 'ai-memory-hook-pipe-'));
+  const server = createServer(socket => socket.destroy());
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== 'string');
+    const databaseUrl = `postgresql://synthetic:synthetic@127.0.0.1:${String(address.port)}/synthetic`;
+    const home = join(root, 'home');
+    mkdirSync(join(home, '.config/ai-memory'), { recursive: true, mode: 0o700 });
+    const config = join(home, '.config/ai-memory/plugin.env');
+    writeFileSync(config, `AI_MEMORY_DATABASE_URL=${databaseUrl}\n`);
+    chmodSync(config, 0o600);
+    const plugin = join(root, 'plugin');
+    cpSync(join(repoRoot, 'plugins/ai-memory'), plugin, { recursive: true });
+    const preload = join(root, 'pipe.mjs');
+    writeFileSync(
+      preload,
+      `
+const write = process.stdout.write.bind(process.stdout);
+const mode = process.env.SYNTHETIC_PIPE_MODE;
+setInterval(() => {}, 60_000); // Intentional exit must still quiesce live handles.
+process.stdout.write = (chunk, encoding, callback) => {
+  const done = typeof encoding === 'function' ? encoding : callback;
+  if (mode === 'error') {
+    queueMicrotask(() => {
+      const error = Object.assign(new Error('PRIVATE_WRITER_FAILURE'), { code: 'EPIPE' });
+      process.stdout.emit('error', error);
+      done?.(error);
+    });
+    return false;
+  }
+  const bytes = Buffer.from(chunk);
+  const split = Math.min(512, Math.max(1, Math.floor(bytes.length / 2)));
+  write(bytes.subarray(0, split), error => {
+    if (error) { done?.(error); return; }
+    if (mode !== 'hold') setImmediate(() => write(bytes.subarray(split), done));
+  });
+  return false;
+};
+`,
+    );
+    await run({
+      root,
+      plugin,
+      env: {
+        HOME: home,
+        PATH: `${process.execPath.slice(0, process.execPath.lastIndexOf('/'))}:/usr/bin:/bin`,
+        NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+        AI_MEMORY_DATABASE_URL: databaseUrl,
+        AI_MEMORY_LOG_FILE: '/dev/null',
+        AI_MEMORY_LOG_STDERR: '0',
+        CODEX: '1',
+      },
+    });
+  } finally {
+    if (server.listening)
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
+function runHookPipe(input: {
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  payload: string;
+  cancel?: boolean;
+}): Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; pid: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(input.command, input.args, { env: input.env, detached: input.cancel === true });
+    const pid = child.pid;
+    assert.ok(pid !== undefined);
+    let stdout = '',
+      stderr = '';
+    const stall = setTimeout(() => {
+      if (input.cancel) process.kill(-pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+      reject(new Error('Hook failed to quiesce after its output completed.'));
+    }, 10_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (input.cancel) {
+        try {
+          process.kill(-pid, 'SIGTERM');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+      }
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.once('error', error => {
+      clearTimeout(stall);
+      reject(error);
+    });
+    child.once('close', (status, signal) => {
+      clearTimeout(stall);
+      resolve({ status, signal, stdout, stderr, pid });
+    });
+    child.stdin.end(input.payload);
+  });
+}
+
+for (const entry of ['core', 'codex-bundle', 'claude-bundle'] as const) {
+  test(`real ${entry} SessionStart completes its JSON pipe before intentional exit`, async () => {
+    await withHookPipeFixture(async ({ env, plugin }) => {
+      const bundled = entry.endsWith('bundle');
+      const childEnv: NodeJS.ProcessEnv = {
+        ...env,
+        ...(entry === 'claude-bundle' ? { CLAUDECODE: '1', CLAUDE_PLUGIN_ROOT: plugin } : { PLUGIN_ROOT: plugin }),
+      };
+      if (entry === 'claude-bundle') delete childEnv.CODEX;
+      const result = await runHookPipe({
+        command: bundled ? '/bin/bash' : process.execPath,
+        args: bundled
+          ? [join(plugin, 'hooks/session-start')]
+          : [join(repoRoot, 'packages/ai-memory/dist/tools/server.js'), 'hook:session-start'],
+        env: childEnv,
+        payload: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'synthetic-pipe' }),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(Buffer.byteLength(result.stdout) > 512);
+      const envelope = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { hookEventName: string; additionalContext: string };
+      };
+      assert.equal(envelope.hookSpecificOutput.hookEventName, 'SessionStart');
+      assert.ok(envelope.hookSpecificOutput.additionalContext.length <= 8000);
+      assert.equal(result.stdout, JSON.stringify(envelope) + '\n');
+    });
+  });
+}
+
+for (const malformed of [false, true]) {
+  test(`real task hook ${malformed ? 'sanitized fallback' : 'normal output'} completes the pipe`, async () => {
+    await withHookPipeFixture(async ({ env }) => {
+      const result = await runHookPipe({
+        command: process.execPath,
+        args: [join(repoRoot, 'packages/ai-memory/dist/tools/server.js'), 'hook:user-prompt-submit'],
+        env,
+        payload: malformed ? 'PRIVATE_INPUT{' : JSON.stringify({ hook_event_name: 'UserPromptSubmit' }),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const envelope = JSON.parse(result.stdout) as { continue: boolean; systemMessage?: string };
+      assert.equal(envelope.continue, true);
+      assert.equal(result.stdout, JSON.stringify(envelope) + '\n');
+      assert.ok(!(result.stdout + result.stderr).includes('PRIVATE_INPUT'));
+      if (malformed) assert.equal(envelope.systemMessage, 'ai-memory: hook unavailable.');
+    });
+  });
+}
+
+test('closed hook writer fails open without leaking its error or retaining handles', async () => {
+  await withHookPipeFixture(async ({ env }) => {
+    const result = await runHookPipe({
+      command: process.execPath,
+      args: [join(repoRoot, 'packages/ai-memory/dist/tools/server.js'), 'hook:user-prompt-submit'],
+      env: { ...env, SYNTHETIC_PIPE_MODE: 'error' },
+      payload: '{}',
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.ok(!result.stderr.includes('PRIVATE_WRITER_FAILURE'));
+  });
+});
+
+test('cancelling a hook under stdout backpressure drains the owned child', async () => {
+  await withHookPipeFixture(async ({ env }) => {
+    const result = await runHookPipe({
+      command: process.execPath,
+      args: [join(repoRoot, 'packages/ai-memory/dist/tools/server.js'), 'hook:user-prompt-submit'],
+      env: { ...env, SYNTHETIC_PIPE_MODE: 'hold' },
+      payload: '{}',
+      cancel: true,
+    });
+    assert.ok(result.signal === 'SIGTERM' || result.status === 0);
+    assert.throws(() => process.kill(-result.pid, 0), { code: 'ESRCH' });
+  });
+});

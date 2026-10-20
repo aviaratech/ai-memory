@@ -1149,6 +1149,24 @@ export function summarizeToolPayload(response: ToolResult, toolName: ToolName): 
   }
 }
 
+/** Hook pipes must finish their envelope before intentional exit, including backpressure. */
+async function writeHookOutputAndExit(output: string): Promise<never> {
+  await new Promise<void>(resolve => {
+    // A closed host pipe is unavailable, not a reason to leak its error or retain handles.
+    process.stdout.once('error', () => {
+      resolve();
+    });
+    try {
+      process.stdout.write(output, () => {
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+  process.exit(0);
+}
+
 if (isMainModule()) {
   initializeAiMemoryRuntimeEnv();
 
@@ -1190,11 +1208,9 @@ if (isMainModule()) {
           : subcommand === 'hook:pre-compact'
             ? await runPreCompactHook(payload)
             : await runMemoryUsedHook(payload);
-      process.stdout.write(`${JSON.stringify(outcome)}\n`);
-      process.exit(0);
-    })().catch(() => {
-      process.stdout.write('{"continue":true,"systemMessage":"ai-memory: hook unavailable."}\n');
-      process.exit(0);
+      await writeHookOutputAndExit(`${JSON.stringify(outcome)}\n`);
+    })().catch(async () => {
+      await writeHookOutputAndExit('{"continue":true,"systemMessage":"ai-memory: hook unavailable."}\n');
     });
   } else if (subcommand === 'hook:session-start') {
     void (async () => {
@@ -1210,8 +1226,7 @@ if (isMainModule()) {
         /* empty payload is fine */
       }
       const outcome = await runSessionStartHook(undefined, buildSessionStartHookContextFromPayload(payload));
-      process.stdout.write(`${serializeSessionStartHook(outcome)}\n`);
-      process.exit(0);
+      await writeHookOutputAndExit(`${serializeSessionStartHook(outcome)}\n`);
     })();
   } else if (subcommand === 'hook:session-end') {
     void (async () => {
