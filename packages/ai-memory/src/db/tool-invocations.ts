@@ -40,6 +40,8 @@ export const SUMMARY_JSON_ALLOWLIST = new Set<string>([
   'continuity_complete',
   'continuity_pack_budget_chars',
   'continuity_pack_payload_chars',
+  'continuity_pack_projection_chars',
+  'continuity_pack_projection_truncated',
   'continuity_pack_status',
   'detected_source',
   'durable_memories_deduped',
@@ -301,6 +303,16 @@ export async function queryMemoryConsumption(input: {
 export function buildSummaryJson(fields: Record<string, number | string>): Record<string, number | string> {
   const result: Record<string, number | string> = {};
   for (const [key, value] of Object.entries(fields)) {
+    if (key === 'continuity_pack_projection_chars' || key === 'continuity_pack_projection_truncated') {
+      if (
+        typeof value === 'number' &&
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        (key === 'continuity_pack_projection_chars' || value <= 1)
+      )
+        result[key] = value;
+      continue;
+    }
     if (key === 'injected_memory_ids' || key === 'used_memory_ids') {
       const ids = parseConsumptionMemoryIds(value);
       if (ids !== undefined) result[key] = JSON.stringify(ids);

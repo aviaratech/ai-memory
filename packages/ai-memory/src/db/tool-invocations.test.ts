@@ -14,6 +14,21 @@ import { buildSummaryJson, SUMMARY_JSON_ALLOWLIST } from './tool-invocations.js'
 
 // --- buildSummaryJson redaction contract ---
 
+test('continuity projection metrics retain only nonnegative sizes and binary omission observations', () => {
+  assert.deepEqual(
+    buildSummaryJson({ continuity_pack_projection_chars: 123, continuity_pack_projection_truncated: 1 }),
+    { continuity_pack_projection_chars: 123, continuity_pack_projection_truncated: 1 },
+  );
+  assert.deepEqual(
+    buildSummaryJson({ continuity_pack_projection_chars: -1, continuity_pack_projection_truncated: 2 }),
+    {},
+  );
+  assert.deepEqual(
+    buildSummaryJson({ continuity_pack_projection_chars: 'private', continuity_pack_projection_truncated: 'private' }),
+    {},
+  );
+});
+
 test('buildSummaryJson passes allowlisted fields through intact', () => {
   const input: Record<string, number | string> = {
     category: 'root-cause',
@@ -21,6 +36,8 @@ test('buildSummaryJson passes allowlisted fields through intact', () => {
     continuity_complete: 1,
     continuity_pack_budget_chars: 6000,
     continuity_pack_payload_chars: 1420,
+    continuity_pack_projection_chars: 900,
+    continuity_pack_projection_truncated: 0,
     continuity_pack_status: 'found',
     detected_source: 'gpt-builder',
     durable_memories_deduped: 2,

@@ -1154,7 +1154,16 @@ if (isMainModule()) {
 
   const subcommand = process.argv[2];
 
-  if (subcommand === 'audit:codex') {
+  if (subcommand === 'telemetry:ingest' || subcommand === 'hook:telemetry') {
+    void import('./ingestion/telemetry-event.js')
+      .then(async ({ runTelemetryIngestCli, runTelemetryHookCli }) => {
+        if (subcommand === 'hook:telemetry') await runTelemetryHookCli();
+        else await runTelemetryIngestCli();
+      })
+      .catch(() => {
+        process.exitCode = 1;
+      });
+  } else if (subcommand === 'audit:codex') {
     void import('./ingestion/codex-usage-audit.js').then(({ runCodexUsageAuditCli }) => {
       runCodexUsageAuditCli(process.argv[3]);
     });

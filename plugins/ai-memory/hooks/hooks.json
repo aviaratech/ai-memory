@@ -28,6 +28,16 @@
           }
         ],
         "matcher": "*"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/telemetry\"",
+            "timeout": 3,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
       }
     ],
     "SessionStart": [
@@ -40,6 +50,16 @@
           }
         ],
         "matcher": "startup|clear|compact"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/telemetry\"",
+            "timeout": 3,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
       }
     ],
     "Stop": [
@@ -48,6 +68,15 @@
           {
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-end\"",
             "timeout": 30,
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/telemetry\"",
+            "timeout": 3,
             "type": "command"
           }
         ]

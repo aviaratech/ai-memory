@@ -11,3 +11,12 @@ export {
   type RunIngestPipelineResult,
   type SessionIngestEvent,
 } from './ingestion/pipeline.js';
+
+export { ingestTelemetryEvent, type TelemetryIngestResult } from './ingestion/telemetry-event.js';
+export type {
+  TelemetryEventInputV1,
+  TelemetryEventV1,
+  TelemetryUsageV1,
+  TelemetryRejectCode,
+  TelemetryParseResult,
+} from '../telemetry/event.js';

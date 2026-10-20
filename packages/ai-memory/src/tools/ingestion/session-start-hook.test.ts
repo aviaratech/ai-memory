@@ -242,6 +242,10 @@ test('oversized continuity retains source and next action alongside bounded summ
   assert.match(output, /REQUIRED_NEXT_ACTION/u);
   assert.match(output, /prior-session/u);
   assert.match(output, /truncated/u);
+  const calls = hookState.toolInvocations.filter(row => row.toolName === 'memory_continuity_pack');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.summaryFields?.continuity_pack_projection_truncated, 1);
+  assert.ok(Number(calls[0]?.summaryFields?.continuity_pack_projection_chars) > 0);
 });
 
 test('continuity signals omitted list items even when text fits', async () => {
@@ -266,6 +270,60 @@ test('continuity signals omitted list items even when text fits', async () => {
   };
   const outcome = await runSessionStartHook(undefined, { dependencies: TEST_DEPENDENCIES, sessionId: 'matching-task' });
   assert.match(readBootstrapText(outcome).split('### Recent Memories')[0] ?? '', /truncated/u);
+  assert.equal(
+    hookState.toolInvocations.find(row => row.toolName === 'memory_continuity_pack')?.summaryFields
+      ?.continuity_pack_projection_truncated,
+    1,
+  );
+});
+
+test('projection observations follow actual item omissions and fail open when canonical telemetry rejects', async () => {
+  for (const [item, truncated] of [
+    ['short', 0],
+    ['x'.repeat(181), 1],
+  ] as const) {
+    hookState.toolInvocations = [];
+    hookState.continuityPack = {
+      status: 'found',
+      pack: {
+        project: 'example/catalog',
+        scopeKey: 'task:example/catalog:matching-task',
+        sessionId: 'prior-session',
+        source: 'manual-flush',
+        status: 'fresh',
+        budgetChars: 6000,
+        payloadChars: 99999,
+        createdAt: undefined,
+        updatedAt: undefined,
+        pack: { summary: 'Short.', nextActions: [item] },
+      },
+    };
+    const outcome = await runSessionStartHook(undefined, {
+      dependencies: TEST_DEPENDENCIES,
+      sessionId: 'matching-task',
+    });
+    const calls = hookState.toolInvocations.filter(row => row.toolName === 'memory_continuity_pack');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.summaryFields?.continuity_pack_projection_truncated, truncated);
+    assert.equal(calls[0]?.summaryFields?.continuity_pack_payload_chars, 99999);
+    const failedTelemetry = {
+      ...TEST_DEPENDENCIES,
+      recordToolInvocation: () => Promise.reject(new Error('synthetic telemetry unavailable')),
+    };
+    const degraded = await runSessionStartHook(undefined, {
+      dependencies: failedTelemetry,
+      sessionId: 'matching-task',
+    });
+    assert.equal(serializeSessionStartHook(degraded), serializeSessionStartHook(outcome));
+  }
+});
+
+test('missing continuity has unknown projection observations', async () => {
+  await runSessionStartHook(undefined, { dependencies: TEST_DEPENDENCIES, sessionId: 'missing-task' });
+  const row = hookState.toolInvocations.find(value => value.toolName === 'memory_continuity_pack');
+  assert.ok(row);
+  assert.equal(row.summaryFields?.continuity_pack_projection_chars, undefined);
+  assert.equal(row.summaryFields?.continuity_pack_projection_truncated, undefined);
 });
 
 test('task startup preserves its source session and skips unrelated project recall and orient', async () => {

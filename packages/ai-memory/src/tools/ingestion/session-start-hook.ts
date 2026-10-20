@@ -434,17 +434,16 @@ async function readContinuityPackForSessionStart(input: {
       },
       timeoutMs: SESSION_START_CONTINUITY_TIMEOUT_MS,
     });
-    await recordContinuityPackTelemetry({
-      dependencies: input.dependencies,
-      durationMs: Date.now() - startedAt,
-      invocationId,
-      repoId: input.repoId,
-      result,
-      sessionId: input.sessionId,
-      status: 'ok',
-    });
-
     if (result.status === 'missing') {
+      await recordContinuityPackTelemetry({
+        dependencies: input.dependencies,
+        durationMs: Date.now() - startedAt,
+        invocationId,
+        repoId: input.repoId,
+        result,
+        sessionId: input.sessionId,
+        status: 'ok',
+      });
       logInfoQuietly({
         dependencies: input.dependencies,
         event: 'hook.session_start_continuity_pack_missing',
@@ -471,42 +470,59 @@ async function readContinuityPackForSessionStart(input: {
       const values: unknown = result.pack.pack[key];
       return Array.isArray(values) && values.length > listLimit;
     });
-    return {
+    const text = [
+      ...(taskCheckpointFound
+        ? []
+        : [
+            input.sessionId === undefined
+              ? 'Task identity unavailable; this is background project context. Recover an explicit task with memory_continuity_pack.'
+              : 'No task checkpoint matches this host identity; this is background project context. Recover a shared logical task with its explicit task identity.',
+          ]),
+      ...(omittedListItems ? ['Continuity lists truncated; retrieve scoped details with memory tools.'] : []),
+      `Continuity provenance: scope=${boundText(result.pack.scopeKey, 200)}; source=${boundText(result.pack.source, 120)}; session=${boundText(result.pack.sessionId ?? 'unknown', 120)}`,
+      formatContinuityPackMarkdown({
+        ...result.pack,
+        pack: {
+          ...result.pack.pack,
+          summary: boundText(typeof result.pack.pack.summary === 'string' ? result.pack.pack.summary : '', 2000),
+          ...Object.fromEntries(
+            listKeys.map(key => {
+              const values: unknown = result.pack.pack[key];
+              return [
+                key,
+                Array.isArray(values)
+                  ? values
+                      .filter((value): value is string => typeof value === 'string')
+                      .slice(0, listLimit)
+                      .map(value => boundText(value, 180))
+                  : [],
+              ];
+            }),
+          ),
+        },
+      }),
+    ].join('\n');
+    const rawSummary = result.pack.pack.summary;
+    const projectionTruncated =
+      (typeof rawSummary === 'string' && rawSummary.length > 2000) ||
+      listKeys.some(key => {
+        const values: unknown = result.pack.pack[key];
+        return (
+          Array.isArray(values) &&
+          (values.length > listLimit || values.some(value => typeof value !== 'string' || value.length > 180))
+        );
+      });
+    await recordContinuityPackTelemetry({
+      dependencies: input.dependencies,
+      durationMs: Date.now() - startedAt,
+      invocationId,
+      repoId: input.repoId,
+      result,
+      sessionId: input.sessionId,
       status: 'ok',
-      taskCheckpointFound,
-      text: [
-        ...(taskCheckpointFound
-          ? []
-          : [
-              input.sessionId === undefined
-                ? 'Task identity unavailable; this is background project context. Recover an explicit task with memory_continuity_pack.'
-                : 'No task checkpoint matches this host identity; this is background project context. Recover a shared logical task with its explicit task identity.',
-            ]),
-        ...(omittedListItems ? ['Continuity lists truncated; retrieve scoped details with memory tools.'] : []),
-        `Continuity provenance: scope=${boundText(result.pack.scopeKey, 200)}; source=${boundText(result.pack.source, 120)}; session=${boundText(result.pack.sessionId ?? 'unknown', 120)}`,
-        formatContinuityPackMarkdown({
-          ...result.pack,
-          pack: {
-            ...result.pack.pack,
-            summary: boundText(typeof result.pack.pack.summary === 'string' ? result.pack.pack.summary : '', 2000),
-            ...Object.fromEntries(
-              listKeys.map(key => {
-                const values: unknown = result.pack.pack[key];
-                return [
-                  key,
-                  Array.isArray(values)
-                    ? values
-                        .filter((value): value is string => typeof value === 'string')
-                        .slice(0, listLimit)
-                        .map(value => boundText(value, 180))
-                    : [],
-                ];
-              }),
-            ),
-          },
-        }),
-      ].join('\n'),
-    };
+      projection: { chars: text.length, truncated: projectionTruncated },
+    });
+    return { status: 'ok', taskCheckpointFound, text };
   } catch (error: unknown) {
     const errorMessage = formatError(error);
     input.dependencies.logAiMemoryWarn('hook.session_start_continuity_pack_failed', {
@@ -536,6 +552,7 @@ async function recordContinuityPackTelemetry(input: {
   invocationId: string;
   repoId: string | undefined;
   result?: ContinuityPackReadResult;
+  projection?: { chars: number; truncated: boolean };
   sessionId: string | undefined;
   status: 'error' | 'ok';
 }): Promise<void> {
@@ -547,6 +564,11 @@ async function recordContinuityPackTelemetry(input: {
           source: SESSION_START_ORIENT_SOURCE,
         }
       : summarizeContinuityPackForTelemetry(input.result);
+
+  if (input.projection !== undefined) {
+    summaryFields.continuity_pack_projection_chars = input.projection.chars;
+    summaryFields.continuity_pack_projection_truncated = input.projection.truncated ? 1 : 0;
+  }
 
   await input.dependencies
     .recordToolInvocation({
