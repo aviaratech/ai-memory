@@ -33,7 +33,7 @@ test('terminal echo is disabled before a private administrator prompt becomes vi
   let raw = false,
     promptWasPrivate = false,
     breakOutput = false;
-  const credential = 'administrátor-密碼-fixture';
+  const credential = 'administrátor-密碼-fixture%41%password';
   let receivedCredential: string | undefined;
   const probe = vi.spyOn(postgres, 'probePostgres').mockImplementation(async input => {
     receivedCredential = decodeURIComponent(new URL(input!.databaseUrl!).password);

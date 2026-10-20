@@ -305,17 +305,22 @@ async function provision(
     if (locked?.acquired !== true) throw new Error('setup_busy');
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
     const migrationsDir = resolve(packageRoot, 'migrations');
-    const tables = new Set(
-      readdirSync(migrationsDir)
-        .filter(name => /^\d{3}_.+\.sql$/u.test(name))
-        .flatMap(name =>
-          [
-            ...readFileSync(resolve(migrationsDir, name), 'utf8').matchAll(
-              /^\s*CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)/gimu,
-            ),
-          ].map(match => match[1]!),
-        ),
-    );
+    const tables = new Set<string>(),
+      requiredTables = new Set<string>(),
+      completedTables = new Map<string, ReadonlySet<string>>();
+    for (const name of readdirSync(migrationsDir)
+      .filter(name => /^\d{3}_.+\.sql$/u.test(name))
+      .sort()) {
+      for (const match of readFileSync(resolve(migrationsDir, name), 'utf8').matchAll(
+        /^\s*(CREATE|DROP) TABLE (?:IF (?:NOT )?EXISTS )?([a-z_][a-z0-9_]*)/gimu,
+      )) {
+        const table = match[2]!;
+        tables.add(table);
+        if (match[1]!.toUpperCase() === 'CREATE') requiredTables.add(table);
+        else requiredTables.delete(table);
+      }
+      completedTables.set(name.slice(0, -4), new Set(requiredTables));
+    }
     if (tables.size === 0 || [...tables].some(name => !/^ai_[a-z0-9_]+$/u.test(name)))
       throw new Error('schema_conflict');
     step = 'protected_configuration';
@@ -397,7 +402,8 @@ async function provision(
           `SELECT c.relname AS name,pg_get_userbyid(c.relowner) AS owner FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')`,
         )
       ).rows;
-      if (relations.length > 0 && !relations.some(relation => relation.name === 'ai_memory_pgmigrations'))
+      const application = relations.filter(relation => relation.name !== 'ai_memory_pgmigrations');
+      if (application.length > 0 && !relations.some(relation => relation.name === 'ai_memory_pgmigrations'))
         throw new Error('schema_conflict');
       for (const relation of relations)
         if (
@@ -405,6 +411,26 @@ async function provision(
           relation.owner !== options.owner
         )
           throw new Error('schema_conflict');
+      if (relations.some(relation => relation.name === 'ai_memory_pgmigrations')) {
+        let applied: string[];
+        try {
+          applied = (
+            await existingPool.query<{ name: string }>(
+              'SELECT name FROM public.ai_memory_pgmigrations ORDER BY run_on,id',
+            )
+          ).rows.map(row => row.name);
+        } catch {
+          throw new Error('schema_conflict');
+        }
+        // An empty ledger proves no baseline work. Never replay its historical
+        // CREATE/DROP sequence over populated application state.
+        if (applied.length === 0 && application.length > 0) throw new Error('schema_conflict');
+        if (applied.length > 0) {
+          const expected = completedTables.get(applied.at(-1)!);
+          if (expected === undefined || [...expected].some(name => !application.some(row => row.name === name)))
+            throw new Error('schema_conflict');
+        }
+      }
     }
     const runtimeExists = roles.some(role => role.rolname === options.runtimeUser);
     let password =
@@ -481,6 +507,8 @@ async function provision(
         `SELECT c.relname AS name,pg_get_userbyid(c.relowner) AS owner FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')`,
       )
     ).rows;
+    if ([...requiredTables].some(name => !currentTables.some(relation => relation.name === name)))
+      throw new Error('schema_conflict');
     for (const relation of currentTables)
       if (
         (!tables.has(relation.name) && relation.name !== 'ai_memory_pgmigrations') ||
@@ -650,8 +678,8 @@ function databaseUrl(options: SetupOptions, user: string, password: string, data
   const url = new URL(
     `postgresql://${options.host === '::1' ? '[::1]' : options.host}:${String(options.port)}/${database}`,
   );
-  url.username = user;
-  url.password = password;
+  url.username = encodeURIComponent(user);
+  url.password = encodeURIComponent(password);
   return url.href;
 }
 

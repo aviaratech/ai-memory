@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -88,6 +89,7 @@ export function preparePluginDatabaseConfig(input: { home: string; databaseUrl: 
   const uid = process.getuid?.();
   if (uid === undefined) throw new Error('configuration_conflict');
   const directoryPreimages = directories.map(path => protectedDirectory(path, false));
+  let retainedLink: { path: string; dev: number; ino: number } | undefined;
   const read = (): string | undefined => {
     let fd;
     try {
@@ -98,8 +100,23 @@ export function preparePluginDatabaseConfig(input: { home: string; databaseUrl: 
     }
     try {
       const info = fstatSync(fd);
-      if (!info.isFile() || info.uid !== uid || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size > 64 * 1024)
+      if (!info.isFile() || info.uid !== uid || (info.mode & 0o077) !== 0 || info.size > 64 * 1024)
         throw new Error('configuration_conflict');
+      retainedLink = undefined;
+      if (info.nlink !== 1) {
+        if (info.nlink !== 2) throw new Error('configuration_conflict');
+        const matches = readdirSync(dirname(file))
+          .filter(name =>
+            /^plugin\.env\.setup-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(name),
+          )
+          .map(name => join(dirname(file), name))
+          .filter(path => {
+            const candidate = lstatSync(path);
+            return candidate.isFile() && candidate.dev === info.dev && candidate.ino === info.ino;
+          });
+        if (matches.length !== 1) throw new Error('configuration_conflict');
+        retainedLink = { path: matches[0]!, dev: info.dev, ino: info.ino };
+      }
       const bytes = readFileSync(fd);
       const text = bytes.toString('utf8');
       if (!Buffer.from(text).equals(bytes)) throw new Error('configuration_conflict');
@@ -126,7 +143,27 @@ export function preparePluginDatabaseConfig(input: { home: string; databaseUrl: 
         protectedDirectory(path, true);
       }
       if (read() !== before) throw new Error('configuration_conflict');
-      if (before !== undefined) return;
+      if (before !== undefined) {
+        // Only the exact private publisher alias sharing this final inode may
+        // remain after interruption between link publication and unlink.
+        if (retainedLink !== undefined) {
+          for (const path of [file, retainedLink.path]) {
+            const info = lstatSync(path);
+            if (
+              !info.isFile() ||
+              info.uid !== uid ||
+              info.nlink !== 2 ||
+              info.dev !== retainedLink.dev ||
+              info.ino !== retainedLink.ino ||
+              (info.mode & 0o077) !== 0
+            )
+              throw new Error('configuration_conflict');
+          }
+          unlinkSync(retainedLink.path);
+          if (lstatSync(file).nlink !== 1) throw new Error('configuration_conflict');
+        }
+        return;
+      }
       const temporary = `${file}.setup-${randomUUID()}`;
       const fd = openSync(temporary, 'wx', 0o600);
       try {

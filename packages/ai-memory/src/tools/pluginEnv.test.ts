@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -30,6 +32,52 @@ function fixture(): { home: string; file: string } {
 }
 
 describe('protected standalone plugin configuration', () => {
+  it('recovers its exact interrupted publication link and refuses unrelated hard links', () => {
+    const { home, file } = fixture();
+    const url = 'postgresql://runtime:fixture@127.0.0.1/ai_memory';
+    const publisher = new URL('../../dist/tools/pluginEnv.js', import.meta.url).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const link = fs.linkSync;
+      fs.linkSync = (...args) => { link(...args); process.kill(process.pid, 'SIGKILL'); };
+      syncBuiltinESMExports();
+      const { preparePluginDatabaseConfig } = await import(${JSON.stringify(publisher)});
+      preparePluginDatabaseConfig(${JSON.stringify({ home, databaseUrl: url })}).commit();
+    `,
+      ],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 },
+    );
+    assert.equal(result.signal, 'SIGKILL', result.stderr);
+    assert.equal(statSync(file).nlink, 2);
+    const before = readFileSync(file, 'utf8');
+    assert.throws(
+      () =>
+        configuration.preparePluginDatabaseConfig({
+          home,
+          databaseUrl: url.replace('/ai_memory', '/different_database'),
+        }),
+      /configuration_conflict/u,
+    );
+    assert.equal(statSync(file).nlink, 2);
+    configuration.preparePluginDatabaseConfig({ home, databaseUrl: url }).commit();
+    assert.equal(readFileSync(file, 'utf8'), before);
+    assert.equal(statSync(file).nlink, 1);
+    assert.deepEqual(readdirSync(join(home, '.config/ai-memory')), ['plugin.env']);
+    const unrelated = join(home, 'unrelated.env');
+    linkSync(file, unrelated);
+    assert.throws(
+      () => configuration.preparePluginDatabaseConfig({ home, databaseUrl: url }),
+      /configuration_conflict/u,
+    );
+    assert.equal(statSync(file).nlink, 2);
+    assert.equal(readFileSync(unrelated, 'utf8'), before);
+  });
   it('refuses symlinked configuration directories before reading a protected file', () => {
     const { home } = fixture();
     rmSync(join(home, '.config/ai-memory'), { recursive: true });

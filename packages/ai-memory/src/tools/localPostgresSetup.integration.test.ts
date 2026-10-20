@@ -205,31 +205,97 @@ test.skipIf(administrator === undefined)(
   0,
 );
 
-test.skipIf(administrator === undefined)(
-  'setup refuses an untracked populated database before canonical initialization can remove legacy-named data',
-  async () => {
-    const url = new URL(administrator!),
-      suffix = randomUUID().replaceAll('-', '').slice(0, 12);
-    const database = `ai_memory_untracked_${suffix}`,
-      owner = `untracked_owner_${suffix}`,
-      runtime = `untracked_runtime_${suffix}`;
-    const home = mkdtempSync(join(tmpdir(), 'memory-untracked-'));
-    const env = clientEnvironment(home);
-    const password = randomUUID();
-    const admin = new pg.Client({ connectionString: administrator });
-    await admin.connect();
-    let target: pg.Client | undefined;
-    try {
-      await admin.query(`CREATE ROLE ${quote(owner)} NOLOGIN NOINHERIT`);
-      await admin.query(`CREATE DATABASE ${quote(database)} OWNER ${quote(owner)}`);
-      const targetUrl = new URL(url);
-      targetUrl.pathname = `/${database}`;
-      target = new pg.Client({ connectionString: targetUrl.href });
-      await target.connect();
-      await target.query(`SET ROLE ${quote(owner)}`);
-      await target.query('CREATE TABLE ai_goals (value text)');
-      await target.query("INSERT INTO ai_goals VALUES ('preserve-existing-data')");
-      const options = parseSetupArguments([
+for (const ledger of ['missing', 'empty'])
+  test.skipIf(administrator === undefined)(
+    `setup refuses an untracked populated database with ${ledger} ledger before initialization can remove data`,
+    async () => {
+      const url = new URL(administrator!),
+        suffix = randomUUID().replaceAll('-', '').slice(0, 12);
+      const database = `ai_memory_untracked_${suffix}`,
+        owner = `untracked_owner_${suffix}`,
+        runtime = `untracked_runtime_${suffix}`;
+      const home = mkdtempSync(join(tmpdir(), 'memory-untracked-'));
+      const env = clientEnvironment(home);
+      const password = randomUUID();
+      const admin = new pg.Client({ connectionString: administrator });
+      await admin.connect();
+      let target: pg.Client | undefined;
+      try {
+        await admin.query(`CREATE ROLE ${quote(owner)} NOLOGIN NOINHERIT`);
+        await admin.query(`CREATE DATABASE ${quote(database)} OWNER ${quote(owner)}`);
+        const targetUrl = new URL(url);
+        targetUrl.pathname = `/${database}`;
+        target = new pg.Client({ connectionString: targetUrl.href });
+        await target.connect();
+        await target.query(`SET ROLE ${quote(owner)}`);
+        await target.query(
+          'CREATE TABLE ai_goals (value text, goal_id uuid, project text, status text, parent_goal_id uuid)',
+        );
+        await target.query("INSERT INTO ai_goals VALUES ('preserve-existing-data')");
+        if (ledger === 'empty')
+          await target.query(
+            'CREATE TABLE ai_memory_pgmigrations (id serial PRIMARY KEY, name varchar(255) NOT NULL, run_on timestamp NOT NULL)',
+          );
+        const options = parseSetupArguments([
+          '--host',
+          url.hostname,
+          '--port',
+          url.port || '5432',
+          '--database',
+          database,
+          '--owner',
+          owner,
+          '--runtime-user',
+          runtime,
+          '--admin-user',
+          decodeURIComponent(url.username),
+        ]);
+        const result = await runLocalPostgresSetup(options, {
+          home,
+          env,
+          prompt: async label =>
+            /administrator password/iu.test(label)
+              ? decodeURIComponent(url.password)
+              : /confirm changes/iu.test(label)
+                ? `setup ${database} on ${url.hostname}:${url.port || '5432'}`
+                : password,
+        });
+        assert.equal(result.reason, 'schema_conflict', JSON.stringify(result));
+        assert.equal(result.stage, 3);
+        assert.deepEqual((await target.query('SELECT value FROM ai_goals')).rows, [
+          { value: 'preserve-existing-data' },
+        ]);
+        assert.equal((await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1', [runtime])).rowCount, 0);
+      } finally {
+        await target?.end();
+        await admin.query(`DROP DATABASE IF EXISTS ${quote(database)} WITH (FORCE)`);
+        await admin.query(`DROP ROLE IF EXISTS ${quote(runtime)}`);
+        await admin.query(`DROP ROLE IF EXISTS ${quote(owner)}`);
+        await admin.end();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    0,
+  );
+
+for (const credential of ['plain', 'percent'])
+  test.skipIf(administrator === undefined)(
+    `guided setup proves fresh and repeated least-privilege schema/MCP readiness with ${credential} credentials`,
+    async () => {
+      const url = new URL(administrator!);
+      const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
+      const database = `ai_memory_setup_${suffix}`,
+        owner = `setup_owner_${suffix}`,
+        runtime = `setup_runtime_${suffix}`;
+      const home = mkdtempSync(join(tmpdir(), 'memory-setup-integration-'));
+      const env = clientEnvironment(home);
+      const password = randomUUID() + (credential === 'percent' ? '%41%password' : '');
+      const setupAdministrator = `setup_admin_${suffix}`;
+      const administratorPassword =
+        credential === 'percent' ? 'synthetic%41%admin-fixture' : decodeURIComponent(url.password);
+      const admin = new pg.Client({ connectionString: administrator });
+      await admin.connect();
+      const flags = [
         '--host',
         url.hostname,
         '--port',
@@ -241,143 +307,118 @@ test.skipIf(administrator === undefined)(
         '--runtime-user',
         runtime,
         '--admin-user',
-        decodeURIComponent(url.username),
-      ]);
-      const result = await runLocalPostgresSetup(options, {
-        home,
-        env,
-        prompt: async label =>
-          /administrator password/iu.test(label)
-            ? decodeURIComponent(url.password)
-            : /confirm changes/iu.test(label)
-              ? `setup ${database} on ${url.hostname}:${url.port || '5432'}`
-              : password,
-      });
-      assert.equal(result.reason, 'schema_conflict', JSON.stringify(result));
-      assert.equal(result.stage, 3);
-      assert.deepEqual((await target.query('SELECT value FROM ai_goals')).rows, [{ value: 'preserve-existing-data' }]);
-      assert.equal((await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1', [runtime])).rowCount, 0);
-    } finally {
-      await target?.end();
-      await admin.query(`DROP DATABASE IF EXISTS ${quote(database)} WITH (FORCE)`);
-      await admin.query(`DROP ROLE IF EXISTS ${quote(runtime)}`);
-      await admin.query(`DROP ROLE IF EXISTS ${quote(owner)}`);
-      await admin.end();
-      rmSync(home, { recursive: true, force: true });
-    }
-  },
-  0,
-);
-
-test.skipIf(administrator === undefined)(
-  'guided setup proves fresh and repeated least-privilege schema/MCP readiness and preserves unrelated state',
-  async () => {
-    const url = new URL(administrator!);
-    const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
-    const database = `ai_memory_setup_${suffix}`,
-      owner = `setup_owner_${suffix}`,
-      runtime = `setup_runtime_${suffix}`;
-    const home = mkdtempSync(join(tmpdir(), 'memory-setup-integration-'));
-    const env = clientEnvironment(home);
-    const password = randomUUID();
-    const admin = new pg.Client({ connectionString: administrator });
-    await admin.connect();
-    const flags = [
-      '--host',
-      url.hostname,
-      '--port',
-      url.port || '5432',
-      '--database',
-      database,
-      '--owner',
-      owner,
-      '--runtime-user',
-      runtime,
-      '--admin-user',
-      decodeURIComponent(url.username),
-    ];
-    const options = parseSetupArguments(flags);
-    const prompts: string[] = [],
-      stages: number[] = [];
-    const prompt = async (label: string) => {
-      prompts.push(label);
-      if (/administrator password/iu.test(label)) return decodeURIComponent(url.password);
-      if (/confirm changes/iu.test(label)) return `setup ${database} on ${url.hostname}:${url.port || '5432'}`;
-      return password;
-    };
-    try {
-      await admin.query('CREATE TABLE IF NOT EXISTS public.setup_unrelated_sentinel (value text)');
-      await admin.query("INSERT INTO public.setup_unrelated_sentinel VALUES ('preserve')");
-      const before = await admin.query('SELECT * FROM public.setup_unrelated_sentinel');
-      const result = await runLocalPostgresSetup(options, { home, env, prompt, progress: stage => stages.push(stage) });
-      assert.equal(result.ok, true, JSON.stringify(result));
-      assert.equal(result.database, 'ready');
-      assert.equal(result.mcp, 'connected');
-      assert.deepEqual([...new Set(stages)], [1, 2, 3, 4, 5, 6]);
-      assert.ok(prompts.some(label => /new memory database credential/iu.test(label)));
-      const config = readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8');
-      const roleState = await admin.query<{
-        oid: number;
-        rolname: string;
-        rolsuper: boolean;
-        rolcreatedb: boolean;
-        rolcreaterole: boolean;
-        rolcanlogin: boolean;
-      }>('SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolcanlogin FROM pg_roles WHERE rolname=ANY($1)', [
-        [owner, runtime],
-      ]);
-      assert.equal(roleState.rows.length, 2);
-      for (const role of roleState.rows) {
-        assert.equal(role.rolsuper, false);
-        assert.equal(role.rolcreatedb, false);
-        assert.equal(role.rolcreaterole, false);
-        assert.equal(role.rolcanlogin, role.rolname === runtime);
-      }
-      const target = new URL(administrator!);
-      target.pathname = `/${database}`;
-      const check = new pg.Client({ connectionString: target.href });
-      await check.connect();
+        credential === 'percent' ? setupAdministrator : decodeURIComponent(url.username),
+      ];
+      const options = parseSetupArguments(flags);
+      const prompts: string[] = [],
+        stages: number[] = [];
+      const prompt = async (label: string) => {
+        prompts.push(label);
+        if (/administrator password/iu.test(label)) return administratorPassword;
+        if (/confirm changes/iu.test(label)) return `setup ${database} on ${url.hostname}:${url.port || '5432'}`;
+        return password;
+      };
       try {
-        const privileges = (
-          await check.query<Record<string, boolean>>(
-            `SELECT has_schema_privilege($1,'public','CREATE') AS schema_create, has_table_privilege($1,'public.ai_memory_pgmigrations','SELECT') AS ledger_read, has_table_privilege($1,'public.ai_memory_pgmigrations','INSERT,UPDATE,DELETE') AS ledger_write, has_sequence_privilege($1,'public.ai_memory_pgmigrations_id_seq','USAGE,SELECT,UPDATE') AS ledger_sequence, has_table_privilege($1,'public.ai_memory_entries','INSERT') AS application_write`,
-            [runtime],
-          )
-        ).rows[0];
-        assert.deepEqual(privileges, {
-          schema_create: false,
-          ledger_read: true,
-          ledger_write: false,
-          ledger_sequence: false,
-          application_write: true,
-        });
-      } finally {
-        await check.end();
-      }
-      prompts.length = 0;
-      const repeat = await runLocalPostgresSetup(options, { home, env, prompt });
-      assert.equal(repeat.ok, true, JSON.stringify(repeat));
-      assert.equal(readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8'), config);
-      assert.ok(!prompts.some(label => /new memory database credential/iu.test(label)));
-      assert.deepEqual(
-        (
+        if (credential === 'percent')
           await admin.query(
-            'SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolcanlogin FROM pg_roles WHERE rolname=ANY($1)',
-            [[owner, runtime]],
-          )
-        ).rows,
-        roleState.rows,
-      );
-      assert.deepEqual((await admin.query('SELECT * FROM public.setup_unrelated_sentinel')).rows, before.rows);
-      assert.doesNotMatch(JSON.stringify(result), new RegExp(password, 'u'));
-    } finally {
-      await admin.query(`DROP DATABASE IF EXISTS ${quote(database)} WITH (FORCE)`);
-      await admin.query(`DROP ROLE IF EXISTS ${quote(runtime)}`);
-      await admin.query(`DROP ROLE IF EXISTS ${quote(owner)}`);
-      await admin.query('DROP TABLE IF EXISTS public.setup_unrelated_sentinel');
-      await admin.end();
-      rmSync(home, { recursive: true, force: true });
-    }
-  },
-  0,
-);
+            `CREATE ROLE ${quote(setupAdministrator)} LOGIN SUPERUSER PASSWORD 'synthetic%41%admin-fixture'`,
+          );
+        await admin.query('CREATE TABLE IF NOT EXISTS public.setup_unrelated_sentinel (value text)');
+        await admin.query("INSERT INTO public.setup_unrelated_sentinel VALUES ('preserve')");
+        const before = await admin.query('SELECT * FROM public.setup_unrelated_sentinel');
+        const result = await runLocalPostgresSetup(options, {
+          home,
+          env,
+          prompt,
+          progress: stage => stages.push(stage),
+        });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(result.database, 'ready');
+        assert.equal(result.mcp, 'connected');
+        assert.deepEqual([...new Set(stages)], [1, 2, 3, 4, 5, 6]);
+        assert.ok(prompts.some(label => /new memory database credential/iu.test(label)));
+        const config = readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8');
+        const roleState = await admin.query<{
+          oid: number;
+          rolname: string;
+          rolsuper: boolean;
+          rolcreatedb: boolean;
+          rolcreaterole: boolean;
+          rolcanlogin: boolean;
+        }>('SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolcanlogin FROM pg_roles WHERE rolname=ANY($1)', [
+          [owner, runtime],
+        ]);
+        assert.equal(roleState.rows.length, 2);
+        for (const role of roleState.rows) {
+          assert.equal(role.rolsuper, false);
+          assert.equal(role.rolcreatedb, false);
+          assert.equal(role.rolcreaterole, false);
+          assert.equal(role.rolcanlogin, role.rolname === runtime);
+        }
+        const target = new URL(administrator!);
+        target.pathname = `/${database}`;
+        const check = new pg.Client({ connectionString: target.href });
+        await check.connect();
+        try {
+          const privileges = (
+            await check.query<Record<string, boolean>>(
+              `SELECT has_schema_privilege($1,'public','CREATE') AS schema_create, has_table_privilege($1,'public.ai_memory_pgmigrations','SELECT') AS ledger_read, has_table_privilege($1,'public.ai_memory_pgmigrations','INSERT,UPDATE,DELETE') AS ledger_write, has_sequence_privilege($1,'public.ai_memory_pgmigrations_id_seq','USAGE,SELECT,UPDATE') AS ledger_sequence, has_table_privilege($1,'public.ai_memory_entries','INSERT') AS application_write`,
+              [runtime],
+            )
+          ).rows[0];
+          assert.deepEqual(privileges, {
+            schema_create: false,
+            ledger_read: true,
+            ledger_write: false,
+            ledger_sequence: false,
+            application_write: true,
+          });
+        } finally {
+          await check.end();
+        }
+        prompts.length = 0;
+        const repeat = await runLocalPostgresSetup(options, { home, env, prompt });
+        assert.equal(repeat.ok, true, JSON.stringify(repeat));
+        assert.equal(readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8'), config);
+        assert.ok(!prompts.some(label => /new memory database credential/iu.test(label)));
+        assert.deepEqual(
+          (
+            await admin.query(
+              'SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolcanlogin FROM pg_roles WHERE rolname=ANY($1)',
+              [[owner, runtime]],
+            )
+          ).rows,
+          roleState.rows,
+        );
+        assert.deepEqual((await admin.query('SELECT * FROM public.setup_unrelated_sentinel')).rows, before.rows);
+        assert.doesNotMatch(JSON.stringify(result), new RegExp(password, 'u'));
+        const corrupt = new pg.Client({ connectionString: target.href });
+        await corrupt.connect();
+        try {
+          await corrupt.query('DROP TABLE public.ai_continuity_packs');
+          const missingTable = await runLocalPostgresSetup(options, { home, env, prompt });
+          assert.equal(missingTable.reason, 'schema_conflict', JSON.stringify(missingTable));
+          assert.equal(
+            (
+              await corrupt.query<{ relation: string | null }>(
+                "SELECT to_regclass('public.ai_continuity_packs') AS relation",
+              )
+            ).rows[0]?.relation,
+            null,
+          );
+          assert.equal(readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8'), config);
+        } finally {
+          await corrupt.end();
+        }
+      } finally {
+        await admin.query(`DROP DATABASE IF EXISTS ${quote(database)} WITH (FORCE)`);
+        await admin.query(`DROP ROLE IF EXISTS ${quote(runtime)}`);
+        await admin.query(`DROP ROLE IF EXISTS ${quote(owner)}`);
+        if (credential === 'percent') await admin.query(`DROP ROLE IF EXISTS ${quote(setupAdministrator)}`);
+        await admin.query('DROP TABLE IF EXISTS public.setup_unrelated_sentinel');
+        await admin.end();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    0,
+  );
