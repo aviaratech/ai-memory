@@ -97,7 +97,7 @@ export async function diagnosePluginRuntime(
   return diagnostic;
 }
 
-async function probeDatabase(env: NodeJS.ProcessEnv, migrationsDir: string): Promise<string> {
+export async function probeDatabase(env: NodeJS.ProcessEnv, migrationsDir: string): Promise<string> {
   const connectionString = env.AI_MEMORY_DATABASE_URL;
   if (connectionString === undefined) return 'not_checked';
   const pool = createPool({
@@ -132,7 +132,7 @@ async function probeDatabase(env: NodeJS.ProcessEnv, migrationsDir: string): Pro
   }
 }
 
-async function probeMcp(env: NodeJS.ProcessEnv, launcher: string, version: string): Promise<boolean> {
+export async function probeMcp(env: NodeJS.ProcessEnv, launcher: string, version: string): Promise<boolean> {
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) if (value !== undefined) environment[key] = value;
   const transport = new StdioClientTransport({

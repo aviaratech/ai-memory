@@ -6,6 +6,55 @@ import { describe, it } from 'vitest';
 import { parsePluginArguments } from './pluginCli.js';
 import { parseConsolidateArguments } from './consolidate.js';
 
+describe('explicit local database setup command', () => {
+  const cli = fileURLToPath(new URL('../../dist/tools/pluginCli.js', import.meta.url));
+  it('discovers setup before database configuration or private input', () => {
+    const result = spawnSync(process.execPath, [cli, 'setup', '--help'], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH },
+      maxBuffer: 64 * 1024,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /ai-memory setup/u);
+    assert.match(result.stdout, /--dry-run/u);
+    assert.match(result.stdout, /private/iu);
+  });
+  it('previews the exact loopback target without reading credentials or changing configuration', () => {
+    const result = spawnSync(process.execPath, [cli, 'setup', '--dry-run', '--json', '--port', '55491'], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin' },
+      maxBuffer: 64 * 1024,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const value = JSON.parse(result.stdout) as {
+      state: string;
+      target: { host: string; port: number };
+      database: string;
+      mcp: string;
+    };
+    assert.equal(value.state, 'prepared');
+    assert.equal(value.target.host, '127.0.0.1');
+    assert.equal(value.target.port, 55491);
+    assert.equal(value.database, 'not_checked');
+    assert.equal(value.mcp, 'not_checked');
+  });
+  it('refuses noninteractive mutation and credential arguments before any database action', () => {
+    for (const flags of [[], ['--password', 'synthetic-must-not-print'], ['--host', 'remote.example.invalid']]) {
+      const result = spawnSync(process.execPath, [cli, 'setup', '--json', ...flags], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH },
+        maxBuffer: 64 * 1024,
+      });
+      assert.equal(result.status, 2);
+      const value = JSON.parse(result.stdout || result.stderr) as { state: string; reason: string; database: string };
+      assert.equal(value.state, 'setup_required');
+      assert.ok(['interactive_required', 'invalid_options'].includes(value.reason));
+      assert.doesNotMatch(result.stdout + result.stderr, /synthetic-must-not-print/u);
+      assert.equal(value.database, 'not_checked');
+    }
+  });
+});
+
 describe('explicit fragment consolidation command', () => {
   it('defaults to one exact read-only project unit and requires independent reviewed bytes for apply', () => {
     assert.deepEqual(parseConsolidateArguments(['--project', 'demo-workshop/widget']), {
