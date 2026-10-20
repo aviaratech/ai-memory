@@ -438,6 +438,7 @@ async function readContinuityPackForSessionStart(input: {
       await recordContinuityPackTelemetry({
         dependencies: input.dependencies,
         durationMs: Date.now() - startedAt,
+        host: input.host,
         invocationId,
         repoId: input.repoId,
         result,
@@ -515,6 +516,7 @@ async function readContinuityPackForSessionStart(input: {
     await recordContinuityPackTelemetry({
       dependencies: input.dependencies,
       durationMs: Date.now() - startedAt,
+      host: input.host,
       invocationId,
       repoId: input.repoId,
       result,
@@ -535,6 +537,7 @@ async function readContinuityPackForSessionStart(input: {
     await recordContinuityPackTelemetry({
       dependencies: input.dependencies,
       durationMs: Date.now() - startedAt,
+      host: input.host,
       error,
       invocationId,
       repoId: input.repoId,
@@ -548,6 +551,7 @@ async function readContinuityPackForSessionStart(input: {
 async function recordContinuityPackTelemetry(input: {
   dependencies: SessionStartHookDependencies;
   durationMs: number;
+  host: MemoryHost | undefined;
   error?: unknown;
   invocationId: string;
   repoId: string | undefined;
@@ -564,6 +568,8 @@ async function recordContinuityPackTelemetry(input: {
           source: SESSION_START_ORIENT_SOURCE,
         }
       : summarizeContinuityPackForTelemetry(input.result);
+
+  if (input.host !== undefined) summaryFields.memory_host = input.host;
 
   if (input.projection !== undefined) {
     summaryFields.continuity_pack_projection_chars = input.projection.chars;

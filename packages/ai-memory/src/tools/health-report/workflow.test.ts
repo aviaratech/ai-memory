@@ -27,8 +27,8 @@ function fixture(overrides: Record<string, unknown> = {}) {
       ordinaryInputTokens: metric('140'),
       outputTokens: metric('60'),
       reasoningOutputTokens: metric('15'),
-      executionMs: metric('30000', '1', '4'),
-      queueMs: metric('5000', '1', '4'),
+      executionMs: metric('30000', '1', '7'),
+      queueMs: metric('5000', '1', '7'),
     },
     groups: [
       {

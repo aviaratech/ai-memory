@@ -245,6 +245,20 @@ test(
         missingSamples: '0',
       });
       assert.deepEqual(large.totals.outputTokens, { total: '0', observedSamples: '3', missingSamples: '0' });
+      const timedTask = `${taskId}-timed`;
+      await emit('timed-usage', {
+        kind: 'usage',
+        source: 'openai-responses',
+        edge: null,
+        taskId: timedTask,
+        responseId: `${suffix}-timed`,
+        usage: null,
+        executionMs: 7,
+        queueMs: 3,
+      });
+      const timed = await readWorkflowAggregates({ ...query, taskId: timedTask }, db);
+      assert.deepEqual(timed.totals.executionMs, { total: '7', observedSamples: '1', missingSamples: '0' });
+      assert.deepEqual(timed.totals.queueMs, { total: '3', observedSamples: '1', missingSamples: '0' });
       const empty = await readWorkflowAggregates({ ...query, taskId: `${taskId}-empty` }, db);
       assert.deepEqual(empty.totals.inputTokens, { total: null, observedSamples: '0', missingSamples: '0' });
       assert.equal(empty.coverage.events, '0');

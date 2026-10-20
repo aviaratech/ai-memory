@@ -109,8 +109,8 @@ const metricDefinitions = [
     "CASE WHEN usage_accounting = 'openai-responses' THEN input_tokens - cached_input_tokens - cache_write_input_tokens END",
     "kind = 'usage'",
   ],
-  ['executionMs', 'execution_ms', "kind = 'edge'"],
-  ['queueMs', 'queue_ms', "kind = 'edge'"],
+  ['executionMs', 'execution_ms', 'true'],
+  ['queueMs', 'queue_ms', 'true'],
 ] as const;
 
 function metricAggregatesSql(): string {

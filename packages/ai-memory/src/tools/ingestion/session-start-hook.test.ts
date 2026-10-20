@@ -326,6 +326,37 @@ test('missing continuity has unknown projection observations', async () => {
   assert.equal(row.summaryFields?.continuity_pack_projection_truncated, undefined);
 });
 
+test('continuity telemetry preserves the explicit host for found, missing and failed reads', async () => {
+  for (const host of ['codex', 'claude-code', undefined] as const) {
+    for (const status of ['found', 'missing', 'error']) {
+      hookState.toolInvocations = [];
+      hookState.continuityError = status === 'error' ? new Error('synthetic read failure') : undefined;
+      hookState.continuityPack =
+        status === 'found'
+          ? {
+              status: 'found',
+              pack: {
+                budgetChars: 6000,
+                createdAt: '2026-09-10T00:00:00Z',
+                pack: { summary: 'Synthetic checkpoint.' },
+                payloadChars: 100,
+                project: 'example/catalog',
+                scopeKey: 'task:example/catalog:matching-task',
+                sessionId: 'prior-session',
+                source: 'manual-flush',
+                status: 'fresh',
+                updatedAt: '2026-09-10T00:00:00Z',
+              },
+            }
+          : { project: 'example/catalog', scopeKey: 'task:example/catalog:matching-task', status: 'missing' };
+      await runSessionStartHook(undefined, { dependencies: TEST_DEPENDENCIES, host, sessionId: 'matching-task' });
+      const rows = hookState.toolInvocations.filter(row => row.toolName === 'memory_continuity_pack');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.summaryFields?.memory_host, host);
+    }
+  }
+});
+
 test('task startup preserves its source session and skips unrelated project recall and orient', async () => {
   hookState.continuityPack = {
     pack: {
