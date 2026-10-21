@@ -1,5 +1,7 @@
 import type { PluginOptions } from './pluginCli.js';
 
+import { marketplaceDocuments, nativePluginArgs } from '@aviaratech/ai-plugin-tools';
+
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -463,13 +465,16 @@ function pointMarketplace(ctx: Context, selected: Asset): void {
   for (const directory of ['.agents/plugins', '.claude-plugin'])
     mkdirSync(resolve(root, directory), { recursive: true, mode: 0o700 });
   const source = `./${relative(root, selected.root).split('\\').join('/')}`;
-  const entry = { name: 'ai-memory', version: selected.version, description: 'Durable local PostgreSQL memory plugin' };
-  const common = { name: ctx.marketplace, owner: { name: 'AviaraTech' } };
-  atomicJson(resolve(root, '.agents/plugins/marketplace.json'), {
-    ...common,
-    plugins: [{ ...entry, source: { source: 'local', path: source } }],
+  const documents = marketplaceDocuments({
+    marketplaceName: ctx.marketplace,
+    pluginName: 'ai-memory',
+    relativeSource: source,
+    version: selected.version,
+    ownerName: 'AviaraTech',
+    metadata: { kind: 'described', description: 'Durable local PostgreSQL memory plugin' },
   });
-  atomicJson(resolve(root, '.claude-plugin/marketplace.json'), { ...common, plugins: [{ ...entry, source }] });
+  atomicJson(resolve(root, '.agents/plugins/marketplace.json'), documents.codexDocument);
+  atomicJson(resolve(root, '.claude-plugin/marketplace.json'), documents.claudeDocument);
 }
 function stage(ctx: Context): Asset {
   const source = asset(ctx.pluginRoot, ctx.runtimeVersion);
@@ -513,9 +518,13 @@ async function add(ctx: Context, selected: Asset, update: boolean): Promise<Asse
   const id = `ai-memory@${ctx.marketplace}`;
   const raw = await ctx.nativeRun(
     ctx.options.host,
-    ctx.options.host === 'codex'
-      ? ['plugin', 'add', id, '--json']
-      : ['plugin', update ? 'update' : 'install', id, '--scope', ctx.options.scope],
+    nativePluginArgs({
+      ...(ctx.options.host === 'codex'
+        ? { host: 'codex', scope: 'user' }
+        : { host: 'claude-code', scope: ctx.options.scope }),
+      action: update ? 'update' : 'install',
+      pluginId: id,
+    }),
   );
   if (ctx.options.host === 'codex') {
     const native = record(JSON.parse(raw));
@@ -528,9 +537,13 @@ async function add(ctx: Context, selected: Asset, update: boolean): Promise<Asse
 async function removeRegistration(ctx: Context): Promise<void> {
   await ctx.nativeRun(
     ctx.options.host,
-    ctx.options.host === 'codex'
-      ? ['plugin', 'remove', `ai-memory@${ctx.marketplace}`, '--json']
-      : ['plugin', 'uninstall', `ai-memory@${ctx.marketplace}`, '--scope', ctx.options.scope, '--keep-data'],
+    nativePluginArgs({
+      ...(ctx.options.host === 'codex'
+        ? { host: 'codex', scope: 'user' }
+        : { host: 'claude-code', scope: ctx.options.scope }),
+      action: 'remove',
+      pluginId: `ai-memory@${ctx.marketplace}`,
+    }),
   );
 }
 function readOnlyRegistration(ctx: Context, selected: Asset): boolean {

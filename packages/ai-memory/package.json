@@ -1,6 +1,6 @@
 {
   "name": "@aviaratech/ai-memory",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Durable local PostgreSQL memory engine and MCP tools for AI agents",
   "license": "MIT",
   "repository": {
@@ -81,6 +81,7 @@
     "test:search-eval": "node dist/tools/eval/search-eval.js"
   },
   "dependencies": {
+    "@aviaratech/ai-plugin-tools": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
