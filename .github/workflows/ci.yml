@@ -15,23 +15,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  selection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.impact.outputs.run }}
+      reason: ${{ steps.impact.outputs.reason }}
+    steps:
+      - name: Check out complete candidate history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+      - name: Select complete PostgreSQL coverage
+        id: impact
+        run: node scripts/ci-postgres-impact.mjs select
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.6-pg18-trixie
-        env:
-          POSTGRES_USER: ci_memory
-          POSTGRES_PASSWORD: ci_only
-          POSTGRES_DB: ai_memory_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ci_memory -d ai_memory_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Check out full candidate history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -62,6 +71,44 @@ jobs:
         run: npm run scan:secrets && npm run scan:secrets:probe
       - name: Check source
         run: npm run checks
+
+  postgres:
+    needs: selection
+    if: ${{ needs.selection.outputs.run == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg18-trixie
+        env:
+          POSTGRES_USER: ci_memory
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: ai_memory_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_memory -d ai_memory_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - name: Pin npm
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = 11.19.0
+      - name: Build both workspaces for complete integration coverage
+        run: |
+          npm ci
+          npm run build
       - name: Create separate disposable project identity database
         run: |
           node --input-type=module <<'NODE'
@@ -147,16 +194,25 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [linux, macos, package]
+    needs: [linux, macos, package, selection, postgres]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out aggregation owner
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
       - name: Require every coverage lane
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
-        run: |
-          for result in "$LINUX_RESULT" "$MACOS_RESULT" "$PACKAGE_RESULT"; do
-            test "$result" = success || exit 1
-          done
+          SELECTION_RESULT: ${{ needs.selection.result }}
+          POSTGRES_RUN: ${{ needs.selection.outputs.run }}
+          POSTGRES_REASON: ${{ needs.selection.outputs.reason }}
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+        run: node scripts/ci-postgres-impact.mjs aggregate
