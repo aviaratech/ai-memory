@@ -43,3 +43,5 @@ The current 14 integration files span the following owners under `packages/ai-me
 Each name above has the suffix `.integration.test.ts`. All `packages/**`, `plugins/**`, migrations, fixtures, scripts, dependency locks, Node/npm/toolchain and CI/configuration changes therefore run integration; a `src/db/**` filter would miss current dependencies. New or uncertain paths run the full suite rather than relying on a static import graph. The selection does not choose individual tests or change Vitest coverage.
 
 `npm run test:integration` remains an explicit full-suite command using both disposable URLs described above. Release qualification in `.github/workflows/release.yml` always provisions its own disposable PostgreSQL and executes that command independently of PR selection. The fast skip saves PostgreSQL work only; ordinary source, platform and package checks remain required. CI timings must be measured separately from queue time, including the extra install/build in selected PostgreSQL jobs.
+
+Temporary unmerged CI qualification for ai-memory issue #56.
