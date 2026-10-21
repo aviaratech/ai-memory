@@ -10,7 +10,15 @@ const script = fileURLToPath(new URL('./ci-postgres-impact.mjs', import.meta.url
 const invoke = (args = [], env = {}, cwd = undefined) =>
   spawnSync(process.execPath, [script, ...args], {
     cwd,
-    env: { ...process.env, GITHUB_OUTPUT: '', GITHUB_STEP_SUMMARY: '', ...env },
+    env: {
+      ...process.env,
+      GITHUB_EVENT_NAME: '',
+      PR_BASE_SHA: '',
+      PR_HEAD_SHA: '',
+      GITHUB_OUTPUT: '',
+      GITHUB_STEP_SUMMARY: '',
+      ...env,
+    },
     encoding: 'utf8',
   });
 const record = (path, status = 'M', before = '100644', after = '100644') =>
