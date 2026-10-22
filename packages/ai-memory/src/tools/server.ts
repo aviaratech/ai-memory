@@ -417,7 +417,13 @@ export const memoryOrientInputSchema = z.object({
     .min(1)
     .optional()
     .describe('Optional active goal text used to condition task-relevant retrieval during orient.'),
-  agent: z.string().min(1).optional().describe('Optional agent identifier for session fallback scope.'),
+  agent: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional caller agent filter for exact session recovery; shared durable facts keep their producer provenance.',
+    ),
   cwd: z
     .string()
     .min(1)
@@ -468,7 +474,9 @@ export const memoryOrientInputSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe('Optional exact session id for direct prior-session resume; agent/project remain fallback scope only.'),
+    .describe(
+      'Explicit caller session id for prior-session recovery. Without it, no prior session is inferred. For a shared logical task, use memory_continuity_pack with task.',
+    ),
   stateModel: acceptJsonEncoded(agentStateModelInputSchema.optional()).describe(
     'Deprecated no-op. Accepted for backward compatibility with older callers but currently has no effect on orient. ' +
       'Fields: strategy_confidence ("high"|"medium"|"low"), assumptions, uncertainty, constraints, next_decision.',
@@ -575,7 +583,8 @@ server.registerTool(
     runTool({
       args,
       handler: async () => {
-        const result = await orientMemory(mergeDetectedDefaults(args, detectedAgentContext));
+        // A shared MCP service environment identifies the server, not its requesting caller.
+        const result = await orientMemory(args);
         return toTextResult(result);
       },
       toolName: 'memory_orient',

@@ -152,7 +152,10 @@ function orientFixtureSession(input: {
     sessionId: input.sessionId,
   });
 
-  return input.dependencies.orientMemory({ envProbe: 'none' }, orientDependencies);
+  return input.dependencies.orientMemory(
+    { agent: input.parsed.agent, envProbe: 'none', project: input.parsed.project, sessionId: input.sessionId },
+    orientDependencies,
+  );
 }
 
 async function replayFixtureFlush(input: {

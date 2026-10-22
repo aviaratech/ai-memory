@@ -155,7 +155,8 @@ export async function orientMemory(
   const envProbe = parseEnvProbe(request.envProbe);
   const requestedActiveGoal = readOptionalText(request.activeGoal);
   const cwd = readOptionalText(request.cwd);
-  const memoryScopeArgs = omitUndefined({ agent, memoryType, project });
+  // Caller identity selects session state; durable facts retain their producer provenance.
+  const memoryScopeArgs = omitUndefined({ memoryType, project });
   const resumeScopeArgs = omitUndefined({ agent, project, sessionId });
   const contestedWarnings: string[] = [];
   const environmentWarnings: string[] = [];
@@ -1166,6 +1167,8 @@ async function runResumeStep(input: {
   priorSession: null | Record<string, unknown>;
   resumeSucceeded: boolean;
 }> {
+  // Project/agent recency is background, never evidence of this caller's prior session.
+  if (input.scopeArgs.sessionId === undefined) return { priorSession: null, resumeSucceeded: true };
   try {
     const resume = await runStepWithTimeout({
       operation: 'session_resume',
@@ -1178,6 +1181,11 @@ async function runResumeStep(input: {
     });
     if (!isRecord(resume)) {
       input.warnings.push('resume failed: invalid response shape');
+      return { priorSession: null, resumeSucceeded: false };
+    }
+    if (resume.status === 'not_found') return { priorSession: null, resumeSucceeded: true };
+    if (resume.sessionId !== input.scopeArgs.sessionId || resume.resolvedVia === 'fallback') {
+      input.warnings.push('resume failed: returned session identity does not match the explicit caller session');
       return { priorSession: null, resumeSucceeded: false };
     }
     return { priorSession: resume, resumeSucceeded: true };
