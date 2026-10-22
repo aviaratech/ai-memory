@@ -152,6 +152,117 @@ test('orientMemory uses an explicit session id for direct resume without broaden
   assert.equal(result.orientation.priorSession?.sessionId, 'lead-session-2930');
 });
 
+for (const caller of [{}, { agent: 'fixture-claude-worker' }]) {
+  test(`orient does not call a project fallback the caller's prior session (${JSON.stringify(caller)})`, async () => {
+    const resumeInputs: unknown[] = [];
+    const searchInputs: unknown[] = [];
+    const result = await orientMemory(
+      { ...caller, envProbe: 'none', project: 'example/catalog', task: 'current orchard inventory' },
+      createDependencies({
+        getSessionResume: input => {
+          resumeInputs.push(input);
+          return Promise.resolve({
+            sessionId: 'fixture-other-codex-session',
+            resolvedVia: 'fallback',
+            session: { agent: 'fixture-codex-worker' },
+            snapshot: { snapshotJson: { x_active_goal: 'unrelated historical pipeline' } },
+            status: 'ok',
+          });
+        },
+        searchMemories: input => {
+          searchInputs.push(input);
+          return Promise.resolve([]);
+        },
+      }),
+    );
+    assert.deepEqual(resumeInputs, []);
+    assert.equal(result.orientation.priorSession, null);
+    assert.equal(result.orientation.activeGoal, null);
+    assert.ok(!JSON.stringify(searchInputs).includes('historical pipeline'));
+  });
+}
+
+test('caller identity scopes exact resume while shared durable facts retain their own producer', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const shared = {
+    id: 91,
+    category: 'convention',
+    content: 'Keep orchard records readable.',
+    agent: 'fixture-codex-author',
+    source: 'manual',
+    memoryKey: 'example/catalog:orchard-rule',
+  };
+  const result = await orientMemory(
+    {
+      agent: 'fixture-claude-worker',
+      project: 'example/catalog',
+      sessionId: 'fixture-claude-session',
+      task: 'orchard inventory',
+      envProbe: 'none',
+    },
+    createDependencies({
+      getSessionResume: input => {
+        assert.deepEqual(input, {
+          agent: 'fixture-claude-worker',
+          project: 'example/catalog',
+          sessionId: 'fixture-claude-session',
+          eventLimit: 5,
+        });
+        return Promise.resolve({ sessionId: 'fixture-claude-session', resolvedVia: 'direct', status: 'ok' });
+      },
+      recallMemories: input => {
+        assert.ok(isRecord(input));
+        requests.push(input);
+        return Promise.resolve([shared]);
+      },
+      searchMemories: input => {
+        assert.ok(isRecord(input));
+        requests.push(input);
+        return Promise.resolve([shared]);
+      },
+    }),
+  );
+  assert.ok(requests.length >= 2);
+  assert.ok(requests.every(input => input.agent === undefined && input.project === 'example/catalog'));
+  assert.equal(result.orientation.priorSession?.sessionId, 'fixture-claude-session');
+  assert.ok(JSON.stringify(result.orientation.taskRelevant).includes('fixture-codex-author'));
+  assert.ok(JSON.stringify(result.orientation.taskRelevant).includes('Keep orchard records readable.'));
+});
+
+for (const returned of [
+  { sessionId: 'fixture-other-session', resolvedVia: 'direct' },
+  { sessionId: 'fixture-caller-session', resolvedVia: 'fallback' },
+]) {
+  test(`orient rejects mismatched prior-session provenance ${JSON.stringify(returned)}`, async () => {
+    const result = await orientMemory(
+      { project: 'example/catalog', sessionId: 'fixture-caller-session', task: 'orchard', envProbe: 'none' },
+      createDependencies({
+        getSessionResume: () =>
+          Promise.resolve({ ...returned, status: 'ok', snapshot: { snapshotJson: { x_active_goal: 'foreign task' } } }),
+      }),
+    );
+    assert.equal(result.orientation.priorSession, null);
+    assert.equal(result.orientation.activeGoal, null);
+    assert.ok(result.warnings.some(warning => warning.includes('session identity')));
+  });
+}
+
+test('an exact missing caller session never becomes prior-session context', async () => {
+  const result = await orientMemory(
+    { sessionId: 'fixture-absent-session', envProbe: 'none' },
+    createDependencies({
+      getSessionResume: () =>
+        Promise.resolve({
+          sessionId: 'fixture-absent-session',
+          resolvedVia: 'not_found',
+          status: 'not_found',
+          events: [],
+        }),
+    }),
+  );
+  assert.equal(result.orientation.priorSession, null);
+});
+
 test('orientMemory includes full content for top N compact memories', async () => {
   const firstContent = 'First compact memory content.';
   const secondContent = 'Second compact memory content.';
@@ -198,7 +309,7 @@ test('orientMemory returns full memory payload when memoryDetail is full', async
 
 test('orientMemory returns partial when search fails but recall and resume succeed', async () => {
   const result = await orientMemory(
-    { envProbe: 'local', task: 'query that fails' },
+    { envProbe: 'local', sessionId: LEGACY_SESSION_ID, task: 'query that fails' },
     createDependencies({
       searchMemories: () => Promise.reject(new Error('search unavailable')),
     }),
@@ -223,7 +334,7 @@ test('orientMemory returns partial when search fails but recall and resume succe
 
 test('orientMemory returns degraded when both recall and resume fail', async () => {
   const result = await orientMemory(
-    { envProbe: 'none' },
+    { envProbe: 'none', sessionId: LEGACY_SESSION_ID },
     createDependencies({
       getSessionResume: () => Promise.reject(new Error('resume failed hard')),
       recallMemories: () => Promise.reject(new Error('recall failed hard')),
@@ -244,7 +355,7 @@ test('orientMemory returns degraded when both recall and resume fail', async () 
 
 test('orientMemory includes x_active_goal from prior snapshot', async () => {
   const result = await orientMemory(
-    { envProbe: 'none' },
+    { envProbe: 'none', sessionId: LEGACY_SESSION_ID },
     createDependencies({
       getSessionResume: () =>
         Promise.resolve({
@@ -436,7 +547,7 @@ test('orientMemory stays unscoped when project is omitted', async () => {
   let contestedCalls = 0;
 
   const result = await orientMemory(
-    { envProbe: 'none', task: 'verify unscoped orient behavior' },
+    { envProbe: 'none', sessionId: LEGACY_SESSION_ID, task: 'verify unscoped orient behavior' },
     createDependencies({
       countContestedMemories: () => {
         contestedCalls += 1;
@@ -482,6 +593,7 @@ test('orientMemory forwards explicit project to project-scoped steps', async () 
       envProbe: 'none',
       project: 'example/catalog',
       task: 'verify explicit project passthrough',
+      sessionId: LEGACY_SESSION_ID,
     },
     createDependencies({
       countContestedMemories: input => {
@@ -632,7 +744,7 @@ test('orientMemory applies per-sub-step timeout without blocking full response',
 
   try {
     const result = await orientMemory(
-      { envProbe: 'none', task: 'timeout exercise' },
+      { envProbe: 'none', sessionId: LEGACY_SESSION_ID, task: 'timeout exercise' },
       createDependencies({
         searchMemories: () => new Promise(() => undefined),
       }),
@@ -872,7 +984,7 @@ test('orientMemory hard-caps oversized non-session payloads and reports truncate
     }));
 
     const result = await orientMemory(
-      { envProbe: 'none', memoryDetail: 'full', task: 'hard cap non-session payload' },
+      { envProbe: 'none', memoryDetail: 'full', sessionId: LEGACY_SESSION_ID, task: 'hard cap non-session payload' },
       createDependencies({
         getSessionResume: () =>
           Promise.resolve({
