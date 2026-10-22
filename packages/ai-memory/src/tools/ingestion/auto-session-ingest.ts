@@ -38,22 +38,16 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_REQUEST_MARKER = '## My request for Codex:';
 const CLAUDE_REQUEST_MARKER_ALT = '## My request for Claude:';
 const MAX_MESSAGE_CHARS = 900;
-const MAX_MEMORY_CONTENT_CHARS = 700;
-const MAX_SUMMARY_DURABLE_CONTENT_CHARS = 1200;
 const MAX_AUTO_HISTORY_TURNS = 24;
 const MAX_HISTORY_TURN_CONTENT_CHARS = 420;
 const MAX_FAILURE_DETAIL_CHARS = 600;
 const AUTO_INGEST_ID_VERSION = 'v1';
-const AUTO_DURABLE_PROMOTION_ENV = 'AI_MEMORY_AUTO_DURABLE_PROMOTION';
-const SESSION_SUMMARY_TTL_ENV = 'AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS';
-const DEFAULT_SESSION_SUMMARY_TTL_DAYS = 14;
 const GROK_EXPORT_TIMEOUT_MS = 10_000;
 const GROK_EXPORT_MAX_BUFFER_BYTES = 1_000_000;
 
 export interface AutoMemoryDeltaInput {
   agent?: unknown;
   assistantMessage?: unknown;
-  autoDurablePromotionEnabled?: unknown;
   contextNeeded?: unknown;
   contextNeededProvenance?: unknown;
   /**
@@ -69,7 +63,7 @@ export interface AutoMemoryDeltaInput {
   envModel?: unknown;
   eventReason?: unknown;
   evidenceRefs?: unknown;
-  /** Bounded, source-normalized excerpts retained for cross-harness search. */
+  /** Bounded, source-normalized excerpts; part of the delta identity hash. */
   history?: unknown;
   model?: unknown;
   modelResolutionError?: unknown;
@@ -84,7 +78,6 @@ export interface AutoMemoryDeltaInput {
   sessionFilePath?: unknown;
   sessionId?: unknown;
   sessionSummary?: unknown;
-  sessionSummaryTtlDays?: unknown;
   source?: unknown;
   stateModel?: unknown;
   /**
@@ -110,7 +103,6 @@ export interface AutoSessionHistoryEntry {
 export interface AutoSessionIngestResult {
   continuityWarnings: string[];
   deltaId?: string;
-  durableMemoriesStored: number;
   eventsIngested: number;
   sessionId?: string;
   warningDetails?: unknown;
@@ -223,7 +215,6 @@ interface AutoMemoryDelta {
     system: string;
     title: string;
   };
-  x_durable_memories?: DurableMemoryProposal[];
 }
 
 interface CaptureMessageContentInput {
@@ -244,22 +235,6 @@ interface ContinuityLookupResult {
   stateModel?: Record<string, unknown>;
 }
 
-interface DurableMemoryProposal {
-  category: string;
-  confidence: number;
-  content: string;
-  evidence_refs: { path?: string; type: string; url?: string }[];
-  memory_key: string;
-  project: string | undefined;
-  sensitivity: string;
-  source: string;
-  source_model?: null | string;
-  source_timestamp?: string | undefined;
-  status: string;
-  tags: string[];
-  ttl_days: number;
-}
-
 interface FindLatestCodexSessionFileInput {
   root?: unknown;
   sinceEpochSeconds?: unknown;
@@ -274,7 +249,6 @@ type IngestMemoryDeltaFn = (input: { memoryDelta: AutoMemoryDelta }) => Promise<
 
 interface IngestMemoryDeltaResult {
   deltaId?: unknown;
-  durableMemoriesStored?: unknown;
   eventsIngested?: unknown;
   sessionId?: unknown;
 }
@@ -496,7 +470,6 @@ export function buildAutoMemoryDelta(input: AutoMemoryDeltaInput): AutoMemoryDel
   });
   const snapshotId = `${dedupeNamespace}-snapshot-${sessionId}-${deltaHash.slice(0, 12)}`;
   const deltaId = `${dedupeNamespace}-delta-${sessionId}-${deltaHash.slice(0, 16)}`;
-  const includeDurableMemory = resolveAutoDurablePromotionEnabled(input.autoDurablePromotionEnabled);
 
   const relatedLinks: { label: string; url: string }[] = [];
   if (transcriptPath !== undefined) {
@@ -594,56 +567,6 @@ export function buildAutoMemoryDelta(input: AutoMemoryDeltaInput): AutoMemoryDel
       title: `${agent} session`,
     },
   };
-
-  if (includeDurableMemory) {
-    const sessionSummaryTtlDays = resolveSessionSummaryTtlDays(input.sessionSummaryTtlDays);
-    const hasSessionSummary = sessionSummary !== undefined;
-    const durableContentLimit = hasSessionSummary ? MAX_SUMMARY_DURABLE_CONTENT_CHARS : MAX_MEMORY_CONTENT_CHARS;
-    const summarySeed = truncateText(
-      sessionSummary ?? assistantMessage ?? userMessage ?? completionLine,
-      durableContentLimit,
-    );
-    const repoMarker = repoId !== undefined ? ` [${repoId}]` : '';
-    const memoryHeading = `${agent} session summary (${sessionId})${repoMarker}`;
-    const memoryContent = truncateText(`${memoryHeading}: ${summarySeed}`, durableContentLimit);
-    const evidenceRefs = buildAutoDurableEvidenceRefs({
-      inputEvidenceRefs,
-      sessionFilePath,
-      transcriptPath,
-    });
-    const tags = ['auto', source, agent, 'session-summary'];
-    if (repoId !== undefined) {
-      tags.push(repoId.replaceAll('/', '-').toLowerCase());
-    }
-
-    memoryDelta.x_durable_memories = [
-      {
-        category: 'session-summary',
-        confidence: hasSessionSummary ? 0.45 : 0.35,
-        content: memoryContent,
-        evidence_refs: evidenceRefs,
-        memory_key: `${dedupeNamespace}:${sessionId}:summary:v1`,
-        project: repoId,
-        sensitivity: 'internal',
-        source,
-        status: 'active',
-        tags,
-        ttl_days: sessionSummaryTtlDays,
-      },
-      ...history.map(turn =>
-        buildHistoryDurableMemory({
-          agent,
-          dedupeNamespace,
-          evidenceRefs,
-          project: repoId,
-          sessionId,
-          source,
-          ttlDays: sessionSummaryTtlDays,
-          turn,
-        }),
-      ),
-    ];
-  }
 
   return memoryDelta;
 }
@@ -767,7 +690,6 @@ export async function ingestAutoSessionDelta(
       return {
         continuityWarnings,
         deltaId: readOptionalText(ingestResult.deltaId),
-        durableMemoriesStored: normalizeOptionalInteger(ingestResult.durableMemoriesStored) ?? 0,
         eventsIngested: normalizeOptionalInteger(ingestResult.eventsIngested) ?? 0,
         sessionId: readOptionalText(ingestResult.sessionId),
       };
@@ -1598,59 +1520,6 @@ function buildArtifactMarkdown(params: ArtifactMarkdownInput): string {
   return lines.filter(Boolean).join('\n');
 }
 
-function buildAutoDurableEvidenceRefs(input: {
-  inputEvidenceRefs: string[];
-  sessionFilePath: string | undefined;
-  transcriptPath: string | undefined;
-}): { path?: string; type: string; url?: string }[] {
-  const evidenceRefs: { path?: string; type: string; url?: string }[] = [];
-  if (input.transcriptPath !== undefined) {
-    evidenceRefs.push({ path: input.transcriptPath, type: 'transcript' });
-  }
-  if (input.sessionFilePath !== undefined) {
-    evidenceRefs.push({ path: input.sessionFilePath, type: 'session_file' });
-  }
-  for (const ref of input.inputEvidenceRefs) {
-    evidenceRefs.push({ type: 'provided', url: normalizeRelatedLinkUrl(ref) });
-  }
-  return evidenceRefs;
-}
-
-function buildHistoryDurableMemory(input: {
-  agent: string;
-  dedupeNamespace: string;
-  evidenceRefs: { path?: string; type: string; url?: string }[];
-  project: string | undefined;
-  sessionId: string;
-  source: string;
-  ttlDays: number;
-  turn: AutoSessionHistoryEntry;
-}): DurableMemoryProposal {
-  const repoMarker = input.project !== undefined ? ` [${input.project}]` : '';
-  const heading = `${input.agent} ${input.turn.role} turn (${input.sessionId}/${input.turn.turnId})${repoMarker}`;
-  const content = truncateText(`${heading}: ${input.turn.content}`, MAX_MEMORY_CONTENT_CHARS);
-  const tags = ['auto', 'session-history', input.source, input.agent, input.turn.role, 'session-summary'];
-  if (input.project !== undefined) {
-    tags.push(input.project.replaceAll('/', '-').toLowerCase());
-  }
-
-  return {
-    category: 'session-summary',
-    confidence: 0.3,
-    content,
-    evidence_refs: input.evidenceRefs,
-    memory_key: `${input.dedupeNamespace}:${input.sessionId}:turn:${input.turn.turnId}:v1`,
-    project: input.project,
-    sensitivity: 'internal',
-    source: input.source,
-    source_model: input.turn.model ?? null,
-    ...(input.turn.timestamp === undefined ? {} : { source_timestamp: input.turn.timestamp }),
-    status: 'active',
-    tags,
-    ttl_days: input.ttlDays,
-  };
-}
-
 function captureMessageContent(input: CaptureMessageContentInput) {
   const { content, entryIndex, model, role, summary, timestamp } = input;
 
@@ -2027,49 +1896,6 @@ function redactSensitiveText(value: unknown) {
   }
   parts.push(redacted.slice(cursor));
   return parts.join('');
-}
-
-function resolveAutoDurablePromotionEnabled(value: unknown) {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  const raw = process.env[AUTO_DURABLE_PROMOTION_ENV];
-  if (typeof raw !== 'string') {
-    return false;
-  }
-
-  const normalized = raw.trim().toLowerCase();
-  if (normalized.length === 0) {
-    return false;
-  }
-
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
-    return true;
-  }
-
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
-    return false;
-  }
-
-  return false;
-}
-
-function resolveSessionSummaryTtlDays(value: unknown) {
-  const override = normalizeOptionalInteger(value);
-  if (override !== undefined && override > 0) {
-    return override;
-  }
-
-  const raw = readOptionalText(process.env[SESSION_SUMMARY_TTL_ENV]);
-  if (raw !== undefined) {
-    const parsed = Number(raw);
-    if (Number.isInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return DEFAULT_SESSION_SUMMARY_TTL_DAYS;
 }
 
 function sanitizeFailureDetails(value: unknown) {

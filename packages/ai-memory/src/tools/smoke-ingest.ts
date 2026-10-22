@@ -85,7 +85,6 @@ interface ContractMemoryDeltaFixture {
     };
   };
   telemetry: Record<string, unknown>;
-  x_durable_memories?: unknown[];
 }
 
 interface MemoryDeltaFixtureInput {
@@ -554,18 +553,6 @@ async function runContractIngestionSmoke(fixturePath: string) {
   memoryDelta.snapshot.value.snapshot_id = snapshotId;
   memoryDelta.snapshot.value.created_at = deltaCreatedAt;
   memoryDelta.telemetry.pack_used_id = packId;
-  memoryDelta.x_durable_memories = [
-    {
-      category: 'convention',
-      confidence: 0.93,
-      content: 'Contract smoke: use ai-memory contract ingestion for shared context.',
-      evidence_refs: [{ id: deltaId, kind: 'fixture' }],
-      project: 'example/catalog',
-      sensitivity: 'internal',
-      tags: ['ai-memory', 'smoke-test'],
-      ttl_days: 14,
-    },
-  ];
 
   const contextResult = (await ingestContextPack({ contextPack })) as Record<string, unknown>;
   const deltaResult = (await ingestMemoryDelta({ memoryDelta })) as Record<string, unknown>;

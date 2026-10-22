@@ -150,7 +150,7 @@ describe('protected standalone plugin configuration', () => {
     }, /configuration_conflict/u);
     assert.equal(readFileSync(file, 'utf8'), 'UNRELATED_SETTING=newer\n');
   });
-  it('retains explicitly configured classification settings without calling a provider', () => {
+  it('no longer forwards the retired classification settings', () => {
     const { home, file } = fixture();
     writeFileSync(
       file,
@@ -158,8 +158,8 @@ describe('protected standalone plugin configuration', () => {
       { mode: 0o600 },
     );
     const result = loadPluginRuntimeEnv({ home, env: {} });
-    assert.equal(result.env.AI_MEMORY_CLASSIFY_API_KEY, 'fixture-only');
-    assert.equal(result.env.AI_MEMORY_CLASSIFY_MODEL, 'fixture-model');
+    assert.equal(result.env.AI_MEMORY_CLASSIFY_API_KEY, undefined);
+    assert.equal(result.env.AI_MEMORY_CLASSIFY_MODEL, undefined);
   });
   it('loads only the dedicated protected file through the established runtime parser', () => {
     const { home, file } = fixture();

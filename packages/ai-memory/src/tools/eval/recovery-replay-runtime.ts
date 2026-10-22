@@ -764,7 +764,7 @@ async function replayCheckpoint(
       sessionId: parsed.sessionId,
     }),
   );
-  await packs.refreshContinuityPackFromFlush({ parsed, reflectionCount: 0, sessionId: parsed.sessionId });
+  await packs.refreshContinuityPackFromFlush({ parsed, sessionId: parsed.sessionId });
 }
 
 function requestFrom(path: string): RecoveryRequest {

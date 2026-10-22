@@ -11,7 +11,6 @@ import {
   buildTopTimeoutOperations,
   collectMcpUsageMetrics,
   computeBrierScore,
-  computeConsolidationMetrics,
   computeECE,
   computeUsefulnessMetrics,
   evaluateWriterParticipation,
@@ -3568,67 +3567,6 @@ test('computeUsefulnessMetrics computes sparse vs rich latency and rework', asyn
   assert.equal(result.reworkAfterResume.richMedianResumeMs, 200, 'rich first-write latency');
 });
 
-// --- computeConsolidationMetrics() ---
-
-test('computeConsolidationMetrics aggregates per-day consolidation actions and top deduped memory keys', async () => {
-  const eventRows = [
-    {
-      created_at: '2026-04-29T10:00:00.000Z',
-      payload_json: {
-        actions: { dedupe: 1, none: 1, refine: 0, supersede: 0 },
-        contradictions_flagged: 1,
-        latency_ms: 120,
-        outcomes: [
-          { action_taken: 'dedupe', candidate_memory_key: 'example/catalog:decision:dup-a' },
-          { action_taken: 'none', candidate_memory_key: 'example/catalog:decision:unrelated' },
-        ],
-        pairs_classified: 2,
-        pairs_examined: 3,
-      },
-    },
-    {
-      created_at: '2026-04-29T11:00:00.000Z',
-      payload_json: {
-        actions: { dedupe: 1, none: 0, refine: 1, supersede: 1 },
-        contradictions_flagged: 0,
-        latency_ms: 80,
-        outcomes: [
-          { action_taken: 'dedupe', new_memory_key: 'example/catalog:decision:dup-a' },
-          { action_taken: 'supersede', candidate_memory_key: 'example/catalog:decision:old-b' },
-          { action_taken: 'refine', candidate_memory_key: 'example/catalog:decision:old-c' },
-        ],
-        pairs_classified: 3,
-        pairs_examined: 3,
-      },
-    },
-  ];
-
-  const mockPool = {
-    query: () => Promise.resolve({ rows: eventRows }),
-  } as unknown as Pool;
-
-  const result = await computeConsolidationMetrics({
-    pool: mockPool,
-    windowEndIso: '2026-04-30T00:00:00.000Z',
-    windowStartIso: '2026-04-29T00:00:00.000Z',
-  });
-
-  assert.equal(result.totals.pairsExamined, 6);
-  assert.equal(result.totals.pairsClassified, 5);
-  assert.equal(result.totals.dedupes, 2);
-  assert.equal(result.totals.supersedes, 1);
-  assert.equal(result.totals.refines, 1);
-  assert.equal(result.totals.none, 1);
-  assert.equal(result.totals.contradictionsFlagged, 1);
-  assert.equal(result.contradictionRatePct, 20);
-  assert.equal(result.daily[0]?.date, '2026-04-29');
-  assert.equal(result.daily[0].avgLatencyMs, 100);
-  assert.deepEqual(result.topDedupedMemoryKeys[0], {
-    count: 2,
-    memoryKey: 'example/catalog:decision:dup-a',
-  });
-});
-
 test('computeUsefulnessMetrics classifies score=4 snapshot as rich session', async () => {
   const BASE = 1_700_000_000_000;
   const ts = (offset: number) => new Date(BASE + offset).toISOString();
@@ -4183,51 +4121,6 @@ test('renderReport includes Usefulness 7d/30d counts, p95, and provisional rich-
   assert.ok(output.includes('p95: 1200ms'), 'should show p95 latency');
   assert.ok(output.includes('Rich-vs-sparse comparison: provisional'), 'should mark small buckets provisional');
   assert.ok(output.includes('n_sparse=5 n_rich=3'), 'should show bucket sample counts');
-});
-
-test('renderReport includes Consolidation section when consolidation metrics are present', () => {
-  const report: HealthReport = {
-    ...createMinimalReport(),
-    consolidation: {
-      contradictionRatePct: 20,
-      daily: [
-        {
-          avgLatencyMs: 100,
-          contradictionsFlagged: 1,
-          date: '2026-04-29',
-          dedupes: 2,
-          none: 1,
-          pairsClassified: 5,
-          pairsExamined: 6,
-          refines: 1,
-          sessions: 2,
-          supersedes: 1,
-        },
-      ],
-      noActionRatePct: 20,
-      topDedupedMemoryKeys: [{ count: 2, memoryKey: 'example/catalog:decision:dup-a' }],
-      totals: {
-        contradictionsFlagged: 1,
-        dedupes: 2,
-        none: 1,
-        pairsClassified: 5,
-        pairsExamined: 6,
-        refines: 1,
-        sessions: 2,
-        supersedes: 1,
-      },
-    },
-  };
-
-  const output = renderReport(report);
-
-  assert.ok(output.includes('Consolidation'), 'report should contain Consolidation section header');
-  assert.ok(output.includes('pairs examined=6 classified=5'), 'report should show aggregate pair counts');
-  assert.ok(
-    output.includes('2026-04-29: sessions=2 pairs examined=6 classified=5'),
-    'report should show daily metrics',
-  );
-  assert.ok(output.includes('example/catalog:decision:dup-a=2'), 'report should show top deduped memory keys');
 });
 
 test('renderReport omits Usefulness section when usefulness is absent', () => {

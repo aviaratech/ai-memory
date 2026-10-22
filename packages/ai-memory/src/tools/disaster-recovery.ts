@@ -58,7 +58,17 @@ type PendingCheckpoint = {
 };
 type S3Config = { bucket: string; prefix: string };
 type BackupAttempt = { state: string; startedAt: string };
-type BackupSuccess = { createdAt: string; mode: string };
+type BackupSuccess = { backupId?: string; createdAt: string; databaseTarget?: string; mode: string };
+export type BackupHealth = {
+  state: 'failed' | 'healthy' | 'invalid' | 'missing' | 'stale' | 'stalled';
+  ageHours: number | null;
+  maxHours: number;
+  lastAttempt: string;
+  mode: string | null;
+  backupId: string | null;
+  createdAt: string | null;
+  databaseTarget: string | null;
+};
 type AwsVersioning = { Status?: string };
 type AwsLock = {
   ObjectLockConfiguration?: {
@@ -157,6 +167,15 @@ function validateUrl(value: string | undefined, kind: string): URL {
   )
     fail(`${kind}_URL_TARGET_UNSAFE`);
   return parsed;
+}
+
+// Identifies the database a backup came from, independent of the login role and
+// of which loopback spelling the URL uses.
+export function databaseTargetDigest(url: string): string {
+  const parsed = new URL(url);
+  return createHash('sha256')
+    .update(`loopback:${parsed.port || '5432'}${parsed.pathname}`)
+    .digest('hex');
 }
 
 function sourceTargetDigest(parsed: URL) {
@@ -1149,13 +1168,16 @@ async function backup() {
         if (available < size * 2 + 128 * 1024 * 1024) fail('DISK_CAPACITY_LOW');
         await enterStage('snapshot', { estimatedBytes: size, availableBytes: available, reused: 0 });
         const passFile = await createPgPass(sourceUrl, work);
+        // Taken before the snapshot: every row committed before this time is in the archive.
+        // The cleanup command relies on this to delete only restorable rows.
+        const createdAt = new Date().toISOString();
         const facts = await sourceSnapshot(sourceUrl, sourceId, dumpPath, passFile);
         const dump = await digestFile(dumpPath);
         await enterStage('encrypt', { dumpBytes: dump.bytes, completedUnits: 1, remainingUnits: config ? 3 : 1 });
         const metadata: ArchiveMetadata = {
           format: 1,
           backupId,
-          createdAt: new Date().toISOString(),
+          createdAt,
           ...facts,
           dumpSha256: dump.sha256,
           dumpBytes: dump.bytes,
@@ -1201,6 +1223,7 @@ async function backup() {
       completedAt: new Date().toISOString(),
       createdAt: completed.createdAt,
       backupId: completed.backupId,
+      databaseTarget: databaseTargetDigest(sourceUrl),
       mode: config ? 's3' : 'local',
     });
     await atomicJson(attemptPath, {
@@ -1230,7 +1253,8 @@ async function backup() {
   }
 }
 
-async function status() {
+// Shared by `backup:check` and the cleanup command's apply gate.
+export async function readBackupHealth(): Promise<BackupHealth> {
   const dir = await secureDirectory();
   const attempt = await readJson<BackupAttempt>(join(dir, 'last-attempt.json')).catch(() => null);
   const success = await readJson<BackupSuccess>(join(dir, 'last-success.json')).catch(() => null);
@@ -1250,14 +1274,28 @@ async function status() {
             : ageHours > maxHours
               ? 'stale'
               : 'healthy';
-  log('status', {
+  return {
     state,
-    ageHours: ageHours === null ? null : Math.round(ageHours * 10) / 10,
+    ageHours,
     maxHours,
     lastAttempt: attempt?.state ?? 'missing',
     mode: success?.mode ?? null,
+    backupId: success?.backupId ?? null,
+    createdAt: success?.createdAt ?? null,
+    databaseTarget: success?.databaseTarget ?? null,
+  };
+}
+
+async function status() {
+  const health = await readBackupHealth();
+  log('status', {
+    state: health.state,
+    ageHours: health.ageHours === null ? null : Math.round(health.ageHours * 10) / 10,
+    maxHours: health.maxHours,
+    lastAttempt: health.lastAttempt,
+    mode: health.mode,
   });
-  if (state !== 'healthy') fail(`BACKUP_${state.toUpperCase()}`);
+  if (health.state !== 'healthy') fail(`BACKUP_${health.state.toUpperCase()}`);
 }
 
 export async function checkSequences(client: PgClient, expectedNames: string[]) {

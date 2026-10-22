@@ -365,7 +365,7 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
 
   // Dynamic imports for Postgres-dependent modules — keeps the pure functions importable without DB
-  const { pool, searchMemories, storeMemory } = await import('@aviaratech/ai-memory/internal');
+  const { pool, searchMemories, storeFixtureMemory } = await import('@aviaratech/ai-memory/internal');
 
   const corpus = loadEvalCorpus();
 
@@ -378,7 +378,7 @@ async function main(): Promise<void> {
     process.stdout.write(`Seeding ${String(corpus.memories.length)} memories...\n`);
     const fixtureIdToDbId = await seedEvalMemories({
       corpus,
-      storeMemoryFn: storeMemory,
+      storeMemoryFn: storeFixtureMemory,
     });
 
     // Build reverse map: DB ID → fixture ID

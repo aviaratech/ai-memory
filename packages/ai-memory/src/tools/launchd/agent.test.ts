@@ -37,7 +37,6 @@ test('renderPlist renders the codex ingest launchd plist shape', async () => {
   assert.equal(
     renderPlist({
       environmentVariables: {
-        AI_MEMORY_AUTO_DURABLE_PROMOTION: '1',
         AI_MEMORY_DATABASE_URL: 'postgresql://test:test@localhost:5432/ai_memory',
         AI_MEMORY_LOG_STDERR: '0',
       },
@@ -96,8 +95,6 @@ test('renderPlist renders the codex ingest launchd plist shape', async () => {
     <string>/repo</string>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>AI_MEMORY_AUTO_DURABLE_PROMOTION</key>
-      <string>1</string>
       <key>AI_MEMORY_DATABASE_URL</key>
       <string>postgresql://test:test@localhost:5432/ai_memory</string>
       <key>AI_MEMORY_LOG_STDERR</key>

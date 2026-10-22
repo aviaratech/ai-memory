@@ -1,3 +1,4 @@
+import { isAuditableEvidenceRef } from './durable-write-gate.js';
 import {
   MIN_DURABLE_CONTENT_CHARS,
   MIN_HIGH_CONFIDENCE_DURABLE,
@@ -42,37 +43,6 @@ export function assertDurableMemoryInputPolicy(memory: {
   }
 
   return checkStrictMetadataPolicy(memory);
-}
-
-export function assertDurableMemoryProposalPolicy(
-  proposal: {
-    category: string;
-    confidence: number;
-    content: string;
-    ttlDays?: number | undefined;
-  },
-  index: number,
-) {
-  const prefix = `x_durable_memories[${String(index)}]`;
-  assertMemoryContentQuality(proposal.content, `${prefix}.content`);
-
-  if (proposal.category === SESSION_SUMMARY_CATEGORY) {
-    if (proposal.ttlDays === undefined) {
-      throw new Error(`${prefix}.ttl_days is required for session-summary durable proposals.`);
-    }
-    if (proposal.confidence > SESSION_SUMMARY_MAX_CONFIDENCE) {
-      throw new Error(`${prefix}.confidence must be <= ${String(SESSION_SUMMARY_MAX_CONFIDENCE)} for session-summary.`);
-    }
-    return;
-  }
-
-  if (proposal.confidence < MIN_HIGH_CONFIDENCE_DURABLE) {
-    throw new Error(
-      `${prefix}.confidence must be >= ${String(MIN_HIGH_CONFIDENCE_DURABLE)} for non-session-summary durable proposals. ` +
-        `Guidance: set ${prefix}.confidence to at least ${String(MIN_HIGH_CONFIDENCE_DURABLE)}, or switch category to ` +
-        `'${SESSION_SUMMARY_CATEGORY}' and include ${prefix}.ttl_days for a low-confidence summary.`,
-    );
-  }
 }
 
 export function isStrictMetadataCategory(category: string): boolean {
@@ -127,15 +97,4 @@ function checkStrictMetadataPolicy(memory: {
   }
 
   return { warnings };
-}
-
-function isAuditableEvidenceRef(ref: Record<string, unknown> | string): boolean {
-  if (typeof ref === 'string') {
-    return ref.trim().length > 0;
-  }
-  const auditableKeys = ['path', 'url', 'issue', 'pr'] as const;
-  return auditableKeys.some(key => {
-    const value = ref[key];
-    return typeof value === 'string' && value.trim().length > 0;
-  });
 }

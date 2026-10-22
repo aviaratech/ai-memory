@@ -52,6 +52,9 @@ interface CliOptions {
 
 // Exclude session-summary — getEmbedding() always returns null for that category.
 // Including them would inflate the pending count without ever making progress.
+// Flush rows (even keyed root causes) are removed by `cleanup`, so they are skipped too.
+const NOT_FLUSH_SQL = `lower(btrim(coalesce(source, ''))) NOT IN ('manual-flush', 'memory-flush')`;
+
 const PENDING_SQL = `
   SELECT COUNT(*) AS count
   FROM ai_memory_entries
@@ -60,6 +63,7 @@ const PENDING_SQL = `
     AND (expires_at IS NULL OR expires_at > NOW())
     AND lower(coalesce(category, '')) <> $1
     AND ${KNOWLEDGE_MEMORY_SQL}
+    AND ${NOT_FLUSH_SQL}
 `;
 
 const BATCH_SQL = `
@@ -70,20 +74,23 @@ const BATCH_SQL = `
     AND (expires_at IS NULL OR expires_at > NOW())
     AND lower(coalesce(category, '')) <> $1
     AND ${KNOWLEDGE_MEMORY_SQL}
+    AND ${NOT_FLUSH_SQL}
     AND id > $2
   ORDER BY id ASC
   LIMIT $3
 `;
 
+// Adding a vector is not a content change, so updated_at (used for ranking) stays put.
 const UPDATE_SQL = `
   UPDATE ai_memory_entries
-  SET embedding = $1, updated_at = NOW()
+  SET embedding = $1
   WHERE id = $2 AND content = $3
     AND embedding IS NULL
     AND status = 'active'
     AND (expires_at IS NULL OR expires_at > NOW())
     AND lower(coalesce(category, '')) <> 'session-summary'
     AND ${KNOWLEDGE_MEMORY_SQL}
+    AND ${NOT_FLUSH_SQL}
 `;
 
 // ---------------------------------------------------------------------------

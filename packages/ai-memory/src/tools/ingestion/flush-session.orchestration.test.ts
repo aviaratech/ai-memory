@@ -3,80 +3,16 @@ import type { DbClient, DbPool, DbResult } from '@aviaratech/ai-memory/internal'
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { normalizeMemoryInput } from '../../db/normalization.js';
 import { flushSession } from './flush-session.js';
 
-type FailureStage = 'actionable' | 'checkpoint' | 'delta' | 'none';
+type FailureStage = 'delta' | 'none';
 const TEST_DELTA_ID = 'delta-1381-test';
 const TEST_NOW_ISO = '2026-02-23T12:00:00.000Z';
 const TEST_SESSION_ID = 'session-1381-test';
 
-test('checkpoint prose and flush fragments retain their bytes without requesting embeddings', async () => {
+test('flush commits one checkpoint delta and keeps decisions and root causes in its snapshot', async () => {
   const harness = createHarness('none');
-  const readable = 'The fixture remains blocked because its input is incomplete; do not claim that it passed.';
-  const decision = 'Keep the existing keyed fact and its source lineage.';
-  const writes: Record<string, unknown>[] = [];
-  let embeddingCalls = 0;
-  harness.dependencies.getEmbedding = () => {
-    embeddingCalls += 1;
-    return Promise.resolve([0.1]);
-  };
-  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
-  assert.ok(originalStore);
-  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
-    writes.push(input as Record<string, unknown>);
-    return originalStore(client, input, mode);
-  };
-  await flushSession({ decisions: [decision], sessionId: TEST_SESSION_ID, summary: readable }, harness.dependencies);
-  assert.equal(embeddingCalls, 0, 'ephemeral flush writes must not consume embedding requests');
-  assert.equal(writes.find(write => write.category === 'session-summary')?.content, readable);
-  assert.equal(writes.find(write => write.category === 'decision')?.content, decision);
-  assert.ok(writes.every(write => write.embedding === null));
-});
-
-test('flush root causes retain derived durable keys and their online embedding path', async () => {
-  const harness = createHarness('none');
-  const writes: ReturnType<typeof normalizeMemoryInput>[] = [];
-  const embeddedContent: string[] = [];
-  const rootCause = 'The synthetic fixture failed because its input was inconsistent.';
-  harness.dependencies.getEmbedding = content => {
-    embeddedContent.push(content);
-    return Promise.resolve([0.1]);
-  };
-  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
-  assert.ok(originalStore);
-  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
-    writes.push(normalizeMemoryInput(input));
-    return originalStore(client, input, mode);
-  };
-  await flushSession(
-    {
-      decisions: ['Retry after correcting the synthetic input.'],
-      rootCauses: [rootCause],
-      sessionId: TEST_SESSION_ID,
-      summary: 'Retain the synthetic root cause and checkpoint its pending verification.',
-    },
-    harness.dependencies,
-  );
-  assert.deepEqual(embeddedContent, [rootCause]);
-  const durable = writes.find(write => write.category === 'root-cause');
-  assert.ok(durable?.memoryKey);
-  assert.deepEqual(durable.embedding, [0.1]);
-  assert.ok(writes.filter(write => write !== durable).every(write => write.embedding === null));
-});
-
-test('explicit flush decisions are expiring episodic fragments without changing other core writes', async () => {
-  const harness = createHarness('none');
-  const writes: ReturnType<typeof normalizeMemoryInput>[] = [];
-  const modes: unknown[] = [];
-  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
-  assert.ok(originalStore);
-  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
-    writes.push(normalizeMemoryInput(input));
-    modes.push(mode);
-    return originalStore(client, input, mode);
-  };
-  await flushSession(
+  const result = await flushSession(
     {
       decisions: ['Retry the bounded synthetic fixture after checking its input.'],
       rootCauses: ['The synthetic fixture had an inconsistent input value.'],
@@ -85,52 +21,17 @@ test('explicit flush decisions are expiring episodic fragments without changing 
     },
     harness.dependencies,
   );
-  const decision = writes.find(write => write.category === 'decision');
-  assert.ok(decision);
-  assert.equal(decision.memoryType, 'episodic');
-  assert.equal(decision.expiresAt, '2026-03-09T12:00:00.000Z');
-  assert.equal(decision.sessionId, TEST_SESSION_ID);
-  assert.equal(decision.memoryKey, undefined);
-  assert.equal(writes.find(write => write.category === 'session-summary')?.expiresAt, decision.expiresAt);
-  assert.equal(writes.find(write => write.category === 'root-cause')?.expiresAt, undefined);
-  assert.deepEqual(modes, [undefined, 'flush-session-decision', undefined]);
-});
-
-test('inline consolidation omits only prepared decisions while ordinary episodic reflection remains eligible', async () => {
-  const harness = createHarness('none');
-  harness.dependencies.isEmbeddingAvailable = () => true;
-  harness.dependencies.runReflection = () =>
-    Promise.resolve({
-      reflectionResult: undefined,
-      storedMemories: [
-        {
-          category: 'decision',
-          confidence: 0.8,
-          content: 'Independent episodic reflection remains compatible.',
-          id: 100,
-          memoryType: 'episodic',
-        },
-      ],
-    });
-  let candidates: { id: number }[] = [];
-  harness.dependencies.consolidateMemories = memories => {
-    candidates = memories;
-    return Promise.resolve(undefined);
-  };
-  await flushSession(
-    {
-      decisions: ['Retry the bounded synthetic fixture after checking its input.'],
-      rootCauses: ['The synthetic fixture had an inconsistent input value.'],
-      sessionId: TEST_SESSION_ID,
-      summary: 'Checkpoint the synthetic fixture result and its pending verification.',
-    },
-    harness.dependencies,
-  );
-  assert.deepEqual(
-    candidates.map(memory => memory.id),
-    [3, 100],
-  );
-  assert.equal(harness.state.committedCoreRows, 4);
+  assert.equal(harness.state.committedCoreRows, 1, 'only the delta is written');
+  assert.equal(harness.deltaInputs.length, 1);
+  const delta = harness.deltaInputs[0] as { memoryDelta: { snapshot: { value: Record<string, unknown> } } };
+  assert.deepEqual(delta.memoryDelta.snapshot.value.x_decisions, [
+    'Retry the bounded synthetic fixture after checking its input.',
+  ]);
+  assert.deepEqual(delta.memoryDelta.snapshot.value.x_root_causes, [
+    'The synthetic fixture had an inconsistent input value.',
+  ]);
+  assert.ok(result.warnings?.some(warning => warning.includes('Store reusable knowledge with memory_store')));
+  assert.equal('memoriesStored' in result, false);
 });
 
 test('a resumed basename flush uses only its exact attested session repository', async () => {
@@ -169,51 +70,11 @@ type FlushDependencies = NonNullable<Parameters<typeof flushSession>[1]>;
 
 interface Harness {
   continuityRefreshCalls: unknown[];
+  deltaInputs: unknown[];
   dependencies: FlushDependencies;
-  reflectionCalls: { count: number };
   state: FakeTxState;
   warnings: string[];
 }
-
-test('flushSession rolls back all core rows when checkpoint stage fails', async () => {
-  const harness = createHarness('checkpoint');
-
-  await assert.rejects(
-    flushSession(
-      {
-        decisions: ['Capture checkpoint decisions.'],
-        summary: 'Checkpoint stage failure injection.',
-      },
-      harness.dependencies,
-    ),
-    /checkpoint stage failed/u,
-  );
-
-  assert.equal(harness.state.committedCoreRows, 0);
-  assert.equal(harness.state.commits, 0);
-  assert.equal(harness.state.rollbacks, 1);
-  assert.equal(harness.reflectionCalls.count, 0);
-});
-
-test('flushSession rolls back all core rows when actionable stage fails', async () => {
-  const harness = createHarness('actionable');
-
-  await assert.rejects(
-    flushSession(
-      {
-        decisions: ['Persist actionable memory.'],
-        summary: 'Actionable stage failure injection.',
-      },
-      harness.dependencies,
-    ),
-    /actionable stage failed/u,
-  );
-
-  assert.equal(harness.state.committedCoreRows, 0);
-  assert.equal(harness.state.commits, 0);
-  assert.equal(harness.state.rollbacks, 1);
-  assert.equal(harness.reflectionCalls.count, 0);
-});
 
 test('flushSession rolls back all core rows when delta stage fails', async () => {
   const harness = createHarness('delta');
@@ -232,7 +93,7 @@ test('flushSession rolls back all core rows when delta stage fails', async () =>
   assert.equal(harness.state.committedCoreRows, 0);
   assert.equal(harness.state.commits, 0);
   assert.equal(harness.state.rollbacks, 1);
-  assert.equal(harness.reflectionCalls.count, 0);
+  assert.equal(harness.continuityRefreshCalls.length, 0);
 });
 
 test('flushSession emits non-blocking continuity warnings for missing optional continuity payload fields', async () => {
@@ -246,7 +107,6 @@ test('flushSession emits non-blocking continuity warnings for missing optional c
   );
 
   assert.equal(result.flushed, true);
-  assert.equal(result.memoriesStored, 1);
   assert.equal(result.sessionId, TEST_SESSION_ID);
   const warnings = result.warnings ?? [];
   assert.ok(warnings.some(message => message.includes('not an attested host identity')));
@@ -275,10 +135,9 @@ test('flushSession emits non-blocking continuity warnings for missing optional c
     ),
   );
 
-  assert.equal(harness.state.committedCoreRows, 2, 'checkpoint + delta rows should commit');
+  assert.equal(harness.state.committedCoreRows, 1, 'the checkpoint delta should commit');
   assert.equal(harness.state.commits, 1);
   assert.equal(harness.state.rollbacks, 0);
-  assert.equal(harness.reflectionCalls.count, 1);
   assert.equal(harness.continuityRefreshCalls.length, 1);
   assert.ok(
     harness.warnings.some(message => message.includes('Continuity payload is missing optional quality fields.')),
@@ -306,20 +165,20 @@ test('sparse agent checkpoint commits unchanged narrative and returns advisory w
   assert.equal(result.flushed, true);
   assert.equal(harness.state.commits, 1);
   assert.equal(harness.state.rollbacks, 0);
-  assert.equal(harness.state.committedCoreRows, 2);
+  assert.equal(harness.state.committedCoreRows, 1);
   assert.ok(result.warnings?.some(warning => warning.includes('openQuestions')));
   assert.equal(result.warnings?.filter(warning => warning.includes('compressed')).length, 1);
   assert.ok(!result.warnings?.some(warning => warning.includes('releaseverificationandfinalownedcleanup')));
 });
 
-test('flushSession refreshes continuity pack after core commit and reflection', async () => {
+test('flushSession refreshes continuity pack after core commit', async () => {
   const harness = createHarness('none');
 
   const result = await flushSession(
     {
       agent: 'codex-builder',
       contextNeeded: ['Reviewer approval is required before merge.'],
-      decisions: ['Keep continuity pack refresh in the post-commit reflection lifecycle.'],
+      decisions: ['Keep continuity pack refresh in the post-commit lifecycle.'],
       envModel: { branch: 'codex/ai-memory-continuity', workspaceDirty: false },
       lead: 'tech-lead',
       nextActions: ['Run session-start and flush orchestration tests.'],
@@ -329,12 +188,12 @@ test('flushSession refreshes continuity pack after core commit and reflection', 
       sessionId: 'fixture-host-session',
       source: 'manual-flush',
       stateModel: {
-        assumptions: ['Existing reflection path remains the trusted compaction source.'],
+        assumptions: ['Explicit flushes remain the trusted compaction source.'],
         strategy_confidence: 'medium',
         uncertainty: [],
       },
       summary:
-        'Continuity pack refresh should reuse the existing post-commit reflection path after core flush rows commit.',
+        'Continuity pack refresh should run after the core flush commit and keep the checkpoint fields together.',
       task: 'issue-2930',
     },
     harness.dependencies,
@@ -347,7 +206,7 @@ test('flushSession refreshes continuity pack after core commit and reflection', 
       activeGoal: undefined,
       agent: 'codex-builder',
       contextNeeded: ['Reviewer approval is required before merge.'],
-      decisions: ['Keep continuity pack refresh in the post-commit reflection lifecycle.'],
+      decisions: ['Keep continuity pack refresh in the post-commit lifecycle.'],
       envModel: { branch: 'codex/ai-memory-continuity', workspaceDirty: false },
       lead: 'tech-lead',
       nextActions: ['Run session-start and flush orchestration tests.'],
@@ -359,15 +218,14 @@ test('flushSession refreshes continuity pack after core commit and reflection', 
       sessionId: 'fixture-host-session',
       source: 'manual-flush',
       stateModel: {
-        assumptions: ['Existing reflection path remains the trusted compaction source.'],
+        assumptions: ['Explicit flushes remain the trusted compaction source.'],
         strategy_confidence: 'medium',
         uncertainty: [],
       },
       summary:
-        'Continuity pack refresh should reuse the existing post-commit reflection path after core flush rows commit.',
+        'Continuity pack refresh should run after the core flush commit and keep the checkpoint fields together.',
       task: 'issue-2930',
     },
-    reflectionCount: 0,
     sessionId: 'fixture-host-session',
   });
 });
@@ -376,7 +234,6 @@ test('flushSession reports continuity pack refresh failure without failing commi
   const harness = createHarness('none');
   harness.dependencies.refreshContinuityPack = input => {
     assert.equal(harness.state.commits, 1, 'continuity refresh should run after core transaction commit');
-    assert.equal(harness.reflectionCalls.count, 1, 'continuity refresh should run after reflection');
     harness.continuityRefreshCalls.push(input);
     return Promise.reject(new Error('continuity pack write failed'));
   };
@@ -404,7 +261,7 @@ test('flushSession reports continuity pack refresh failure without failing commi
   }
   assert.equal(continuityPack.reason, 'refresh_failed');
   assert.match(continuityPack.message, /continuity pack write failed/u);
-  assert.equal(harness.state.committedCoreRows, 2, 'checkpoint + delta rows should commit');
+  assert.equal(harness.state.committedCoreRows, 1, 'the checkpoint delta should commit');
   assert.equal(harness.state.commits, 1);
   assert.equal(harness.state.rollbacks, 0);
   assert.equal(harness.continuityRefreshCalls.length, 1);
@@ -416,91 +273,6 @@ test('flushSession reports continuity pack refresh failure without failing commi
     harness.warnings.some(message => message.includes('Continuity pack refresh failed after core memory_flush commit')),
     'operator logs should include refresh failure',
   );
-});
-
-test('flushSession returns calibration entries for every stored core memory', async () => {
-  const harness = createHarness('none');
-
-  const result = await flushSession(
-    {
-      agent: 'codex-builder',
-      decisions: ['Persist calibration-aware decision memory.'],
-      project: 'example/catalog',
-      summary: 'Flush response should expose write-time calibration for stored checkpoint and decision memories.',
-    },
-    harness.dependencies,
-  );
-
-  const calibration = (
-    result as {
-      calibration?: {
-        entries: {
-          calibratedConfidence: number;
-          category: string;
-          declaredConfidence: number;
-          priorMemoryCount: number;
-        }[];
-        priorMemoryCount: number;
-      };
-    }
-  ).calibration;
-
-  assert.ok(calibration !== undefined, 'memory_flush should include a calibration block');
-  assert.equal(calibration.priorMemoryCount, 18);
-  assert.deepEqual(
-    calibration.entries.map(entry => entry.category),
-    ['session-summary', 'decision'],
-  );
-  const decisionEntry = calibration.entries[1];
-  assert.ok(decisionEntry !== undefined, 'expected decision calibration entry');
-  assert.equal(decisionEntry.declaredConfidence, 0.7);
-  assert.ok(Math.abs(decisionEntry.calibratedConfidence - 0.51) < 0.001);
-});
-
-test('flushSession returns consolidation dedupe metrics from post-commit consolidation', async () => {
-  const harness = createHarness('none');
-  harness.dependencies.isEmbeddingAvailable = () => true;
-  harness.dependencies.consolidateMemories = () =>
-    Promise.resolve({
-      actions: {
-        dedupe: 1,
-        none: 0,
-        refine: 0,
-        supersede: 0,
-      },
-      contradictionsFlagged: 0,
-      latencyMs: 12,
-      outcomes: [
-        {
-          actionTaken: 'dedupe',
-          candidateMemoryId: 1,
-          candidateMemoryKey: 'example/catalog:decision:dup-a',
-          newMemoryId: 2,
-          newMemoryKey: 'example/catalog:decision:dup-b',
-        },
-      ],
-      pairsClassified: 1,
-      pairsExamined: 1,
-      sessionId: TEST_SESSION_ID,
-    });
-
-  const result = await flushSession(
-    {
-      rootCauses: [
-        'Zustand stores use the singleton pattern for cross-feature state.',
-        'State management uses Zustand singleton stores across features.',
-      ],
-      summary:
-        'Regression coverage for consolidation metrics emitted after memory_flush stores near-duplicate root causes.',
-    },
-    harness.dependencies,
-  );
-
-  const { consolidation } = result;
-  assert.ok(consolidation !== undefined);
-  assert.equal(consolidation.pairsExamined, 1);
-  assert.equal(consolidation.pairsClassified, 1);
-  assert.equal(consolidation.actions.dedupe, 1);
 });
 
 function createFakePool(client: FlushClient): DbPool {
@@ -563,16 +335,13 @@ function createHarness(failureStage: FailureStage): Harness {
   };
   const warnings: string[] = [];
   const continuityRefreshCalls: unknown[] = [];
-  const reflectionCalls = { count: 0 };
+  const deltaInputs: unknown[] = [];
   const fakeClient = createFakeTransactionClient(state);
 
-  let storeCallCount = 0;
-
   const dependencies: FlushDependencies = {
-    consolidateMemories: () => Promise.resolve(undefined),
-    getEmbedding: () => Promise.resolve(null),
     getSessionProject: () => Promise.resolve(undefined),
-    ingestMemoryDeltaInTransaction: async client => {
+    ingestMemoryDeltaInTransaction: async (client, input) => {
+      deltaInputs.push(input);
       await client.query('INSERT CORE DELTA');
       if (failureStage === 'delta') {
         throw new Error('delta stage failed');
@@ -580,20 +349,11 @@ function createHarness(failureStage: FailureStage): Harness {
 
       return {
         deltaId: TEST_DELTA_ID,
-        durableMemoriesDeduped: 0,
-        durableMemoriesInserted: 0,
-        durableMemoriesStored: 0,
-        durableMemoriesUpdated: 0,
         eventsIngested: 1,
         schemaVersion: 'memory_delta@0.1',
         sessionId: TEST_SESSION_ID,
         status: 'ok',
-        storedDurableMemoryIds: [],
       };
-    },
-    isEmbeddingAvailable: () => false,
-    logError: () => {
-      // No-op for deterministic tests.
     },
     logWarn: (_event, fields) => {
       if (fields !== undefined && typeof fields.message === 'string') {
@@ -604,7 +364,6 @@ function createHarness(failureStage: FailureStage): Harness {
     pool: createFakePool(fakeClient),
     refreshContinuityPack: input => {
       assert.equal(state.commits, 1, 'continuity refresh should run after core transaction commit');
-      assert.equal(reflectionCalls.count, 1, 'continuity refresh should run after reflection');
       continuityRefreshCalls.push(input);
       return Promise.resolve({
         budgetChars: 6000,
@@ -614,47 +373,13 @@ function createHarness(failureStage: FailureStage): Harness {
         truncated: false,
       });
     },
-    runReflection: () => {
-      reflectionCalls.count += 1;
-      return Promise.resolve({
-        reflectionResult: undefined,
-        storedMemories: [],
-      });
-    },
-    storeMemoryWithAuditEvent: async client => {
-      storeCallCount += 1;
-      await client.query(`INSERT CORE STORE ${String(storeCallCount)}`);
-
-      if (failureStage === 'checkpoint' && storeCallCount === 1) {
-        throw new Error('checkpoint stage failed');
-      }
-      if (failureStage === 'actionable' && storeCallCount === 2) {
-        throw new Error('actionable stage failed');
-      }
-
-      return {
-        calibration: {
-          calibratedConfidence: storeCallCount === 1 ? 0.45 : 0.51,
-          declaredConfidence: storeCallCount === 1 ? 0.45 : 0.7,
-          meanDeclaredConfidence: 0.76,
-          priorMemoryCount: 18,
-          reversalRate: 0.2778,
-          scope: 'author x category',
-          window: '30d',
-        },
-        category: storeCallCount === 1 ? 'session-summary' : 'decision',
-        confidence: storeCallCount === 1 ? 0.45 : 0.51,
-        id: storeCallCount,
-        memoryType: null,
-      };
-    },
     uuid: () => TEST_SESSION_ID,
   };
 
   return {
     continuityRefreshCalls,
+    deltaInputs,
     dependencies,
-    reflectionCalls,
     state,
     warnings,
   };

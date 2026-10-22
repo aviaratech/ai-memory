@@ -286,8 +286,7 @@ async function runSessionEndHookCore(
   );
 
   logAiMemoryInfo('hook.session_end_ingested', {
-    memories_stored: result.memoriesStored,
-    message: `${hookEventName} ingested (session=${result.sessionId}, memories=${String(result.memoriesStored)})`,
+    message: `${hookEventName} ingested (session=${result.sessionId})`,
     session_id: result.sessionId,
     source,
   });

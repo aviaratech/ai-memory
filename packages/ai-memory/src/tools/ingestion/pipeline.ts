@@ -81,7 +81,6 @@ export async function runIngestPipeline(
     const autoResult = await ingestAutoSessionDelta(input as AutoMemoryDeltaInput, options);
     return {
       flushed: true,
-      memoriesStored: autoResult.durableMemoriesStored,
       sessionId: autoResult.sessionId ?? '',
       ...(autoResult.continuityWarnings.length > 0 ? { warnings: autoResult.continuityWarnings } : {}),
     };

@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import {
-  assertDurableMemoryInputPolicy,
-  assertDurableMemoryProposalPolicy,
-  isStrictMetadataCategory,
-} from './quality-gates.js';
+import { assertDurableMemoryInputPolicy, isStrictMetadataCategory } from './quality-gates.js';
 
 const VALID_CONTENT = 'This is a durable memory payload that is long enough.';
 const VALID_EVIDENCE_REFS = ['some-file.ts'];
@@ -41,45 +37,6 @@ test('session-summary durable memory requires expiresAt', () => {
       content: VALID_CONTENT,
     });
   }, /must include expiresAt/);
-});
-
-test('session-summary proposal requires ttlDays', () => {
-  assert.throws(() => {
-    assertDurableMemoryProposalPolicy(
-      {
-        category: SESSION_SUMMARY_CATEGORY,
-        confidence: 0.4,
-        content: VALID_CONTENT,
-      },
-      0,
-    );
-  }, /ttl_days is required/);
-});
-
-test('proposal low-confidence rejection includes caller guidance', () => {
-  assert.throws(() => {
-    assertDurableMemoryProposalPolicy(
-      {
-        category: 'decision',
-        confidence: 0.49,
-        content: VALID_CONTENT,
-      },
-      0,
-    );
-  }, /Guidance: set x_durable_memories\[0\]\.confidence to at least 0.5.*session-summary.*ttl_days/u);
-});
-
-test('valid non-session proposal passes policy checks', () => {
-  assert.doesNotThrow(() => {
-    assertDurableMemoryProposalPolicy(
-      {
-        category: 'decision',
-        confidence: 0.85,
-        content: VALID_CONTENT,
-      },
-      1,
-    );
-  });
 });
 
 test('convention category requires memoryKey', () => {

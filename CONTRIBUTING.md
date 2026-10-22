@@ -27,12 +27,12 @@ Use synthetic, domain-neutral examples and fixtures. Keep credentials, actual me
 
 PR CI skips PostgreSQL provisioning and integration only when the complete event base/head diff contains ordinary non-executable files at root `README.md`, `CONTRIBUTING.md`, `LICENSE`, or Markdown files under `docs/`. The CI owner is `scripts/ci-postgres-impact.mjs`; it uses a NUL-delimited raw Git diff with rename detection disabled so deletions and both rename endpoints are classified. Missing history, an empty diff, malformed evidence, unsupported modes/statuses, source/configuration changes and unknown paths require the complete suite. All main pushes run full integration. The aggregate `checks` job requires successful Linux, macOS, package and selection jobs; it accepts a skipped PostgreSQL lane only for a validated documentation-only decision. A failed, cancelled or unexpectedly skipped required lane fails the aggregate.
 
-The current 14 integration files span the following owners under `packages/ai-memory/src/`:
+The current 15 integration files span the following owners under `packages/ai-memory/src/`:
 
 | Integration files | Transitive impact beyond the test file |
 | --- | --- |
-| `db/consolidate-fragments`, `db/flush-decision` | Consolidation, classification, ingestion/flush, embeddings, hashes and built CLI exports |
-| `db/memory-access`, `db/vector`, `tools/db/append-only-events`, `tools/eval/search-benchmark` | Public/internal built exports, store/query/ranking/vector SQL, audit events and synthetic search fixtures |
+| `db/corpus-cleanup`, `db/flush-checkpoint` | Cleanup rules and command, backup gate, ingestion/flush, the durable write gate and built exports |
+| `db/memory-access`, `db/retrieval-penalty`, `db/vector`, `tools/db/append-only-events`, `tools/eval/search-benchmark` | Public/internal built exports, store/query/ranking/vector SQL, audit events and synthetic search fixtures |
 | `db/project-identity`, `db/project-scope-backfill`, `db/run-migrations` | Historical SQL migrations, identity fixtures, scope backfill, schema/catalog/role checks and core/plugin MCP startup |
 | `db/task-hooks` | Session/continuity/tool-invocation APIs and prompt retrieval |
 | `db/workflow-events` | Telemetry projection, workflow health reports, retention SQL and retention configuration |

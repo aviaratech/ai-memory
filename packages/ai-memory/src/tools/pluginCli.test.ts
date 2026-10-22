@@ -3,8 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 
+import type { DbPool } from '@aviaratech/ai-memory/internal';
+
+import type { BackupHealth } from './disaster-recovery.js';
+
+import { CleanupRefusedError, parseCleanupArguments, runCleanup } from './cleanup.js';
 import { parsePluginArguments } from './pluginCli.js';
-import { parseConsolidateArguments } from './consolidate.js';
 
 describe('explicit local database setup command', () => {
   const cli = fileURLToPath(new URL('../../dist/tools/pluginCli.js', import.meta.url));
@@ -55,57 +59,91 @@ describe('explicit local database setup command', () => {
   });
 });
 
-describe('explicit fragment consolidation command', () => {
-  it('defaults to one exact read-only project unit and requires independent reviewed bytes for apply', () => {
-    assert.deepEqual(parseConsolidateArguments(['--project', 'demo-workshop/widget']), {
-      mode: 'dry-run',
-      selectors: { project: 'demo-workshop/widget', orgId: null, sensitivity: 'internal', limit: 50 },
+const BACKUP_ID = '11111111-1111-4111-8111-111111111111';
+const DATABASE_TARGET = 'a'.repeat(64);
+const HEALTHY_BACKUP: BackupHealth = {
+  ageHours: 1,
+  backupId: BACKUP_ID,
+  createdAt: '2026-10-22T12:00:00.000Z',
+  databaseTarget: DATABASE_TARGET,
+  lastAttempt: 'success',
+  maxHours: 36,
+  mode: 'local',
+  state: 'healthy',
+};
+
+describe('explicit cleanup command', () => {
+  it('defaults to a read-only dry run and accepts only bounded options', () => {
+    assert.deepEqual(parseCleanupArguments([]), {
+      apply: false,
+      help: false,
+      historyDays: 30,
+      json: false,
+      vacuumFull: false,
     });
     assert.deepEqual(
-      parseConsolidateArguments([
-        '--apply',
-        '--plan-file',
-        'reviewed.json',
-        '--expect-plan',
-        `sha256:${'a'.repeat(64)}`,
-        '--out',
-        'receipt.json',
-      ]),
+      parseCleanupArguments(['--apply', '--backup-id', BACKUP_ID, '--history-days', '45', '--vacuum-full', '--json']),
       {
-        mode: 'apply',
-        planFile: 'reviewed.json',
-        expectedDigest: 'a'.repeat(64),
-        output: 'receipt.json',
+        apply: true,
+        backupId: BACKUP_ID,
+        help: false,
+        historyDays: 45,
+        json: true,
+        vacuumFull: true,
       },
     );
-  });
-  it('refuses unknown, duplicate, unbounded, ambiguous or overridden apply selectors', () => {
     for (const args of [
-      [],
-      ['--project', 'widget'],
-      ['--project', 'demo-workshop/widget', '--limit', '51'],
-      ['--project', 'demo-workshop/widget', '--limit', '0'],
-      ['--project', 'demo-workshop/widget', '--limit', '2.5'],
-      ['--project', 'demo-workshop/widget', '--force'],
-      ['--project', 'demo-workshop/widget', '--project', 'foreign/widget'],
       ['--apply'],
-      ['--apply', '--dry-run'],
-      ['--apply', '--plan-file', 'x', '--expect-plan', `sha256:${'a'.repeat(64)}`, '--project', 'demo-workshop/widget'],
-      ['--project', 'demo-workshop/widget', '--plan-file', 'x'],
-      ['--project', 'demo-workshop/widget', '--sensitivity', 'secret'],
+      ['--apply', '--backup-id', 'not-an-id'],
+      ['--backup-id', BACKUP_ID],
+      ['--apply', '--backup-id', BACKUP_ID, '--dry-run'],
+      ['--apply', '--apply', '--backup-id', BACKUP_ID],
+      ['--history-days', '6'],
+      ['--history-days', '2.5'],
+      ['--history-days'],
+      ['--vacuum-full'],
+      ['--force'],
     ])
-      assert.throws(() => parseConsolidateArguments(args));
+      assert.throws(() => parseCleanupArguments(args));
   });
-  it('explains reviewed-plan consolidation without a database or host configuration', () => {
+  it('refuses to apply without a matching healthy backup before opening a database connection', async () => {
+    let connected = false;
+    const pool: Pick<DbPool, 'connect'> = {
+      connect() {
+        connected = true;
+        return Promise.reject(new Error('must not connect'));
+      },
+    };
+    const apply = { apply: true, backupId: BACKUP_ID, historyDays: 30, vacuumFull: false };
+    const health = (overrides: Partial<BackupHealth>) => () =>
+      Promise.resolve({ ...HEALTHY_BACKUP, ...overrides } satisfies BackupHealth);
+    const refusals: [() => Promise<BackupHealth>, RegExp][] = [
+      [health({ backupId: null, createdAt: null, state: 'missing' }), /missing/u],
+      [health({ state: 'stale' }), /stale/u],
+      [health({ state: 'failed' }), /failed/u],
+      [health({ databaseTarget: 'f'.repeat(64) }), /not a backup of this database/u],
+      [health({ databaseTarget: null }), /not a backup of this database/u],
+      [health({ backupId: '22222222-2222-4222-8222-222222222222' }), /--backup-id does not match/u],
+      [() => Promise.reject(Object.assign(new Error('x'), { code: 'BACKUP_PATH_UNSAFE' })), /BACKUP_PATH_UNSAFE/u],
+    ];
+    for (const [readBackupHealth, reason] of refusals) {
+      await assert.rejects(
+        runCleanup(apply, { databaseTarget: DATABASE_TARGET, pool, readBackupHealth }),
+        (error: unknown) => error instanceof CleanupRefusedError && reason.test(error.message),
+      );
+    }
+    assert.equal(connected, false);
+  });
+  it('explains the cleanup without a database or host configuration', () => {
     const result = spawnSync(
       process.execPath,
-      [fileURLToPath(new URL('../../dist/tools/pluginCli.js', import.meta.url)), 'consolidate', '--help'],
+      [fileURLToPath(new URL('../../dist/tools/pluginCli.js', import.meta.url)), 'cleanup', '--help'],
       { encoding: 'utf8', env: { PATH: process.env.PATH }, maxBuffer: 64 * 1024 },
     );
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /--project/u);
-    assert.match(result.stdout, /--expect-plan sha256:/u);
     assert.match(result.stdout, /--dry-run/u);
+    assert.match(result.stdout, /--apply/u);
+    assert.match(result.stdout, /backup:check/u);
   });
 });
 

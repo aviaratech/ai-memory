@@ -136,6 +136,8 @@ test(
           category: 'convention',
           confidence: 0.8,
           content: `Synthetic ${token} lantern harbor convention`,
+          evidenceRefs: ['docs/operations.md'],
+          memoryKey: `${project}:${token}`,
           project,
           source: 'integration-test',
         });

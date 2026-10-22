@@ -6,7 +6,6 @@ import { parseFlushInput } from './flush-session.js';
 test('automatic checkpoint distinguishes derived summary from carried-forward actions', () => {
   const built = buildContinuityPackFromFlush({
     nowIso: '2026-10-19T00:00:00.000Z',
-    reflectionCount: 0,
     sessionId: 'session-a',
     scope: { type: 'task', id: 'session-a' },
     parsed: parseFlushInput({

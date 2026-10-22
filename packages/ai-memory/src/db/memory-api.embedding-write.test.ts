@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test } from 'vitest';
 
 import { probeCapabilities, resetCapabilitiesForTests } from './capabilities.js';
 import { resetEmbeddingProvider } from './embeddings.js';
-import { storeMemory } from './memory-api.js';
+import { storeFixtureMemory, storeMemory } from './memory-api.js';
 import { pool } from './runtime.js';
 
 const EMBEDDING_VECTOR = [0.11, 0.22, 0.33];
@@ -113,6 +113,8 @@ test('memory_store write path inserts a non-null embedding when plugin env conta
     category: 'implementation-note',
     confidence: 0.8,
     content: 'MCP plugin write path should store a non-null embedding vector.',
+    evidenceRefs: ['packages/ai-memory/src/db/memory-api.ts'],
+    memoryKey: 'example/catalog:embedding-write-path',
     source: 'codex',
     tool: 'memory_store',
   });
@@ -123,13 +125,14 @@ test('memory_store write path inserts a non-null embedding when plugin env conta
   assert.deepEqual(memory.embedding, EMBEDDING_VECTOR);
 });
 
+// Embedding eligibility applies to every write; storeFixtureMemory reaches it without the durable write gate.
 for (const fixture of [
   { category: 'convention', source: 'manual-flush', tags: [], expectedCalls: 1 },
   { category: 'root-cause', source: 'manual-flush', tags: ['memory-flush'], expectedCalls: 1 },
   { category: 'implementation-note', source: 'manual', tags: [' MEMORY-FLUSH '], expectedCalls: 0 },
   { category: 'implementation-note', source: 'manual-flush', tags: [], expectedCalls: 0 },
 ]) {
-  test(`memory_store gates embeddings using normalized ${fixture.category}/${fixture.source}/${fixture.tags.join(',')}`, async () => {
+  test(`writes gate embeddings using normalized ${fixture.category}/${fixture.source}/${fixture.tags.join(',')}`, async () => {
     setEnv({
       AI_MEMORY_EMBEDDING_API_KEY: 'sk-test',
       AI_MEMORY_EMBEDDING_MODEL: 'text-embedding-3-small',
@@ -156,7 +159,7 @@ for (const fixture of [
     });
     const client = createMemoryStoreClient();
     pool.connect = () => Promise.resolve(client);
-    await storeMemory({
+    await storeFixtureMemory({
       ...fixture,
       confidence: 0.8,
       content: 'Keep the canonical durable fact readable and eligible after normalization.',
@@ -168,6 +171,32 @@ for (const fixture of [
     assert.equal(insertCall.params[28], fixture.expectedCalls === 1 ? JSON.stringify(EMBEDDING_VECTOR) : null);
   });
 }
+
+test('memory_store rejects an ungated write before embedding or opening a connection', async () => {
+  setEnv({
+    AI_MEMORY_EMBEDDING_API_KEY: 'sk-test',
+    AI_MEMORY_EMBEDDING_PROVIDER: 'openai',
+    AI_MEMORY_LOG_STDERR: '0',
+  });
+  const fetchMock = mock.fn(() => Promise.reject(new Error('must not embed')));
+  globalThis.fetch = fetchMock;
+  let connected = false;
+  pool.connect = () => {
+    connected = true;
+    return Promise.reject(new Error('must not connect'));
+  };
+
+  await assert.rejects(
+    storeMemory({
+      category: 'implementation-note',
+      confidence: 0.8,
+      content: 'A memory without a key or evidence must not be stored.',
+    }),
+    /memoryKey is required/u,
+  );
+  assert.equal(fetchMock.mock.callCount(), 0);
+  assert.equal(connected, false);
+});
 
 interface MockDbClient extends DbClient {
   calls: QueryCall[];

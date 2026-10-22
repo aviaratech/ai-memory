@@ -1,13 +1,9 @@
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { insertMemoryEventWithClient, insertSessionEventWithClient } from './failure-events.js';
-import { createDurableMemoryKey } from './hashing.js';
+import { insertSessionEventWithClient } from './failure-events.js';
 import { createDeltaEventId } from './ids.js';
-import { storeMemoryWithClient } from './memory-store.js';
 import {
-  addDaysToIso,
-  normalizeDurableMemoryProposals,
   normalizeOptionalText,
   normalizeProjectScope,
   normalizeRequiredText,
@@ -36,28 +32,15 @@ export interface IngestMemoryDeltaQueryResult<Row> {
 
 export interface IngestMemoryDeltaResult extends Record<string, unknown> {
   deltaId: string;
-  durableMemoriesDeduped: number;
-  durableMemoriesInserted: number;
-  durableMemoriesStored: number;
-  durableMemoriesUpdated: number;
   eventsIngested: number;
   schemaVersion: string;
   sessionId: string;
   status: 'ok';
-  storedDurableMemoryIds: number[];
-}
-
-interface DurableMemoryStats {
-  durableMemoriesDeduped: number;
-  durableMemoriesInserted: number;
-  durableMemoriesUpdated: number;
-  storedDurableMemoryIds: number[];
 }
 
 interface IngestMemoryDeltaContext {
   appendEvents: MemoryDeltaAppendEvent[];
   deltaCreatedAt: string;
-  durableMemories: ReturnType<typeof normalizeDurableMemoryProposals>;
   memoryDelta: MemoryDeltaPayload;
   producedByAgent: string;
   producedByModel: string | undefined;
@@ -99,17 +82,11 @@ interface MemoryDeltaPayload extends JsonRecord {
     user_id?: string;
   };
   workflow?: JsonRecord;
-  x_durable_memories?: unknown;
 }
 
 interface MemoryDeltaSnapshot extends JsonRecord {
   mode: 'patch' | 'replace';
   value: unknown;
-}
-
-interface StoredMemoryRecord {
-  id: number;
-  writeDisposition: 'dedupe_update' | 'inserted' | 'keyed_upsert';
 }
 
 /**
@@ -135,8 +112,7 @@ export async function ingestMemoryDeltaInTransaction(client: IngestMemoryDeltaCl
   await upsertDeltaWithSnapshot(client, context);
   await insertDeltaEvents(client, context);
 
-  const durableStats = await storeDurableMemories(client, context);
-  return buildIngestMemoryDeltaResult(context, durableStats);
+  return buildIngestMemoryDeltaResult(context);
 }
 
 export function normalizeMemoryDeltaRelatedLinks(memoryDelta: unknown): void {
@@ -182,21 +158,13 @@ export function normalizeRelatedLinkUrl(value: string): string {
   return value;
 }
 
-function buildIngestMemoryDeltaResult(
-  context: IngestMemoryDeltaContext,
-  durableStats: DurableMemoryStats,
-): IngestMemoryDeltaResult {
+function buildIngestMemoryDeltaResult(context: IngestMemoryDeltaContext): IngestMemoryDeltaResult {
   return {
     deltaId: context.memoryDelta.delta_id,
-    durableMemoriesDeduped: durableStats.durableMemoriesDeduped,
-    durableMemoriesInserted: durableStats.durableMemoriesInserted,
-    durableMemoriesStored: durableStats.storedDurableMemoryIds.length,
-    durableMemoriesUpdated: durableStats.durableMemoriesUpdated,
     eventsIngested: context.appendEvents.length,
     schemaVersion: context.memoryDelta.schema_version,
     sessionId: context.sessionId,
     status: 'ok',
-    storedDurableMemoryIds: durableStats.storedDurableMemoryIds,
   };
 }
 
@@ -218,24 +186,6 @@ async function insertDeltaEvents(client: IngestMemoryDeltaClient, context: Inges
   }
 }
 
-async function insertIngestedMemoryEvent(input: {
-  client: IngestMemoryDeltaClient;
-  context: IngestMemoryDeltaContext;
-  memoryId: number;
-  proposalIndex: number;
-}) {
-  await insertMemoryEventWithClient(input.client, {
-    actor: input.context.producedByAgent,
-    eventType: 'ingested_from_memory_delta',
-    memoryId: input.memoryId,
-    payloadJson: {
-      delta_id: input.context.memoryDelta.delta_id,
-      proposal_index: input.proposalIndex,
-      session_id: input.context.sessionId,
-    },
-  });
-}
-
 function isValidUri(value: string): boolean {
   try {
     return new URL(value).href.length > 0;
@@ -250,7 +200,6 @@ function parseIngestMemoryDeltaContext(input: unknown): IngestMemoryDeltaContext
   return {
     appendEvents: Array.isArray(memoryDelta.append_events) ? memoryDelta.append_events : [],
     deltaCreatedAt: normalizeRequiredTimestamp(memoryDelta.created_at, 'memoryDelta.created_at'),
-    durableMemories: normalizeDurableMemoryProposals(memoryDelta.x_durable_memories),
     memoryDelta,
     producedByAgent: normalizeRequiredText(memoryDelta.produced_by.agent, 'memoryDelta.produced_by.agent'),
     producedByModel: normalizeOptionalText(memoryDelta.produced_by.model),
@@ -267,107 +216,12 @@ function parseMemoryDeltaPayload(input: unknown): MemoryDeltaPayload {
   const memoryDelta = selectContractPayload(input, 'memoryDelta');
   normalizeMemoryDeltaRelatedLinks(memoryDelta);
   assertValidMemoryDelta(memoryDelta);
+  if (isRecord(memoryDelta) && memoryDelta.x_durable_memories !== undefined) {
+    throw new Error(
+      'memoryDelta.x_durable_memories is no longer accepted. Store durable knowledge with memory_store (memoryKey and evidenceRefs required).',
+    );
+  }
   return memoryDelta as MemoryDeltaPayload;
-}
-
-async function storeDurableMemories(client: IngestMemoryDeltaClient, context: IngestMemoryDeltaContext) {
-  const stats: DurableMemoryStats = {
-    durableMemoriesDeduped: 0,
-    durableMemoriesInserted: 0,
-    durableMemoriesUpdated: 0,
-    storedDurableMemoryIds: [],
-  };
-
-  for (const [index, proposal] of context.durableMemories.entries()) {
-    const memoryRecord = await storeDurableMemoryProposal({
-      client,
-      context,
-      index,
-      proposal,
-    });
-    stats.storedDurableMemoryIds.push(memoryRecord.id);
-    updateDurableMemoryStats(stats, memoryRecord);
-    await insertIngestedMemoryEvent({
-      client,
-      context,
-      memoryId: memoryRecord.id,
-      proposalIndex: index,
-    });
-  }
-
-  return stats;
-}
-
-async function storeDurableMemoryProposal(input: {
-  client: IngestMemoryDeltaClient;
-  context: IngestMemoryDeltaContext;
-  index: number;
-  proposal: IngestMemoryDeltaContext['durableMemories'][number];
-}): Promise<StoredMemoryRecord> {
-  const { client, context, index, proposal } = input;
-  const project = normalizeProjectScope({
-    project: proposal.project,
-    repoId: context.tenancyRepoId,
-    repoSlug: context.tenancyRepoSlug,
-  });
-  const derivedMemoryKey = createDurableMemoryKey({
-    category: proposal.category,
-    content: proposal.content,
-    orgId: context.tenancyOrgId,
-    project,
-    repoId: context.tenancyRepoId,
-    repoSlug: context.tenancyRepoSlug,
-    sensitivity: proposal.sensitivity,
-    tags: proposal.tags,
-  });
-
-  const memoryRecord = (await storeMemoryWithClient(client, {
-    agent: context.producedByAgent,
-    category: proposal.category,
-    confidence: proposal.confidence,
-    content: proposal.content,
-    evidenceRefs: proposal.evidenceRefs,
-    expiresAt:
-      proposal.ttlDays === undefined
-        ? undefined
-        : addDaysToIso(proposal.sourceTimestamp ?? context.deltaCreatedAt, proposal.ttlDays),
-    memoryKey: proposal.memoryKey ?? derivedMemoryKey,
-    metadata: {
-      delta_id: context.memoryDelta.delta_id,
-      proposal_index: index,
-      source_contract: 'memory_delta@0.1',
-      ...(proposal.sourceModel === undefined ? {} : { source_turn_model: proposal.sourceModel }),
-      ...(proposal.sourceTimestamp === undefined ? {} : { source_turn_timestamp: proposal.sourceTimestamp }),
-      telemetry_pack_used_id: normalizeOptionalText(context.memoryDelta.telemetry?.pack_used_id),
-    },
-    model: context.producedByModel,
-    orgId: context.tenancyOrgId,
-    project,
-    repoId: context.tenancyRepoId,
-    repoSlug: context.tenancyRepoSlug,
-    sensitivity: proposal.sensitivity,
-    sessionId: context.sessionId,
-    source: proposal.source ?? MEMORY_DELTA_TOOL,
-    status: proposal.status,
-    tags: proposal.tags,
-    tool: MEMORY_DELTA_TOOL,
-    updatedBy: context.producedByAgent,
-    userId: context.tenancyUserId,
-  })) as StoredMemoryRecord;
-
-  return memoryRecord;
-}
-
-function updateDurableMemoryStats(stats: DurableMemoryStats, memoryRecord: StoredMemoryRecord) {
-  if (memoryRecord.writeDisposition === 'inserted') {
-    stats.durableMemoriesInserted += 1;
-  } else {
-    stats.durableMemoriesUpdated += 1;
-  }
-
-  if (memoryRecord.writeDisposition === 'dedupe_update') {
-    stats.durableMemoriesDeduped += 1;
-  }
 }
 
 async function upsertDeltaWithSnapshot(client: IngestMemoryDeltaClient, context: IngestMemoryDeltaContext) {

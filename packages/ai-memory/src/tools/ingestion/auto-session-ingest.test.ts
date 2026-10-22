@@ -29,7 +29,6 @@ const DEDUPE_NAMESPACE = 'codex';
 const TEST_TEMP_DIR = mkdtempSync(join(tmpdir(), 'ai-memory-ingest-test-'));
 
 const EVIDENCE_URL = 'https://github.com/example/catalog/pull/123';
-const EXPECT_DURABLE_MEMORY = 'should have at least one durable memory';
 const SAMPLE_CONTEXT_NEEDED = 'Design review approval';
 const SAMPLE_EVIDENCE_PATH = join(TEST_TEMP_DIR, 'note.md');
 const SAMPLE_MODEL_ID = 'gpt-5.3-codex';
@@ -148,103 +147,6 @@ test('dedupeNamespace defaults to source when not provided', () => {
   );
 });
 
-test('durable memory key uses dedupeNamespace when auto promotion enabled', () => {
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    dedupeNamespace: DEDUPE_NAMESPACE,
-    source: SOURCE_LAUNCHD,
-  });
-  assert.ok(delta.x_durable_memories !== undefined, 'should have durable memories');
-  const memory = delta.x_durable_memories[0];
-  assert.ok(memory !== undefined, 'should have at least one memory');
-  assert.ok(
-    memory.memory_key.startsWith(`${DEDUPE_NAMESPACE}:`),
-    `memory_key should start with dedupeNamespace: ${memory.memory_key}`,
-  );
-});
-
-test('durable memory tags include source (not dedupeNamespace) when auto promotion enabled', () => {
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    dedupeNamespace: DEDUPE_NAMESPACE,
-    source: SOURCE_LAUNCHD,
-  });
-  const memory = delta.x_durable_memories?.[0];
-  assert.ok(memory !== undefined, 'should have at least one memory');
-  assert.ok(memory.tags.includes(SOURCE_LAUNCHD), `tags should contain source: ${JSON.stringify(memory.tags)}`);
-});
-
-test('durable history redacts whitespace-delimited credentials', () => {
-  const credentialMarker = 'synthetic-value-4821';
-  const quotedCredentialMarker = 'quoted-value-7391';
-  const quotedMultiwordCredentialMarker = 'quoted phrase-marker-6194';
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    history: [
-      {
-        content: `Password ${credentialMarker} must not persist.`,
-        role: 'user',
-        timestamp: '2026-02-08T12:00:00.000Z',
-        turnId: 'turn-1',
-      },
-      {
-        content: `Password "${quotedCredentialMarker}" must not persist.`,
-        role: 'user',
-        timestamp: '2026-02-08T12:01:00.000Z',
-        turnId: 'turn-2',
-      },
-      {
-        content: `Password "${quotedMultiwordCredentialMarker}" must not persist.`,
-        role: 'user',
-        timestamp: '2026-02-08T12:02:00.000Z',
-        turnId: 'turn-3',
-      },
-    ],
-    source: SOURCE_LAUNCHD,
-  });
-  const history = delta.x_durable_memories?.filter(candidate => candidate.tags.includes('session-history')) ?? [];
-
-  assert.equal(history.length, 3, 'should have durable history memories');
-  for (const memory of history) {
-    assert.doesNotMatch(memory.content, new RegExp(credentialMarker, 'u'));
-    assert.doesNotMatch(memory.content, new RegExp(quotedCredentialMarker, 'u'));
-    assert.doesNotMatch(memory.content, new RegExp(quotedMultiwordCredentialMarker, 'u'));
-    assert.match(memory.content, /\[REDACTED_SECRET_VALUE\]/u);
-  }
-});
-
-test('durable history redacts quoted JSON credential values without discarding ordinary fields', () => {
-  const credentialCases = [
-    { key: 'password', value: 'synthetic-json-password phrase' },
-    { key: 'api_key', value: 'synthetic-json-api-key' },
-    { key: 'authorization', value: 'Bearer synthetic-json-authorization' },
-    { key: 'client-secret', value: 'synthetic-json-client-secret "quoted suffix"' },
-  ];
-  const ordinaryValue = 'ordinary JSON context survives';
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    history: credentialCases.map(({ key, value }, index) => ({
-      content: JSON.stringify({ description: ordinaryValue, [key]: value, token: 'synthetic-json-second-value' }),
-      role: 'user',
-      turnId: `quoted-json-${String(index)}`,
-    })),
-    source: SOURCE_LAUNCHD,
-  });
-  const history = delta.x_durable_memories?.filter(memory => memory.tags.includes('session-history')) ?? [];
-
-  assert.equal(history.length, credentialCases.length);
-  for (const memory of history) {
-    assert.equal(memory.content.includes('synthetic-json-'), false, 'JSON credential material must not persist');
-    assert.equal(memory.content.includes('quoted suffix'), false, 'escaped quoted values must be redacted fully');
-    assert.ok(memory.content.includes('[REDACTED_SECRET_VALUE]'));
-    assert.ok(memory.content.includes(ordinaryValue), 'ordinary JSON fields remain useful');
-  }
-});
-
 test('append_events summary excludes source to ensure idempotent payloads across ingestion paths', () => {
   const wrapperDelta = buildAutoMemoryDelta({
     ...BASE_INPUT,
@@ -267,127 +169,26 @@ test('append_events summary excludes source to ensure idempotent payloads across
   );
 });
 
-test('no durable memories when auto promotion disabled', () => {
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: false,
-    dedupeNamespace: DEDUPE_NAMESPACE,
-    source: SOURCE_LAUNCHD,
-  });
-  assert.equal(delta.x_durable_memories, undefined);
-});
-
-test('session-summary ttl_days defaults to 14 when no override provided', () => {
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    dedupeNamespace: DEDUPE_NAMESPACE,
-    source: SOURCE_LAUNCHD,
-  });
-  const memory = delta.x_durable_memories?.[0];
-  assert.ok(memory !== undefined, EXPECT_DURABLE_MEMORY);
-  assert.equal(memory.ttl_days, 14, 'default ttl_days should be 14');
-});
-
-test('session-summary ttl_days respects sessionSummaryTtlDays input override', () => {
-  const delta = buildAutoMemoryDelta({
-    ...BASE_INPUT,
-    autoDurablePromotionEnabled: true,
-    dedupeNamespace: DEDUPE_NAMESPACE,
-    sessionSummaryTtlDays: 7,
-    source: SOURCE_LAUNCHD,
-  });
-  const memory = delta.x_durable_memories?.[0];
-  assert.ok(memory !== undefined, EXPECT_DURABLE_MEMORY);
-  assert.equal(memory.ttl_days, 7, 'ttl_days should match input override');
-});
-
-test('session-summary ttl_days respects AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS env var', () => {
-  const originalEnv = process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
+test('buildAutoMemoryDelta never proposes durable memories, even with the retired promotion flag set', () => {
+  const originalEnv = process.env.AI_MEMORY_AUTO_DURABLE_PROMOTION;
   try {
-    process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = '21';
+    process.env.AI_MEMORY_AUTO_DURABLE_PROMOTION = '1';
     const delta = buildAutoMemoryDelta({
       ...BASE_INPUT,
-      autoDurablePromotionEnabled: true,
       dedupeNamespace: DEDUPE_NAMESPACE,
+      history: [{ content: 'A synthetic turn.', role: 'assistant', turnId: 'turn-1' }],
+      sessionSummary: 'A synthetic session summary.',
       source: SOURCE_LAUNCHD,
     });
-    const memory = delta.x_durable_memories?.[0];
-    assert.ok(memory !== undefined, EXPECT_DURABLE_MEMORY);
-    assert.equal(memory.ttl_days, 21, 'ttl_days should match env var override');
+    assert.equal('x_durable_memories' in delta, false);
   } finally {
     if (originalEnv === undefined) {
-      delete process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
+      delete process.env.AI_MEMORY_AUTO_DURABLE_PROMOTION;
     } else {
-      process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = originalEnv;
+      process.env.AI_MEMORY_AUTO_DURABLE_PROMOTION = originalEnv;
     }
   }
 });
-
-test('session-summary ttl_days input override takes precedence over env var', () => {
-  const originalEnv = process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-  try {
-    process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = '21';
-    const delta = buildAutoMemoryDelta({
-      ...BASE_INPUT,
-      autoDurablePromotionEnabled: true,
-      dedupeNamespace: DEDUPE_NAMESPACE,
-      sessionSummaryTtlDays: 5,
-      source: SOURCE_LAUNCHD,
-    });
-    const memory = delta.x_durable_memories?.[0];
-    assert.ok(memory !== undefined, EXPECT_DURABLE_MEMORY);
-    assert.equal(memory.ttl_days, 5, 'input override should take precedence over env var');
-  } finally {
-    if (originalEnv === undefined) {
-      delete process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-    } else {
-      process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = originalEnv;
-    }
-  }
-});
-
-test('malformed TTL env does not throw when durable promotion is disabled', () => {
-  const originalEnv = process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-  try {
-    process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = 'not-a-number';
-    const delta = buildAutoMemoryDelta({
-      ...BASE_INPUT,
-      autoDurablePromotionEnabled: false,
-      dedupeNamespace: DEDUPE_NAMESPACE,
-      source: SOURCE_LAUNCHD,
-    });
-    assert.equal(delta.x_durable_memories, undefined);
-  } finally {
-    if (originalEnv === undefined) {
-      delete process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-    } else {
-      process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = originalEnv;
-    }
-  }
-});
-
-test('malformed unrelated retention env does not throw when durable promotion is disabled', () => {
-  const originalBatch = process.env.AI_MEMORY_RETENTION_BATCH_SIZE;
-  try {
-    process.env.AI_MEMORY_RETENTION_BATCH_SIZE = 'invalid';
-    const delta = buildAutoMemoryDelta({
-      ...BASE_INPUT,
-      autoDurablePromotionEnabled: false,
-      dedupeNamespace: DEDUPE_NAMESPACE,
-      source: SOURCE_LAUNCHD,
-    });
-    assert.equal(delta.x_durable_memories, undefined);
-  } finally {
-    if (originalBatch === undefined) {
-      delete process.env.AI_MEMORY_RETENTION_BATCH_SIZE;
-    } else {
-      process.env.AI_MEMORY_RETENTION_BATCH_SIZE = originalBatch;
-    }
-  }
-});
-
-// --- Continuity fields ---
 
 test('snapshot populates next_actions when provided', () => {
   const delta = buildAutoMemoryDelta({
@@ -563,28 +364,6 @@ test('generated delta with all continuity fields passes schema validation', () =
   assert.doesNotThrow(() => {
     assertValidMemoryDelta(delta);
   }, 'delta with all continuity fields should pass memory_delta schema validation');
-});
-
-test('malformed TTL env falls back to default when durable promotion is enabled', () => {
-  const originalEnv = process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-  try {
-    process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = 'garbage';
-    const delta = buildAutoMemoryDelta({
-      ...BASE_INPUT,
-      autoDurablePromotionEnabled: true,
-      dedupeNamespace: DEDUPE_NAMESPACE,
-      source: SOURCE_LAUNCHD,
-    });
-    const memory = delta.x_durable_memories?.[0];
-    assert.ok(memory !== undefined, EXPECT_DURABLE_MEMORY);
-    assert.equal(memory.ttl_days, 14, 'malformed env should fall back to default 14');
-  } finally {
-    if (originalEnv === undefined) {
-      delete process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS;
-    } else {
-      process.env.AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS = originalEnv;
-    }
-  }
 });
 
 test('parseCodexSessionSummary uses model from turn_context when session_meta lacks model', () => {
@@ -939,7 +718,6 @@ test('ingestAutoSessionDelta: overwrite guardrail invokes lookupContinuity with 
       ingestMemoryDelta: () =>
         Promise.resolve({
           deltaId: 'delta-test',
-          durableMemoriesStored: 0,
           eventsIngested: 0,
           sessionId: BASE_INPUT.sessionId,
         }),
@@ -1031,7 +809,6 @@ test('ingestAutoSessionDelta: carry-forward marks state_model with carry-forward
         capturedDelta = memoryDelta;
         return Promise.resolve({
           deltaId: 'delta-test',
-          durableMemoriesStored: 0,
           eventsIngested: 0,
           sessionId: BASE_INPUT.sessionId,
         });
@@ -1136,7 +913,6 @@ for (const source of [SOURCE_WRAPPER, SOURCE_LAUNCHD, SOURCE_CLAUDE]) {
           capturedDelta = memoryDelta;
           return Promise.resolve({
             deltaId: 'delta-test',
-            durableMemoriesStored: 0,
             eventsIngested: 0,
             sessionId: BASE_INPUT.sessionId,
           });
@@ -1171,7 +947,6 @@ test('ingestAutoSessionDelta: no prior flush leaves state_model absent and prove
         capturedDelta = memoryDelta;
         return Promise.resolve({
           deltaId: 'delta-test',
-          durableMemoriesStored: 0,
           eventsIngested: 0,
           sessionId: BASE_INPUT.sessionId,
         });

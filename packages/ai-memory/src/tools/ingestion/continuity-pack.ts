@@ -60,9 +60,6 @@ export interface ContinuityPackPayload extends Record<string, unknown> {
     sessionId: string;
     source: string;
   };
-  reflection: {
-    count: number;
-  };
   summary: string;
   updatedAt: string;
 }
@@ -128,7 +125,6 @@ export function buildContinuityPackFromFlush(input: {
   budgetChars?: number | undefined;
   nowIso: string;
   parsed: ParsedFlushInput;
-  reflectionCount: number;
   scope?: ContinuityPackScope | undefined;
   sessionId: string;
 }): BuiltContinuityPack {
@@ -144,7 +140,6 @@ export function buildContinuityPackFromFlush(input: {
     budgetChars,
     nowIso: input.nowIso,
     parsed: input.parsed,
-    reflectionCount: input.reflectionCount,
     scope,
     sessionId: input.sessionId,
     source,
@@ -168,7 +163,6 @@ export function buildScopedContinuityPacksFromFlush(input: {
   budgetChars?: number | undefined;
   nowIso: string;
   parsed: ParsedFlushInput;
-  reflectionCount: number;
   sessionId: string;
 }): BuiltContinuityPack[] {
   const scopes: ContinuityPackScope[] = [
@@ -189,7 +183,6 @@ export function formatContinuityPackMarkdown(pack: BuiltContinuityPack | Continu
 
 export async function refreshContinuityPackFromFlush(input: {
   parsed: ParsedFlushInput;
-  reflectionCount: number;
   sessionId: string;
 }): Promise<ContinuityPackRefreshResult> {
   if (input.parsed.project === undefined) {
@@ -200,7 +193,6 @@ export async function refreshContinuityPackFromFlush(input: {
   const builtPacks = buildScopedContinuityPacksFromFlush({
     nowIso,
     parsed: input.parsed,
-    reflectionCount: input.reflectionCount,
     sessionId: input.sessionId,
   });
   const results = await Promise.all(
@@ -237,7 +229,6 @@ function buildPackPayload(input: {
   budgetChars: number;
   nowIso: string;
   parsed: ParsedFlushInput;
-  reflectionCount: number;
   scope: ContinuityPackScope;
   sessionId: string;
   source: string;
@@ -260,9 +251,6 @@ function buildPackPayload(input: {
       scope: input.scope,
       sessionId: input.sessionId,
       source: input.source,
-    },
-    reflection: {
-      count: input.reflectionCount,
     },
     summary: input.parsed.summary,
     updatedAt: input.nowIso,
@@ -453,7 +441,6 @@ function toPayloadFromRecord(record: ContinuityPackRecord): ContinuityPackPayloa
   const rawPack = record.pack;
   const rawBudgets = readRecord(rawPack.budgets);
   const rawProvenance = readRecord(rawPack.provenance);
-  const rawReflection = readRecord(rawPack.reflection);
   return {
     budgets: {
       budgetChars: record.budgetChars,
@@ -481,9 +468,6 @@ function toPayloadFromRecord(record: ContinuityPackRecord): ContinuityPackPayloa
       scope: readScope(rawProvenance.scope, record.scopeKey),
       sessionId: typeof rawProvenance.sessionId === 'string' ? rawProvenance.sessionId : (record.sessionId ?? ''),
       source: typeof rawProvenance.source === 'string' ? rawProvenance.source : record.source,
-    },
-    reflection: {
-      count: typeof rawReflection.count === 'number' ? rawReflection.count : 0,
     },
     summary: typeof rawPack.summary === 'string' ? rawPack.summary : '',
     updatedAt: typeof rawPack.updatedAt === 'string' ? rawPack.updatedAt : (record.updatedAt ?? ''),
