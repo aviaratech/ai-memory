@@ -181,9 +181,31 @@ async function queryReversalPriorBatch(
   const windowDaysParam = `$${String(params.length)}::int`;
 
   const tagColumn = includeTag ? ', tag' : '';
-  const tagSelect = includeTag ? ', input_cells.tag' : '';
-  const tagJoin = includeTag ? `AND memory.tags @> ARRAY[input_cells.tag]::text[]` : '';
   const operationName = includeTag ? 'read_reversal_prior_tag_batch' : 'read_reversal_prior_category_batch';
+
+  // Keep selective tags visible to the existing GIN index. Joining all cells
+  // before aggregating can instead scan the corpus and reject each tag pair.
+  // The aggregate returns one zero-count row when a tag has no matching prior.
+  const tagPriorSql = `
+      SELECT
+        input_cells.author,
+        lower(input_cells.category) AS category,
+        input_cells.tag,
+        prior.*
+      FROM input_cells
+      CROSS JOIN LATERAL (
+        SELECT
+          COUNT(memory.id)::int AS prior_memory_count,
+          COUNT(memory.id) FILTER (WHERE memory.status IN ('superseded', 'contested-resolved-against'))::int AS reversal_count,
+          AVG(COALESCE(memory.declared_confidence, memory.confidence))::double precision AS mean_declared_confidence
+        FROM ai_memory_entries memory
+        WHERE COALESCE(NULLIF(memory.agent, ''), NULLIF(memory.updated_by, ''), NULLIF(memory.source, ''), 'unknown') =
+          input_cells.author
+          AND lower(memory.category) = lower(input_cells.category)
+          AND memory.created_at >= NOW() - (${windowDaysParam} * INTERVAL '1 day')
+          AND memory.tags @> ARRAY[input_cells.tag]::text[]
+      ) AS prior
+  `;
 
   const result = await client.query(
     `
@@ -191,9 +213,12 @@ async function queryReversalPriorBatch(
       WITH input_cells(author, category${tagColumn}) AS (
         VALUES ${valueTuples.join(',\n          ')}
       )
-      SELECT
+      ${
+        includeTag
+          ? tagPriorSql
+          : `SELECT
         input_cells.author,
-        lower(input_cells.category) AS category${tagSelect},
+        lower(input_cells.category) AS category,
         COUNT(memory.id)::int AS prior_memory_count,
         COUNT(memory.id) FILTER (WHERE memory.status IN ('superseded', 'contested-resolved-against'))::int AS reversal_count,
         AVG(COALESCE(memory.declared_confidence, memory.confidence))::double precision AS mean_declared_confidence
@@ -203,8 +228,8 @@ async function queryReversalPriorBatch(
           input_cells.author
         AND lower(memory.category) = lower(input_cells.category)
         AND memory.created_at >= NOW() - (${windowDaysParam} * INTERVAL '1 day')
-        ${tagJoin}
-      GROUP BY input_cells.author, lower(input_cells.category)${tagSelect}
+      GROUP BY input_cells.author, lower(input_cells.category)`
+      }
     `,
     params,
   );
