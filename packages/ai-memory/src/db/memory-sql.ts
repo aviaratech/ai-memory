@@ -91,7 +91,10 @@ export function buildMemorySearchPoolCtes(input: MemorySearchPoolInput) {
         input.goalReference === undefined
           ? ''
           : `,
-        ((SELECT string_agg(quote_literal(number), ' | ')::tsquery FROM unnest(${input.goalReference.numbersParam}::text[]) AS number) && (${anyTermQuerySql})) AS goal_query`
+        -- An empty any-term query would vanish from the AND and leave the goal numbers alone.
+        CASE WHEN numnode(${anyTermQuerySql}) > 0
+          THEN (SELECT string_agg(quote_literal(number), ' | ')::tsquery FROM unnest(${input.goalReference.numbersParam}::text[]) AS number) && (${anyTermQuerySql})
+        END AS goal_query`
       }
     )`,
     `phrase_candidates AS (

@@ -156,7 +156,9 @@ describe('index-first search candidate pool', () => {
     assert.ok(goal.includes('search_vector @@ (SELECT goal_query FROM search_query)'));
     assert.ok(goal.includes('~ $4'));
     assert.ok(goal.includes("status IN ('active', 'contested')") && goal.includes('project = $7'));
-    assert.match(cte(sql, 'search_query'), /unnest\(\$3::text\[\]\)[\s\S]*&&[\s\S]*AS goal_query/u);
+    const query = cte(sql, 'search_query');
+    assert.match(query, /unnest\(\$3::text\[\]\)[\s\S]*&&[\s\S]*AS goal_query/u);
+    assert.match(query, /CASE WHEN numnode\(/u, 'an empty any-term query must admit no goal rows');
     assert.match(sql, /UNION\s+SELECT id FROM goal_candidates/u);
     assert.ok(!buildMemorySearchPoolCtes(poolInput).includes('goal_candidates'));
   });

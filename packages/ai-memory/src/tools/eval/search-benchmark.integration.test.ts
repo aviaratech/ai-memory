@@ -301,6 +301,13 @@ describe('index-first search', { skip: databaseUrl === undefined }, () => {
     assert.equal(withGoal[0], planted.goalMatch, 'the row the goal names and the query matches ranks first');
   });
 
+  test('admits no goal reference when the query has no positive term', { timeout: 120_000 }, async () => {
+    for (const query of ['what did we do', '-harbor', '???', '-zyxwquorum']) {
+      const ids = await search(query, 'finish issue #7791');
+      assert.ok(!ids.includes(planted.goalMatch), `"${query}" must not return a row that only the goal names`);
+    }
+  });
+
   test('runs awkward queries without error', { timeout: 120_000 }, async () => {
     const queries = [
       '"zyxwquorum rollout"',
