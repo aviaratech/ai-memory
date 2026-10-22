@@ -156,7 +156,7 @@ describe('memory capability guards', () => {
     });
 
     assert.equal(result.length, 1);
-    const searchSql = capturedSql.find((sql: string) => sql.includes('WITH filtered_candidates'));
+    const searchSql = capturedSql.find((sql: string) => sql.includes('candidate_features AS MATERIALIZED'));
     assert.ok(searchSql !== undefined, 'expected memory_search SQL');
     assert.ok(!searchSql.includes('vector_candidates'));
     assert.ok(!searchSql.includes('embedding <=>'));
@@ -207,7 +207,7 @@ describe('memory capability guards', () => {
     });
 
     assert.equal(result.length, 1);
-    const searchSql = capturedSql.find((sql: string) => sql.includes('WITH filtered_candidates'));
+    const searchSql = capturedSql.find((sql: string) => sql.includes('candidate_features AS MATERIALIZED'));
     assert.ok(searchSql !== undefined, 'expected memory_search SQL');
     assert.ok(searchSql.includes('vector_candidates'));
     assert.ok(searchSql.includes('embedding <=>'));
@@ -259,7 +259,7 @@ describe('memory capability guards', () => {
     });
 
     assert.equal(result.length, 1);
-    const searchSql = capturedSql.find((sql: string) => sql.includes('WITH filtered_candidates'));
+    const searchSql = capturedSql.find((sql: string) => sql.includes('candidate_features AS MATERIALIZED'));
     assert.ok(searchSql !== undefined, 'expected memory_search SQL');
     assert.ok(!searchSql.includes('vector_candidates'));
     assert.ok(!searchSql.includes('embedding <=>'));

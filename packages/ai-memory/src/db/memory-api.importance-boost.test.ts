@@ -114,7 +114,7 @@ describe('memory access importance boosts', () => {
 
     mockPoolConnect((sql: string, params?: readonly unknown[]) => {
       calls.push({ params, sql });
-      if (sql.includes('WITH filtered_candidates')) {
+      if (sql.includes('candidate_features AS MATERIALIZED')) {
         return Promise.resolve(
           toQueryResult([
             buildBaseRow({

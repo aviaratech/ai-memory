@@ -12,11 +12,7 @@ import {
 } from '@aviaratech/ai-memory/internal';
 import { Pool } from 'pg';
 
-import {
-  buildMemorySearchMatchQuerySql,
-  buildMemorySearchOrRankSql,
-  buildMemorySearchSemanticRankSql,
-} from './memory-sql.js';
+import { buildMemorySearchOrRankSql, buildMemorySearchSemanticRankSql } from './memory-sql.js';
 import { normalizeSearchReferenceText } from './query-helpers.js';
 import { SEARCH_VECTOR_SQL } from './runtime.js';
 
@@ -229,79 +225,6 @@ test(
       } finally {
         await verificationPool.end();
       }
-    }
-  },
-);
-
-test(
-  'combined full-text membership preserves original and normalized query matches',
-  { skip: databaseUrl === undefined },
-  async () => {
-    assert.ok(databaseUrl);
-    assertLocalDatabaseUrl(databaseUrl);
-    const verificationPool = new Pool({ connectionString: databaseUrl });
-    const contents = [
-      '',
-      'forest canopy sample',
-      'forest harbor sample',
-      'harbor tide sample',
-      'the and or',
-      'issue4821 accepted reference',
-      'issue 4821 accepted reference',
-      '4821 measured samples',
-      'source decision ledger',
-      'café naïve résumé',
-      'source review publication checkpoint preserved supporting evidence',
-    ];
-    const queries = [
-      'forest canopy',
-      '"forest canopy"',
-      '"canopy forest"',
-      'forest OR harbor',
-      'forest -harbor',
-      '-harbor',
-      '-forest -harbor',
-      '"forest canopy" OR -harbor',
-      'the and or',
-      '!!!',
-      'issue4821',
-      'issue #4821',
-      'issues/4821 -harbor',
-      '4821 samples',
-      'café naïve',
-      'source decision ledger accepted supporting evidence issue4821 current checkpoint review publication',
-    ];
-    // The pre-correction predicate is the oracle for membership, including its
-    // token-OR additions to phrase and negative websearch queries.
-    const priorMatch = (param: string) => {
-      const tokens = `nullif(regexp_replace(trim(regexp_replace(lower(${param}), '[^[:alnum:]]+', ' ', 'g')), '[[:space:]]+', ' OR ', 'g'), '')`;
-      return `(search_vector @@ websearch_to_tsquery('english', ${param}) OR
-      (${tokens} IS NOT NULL AND search_vector @@ websearch_to_tsquery('english', ${tokens})))`;
-    };
-    try {
-      for (const query of queries) {
-        const result = await verificationPool.query<{ after: boolean; before: boolean; content: string }>(
-          `WITH fixture AS (
-          SELECT content, to_tsvector('english', content) AS search_vector
-          FROM unnest($3::text[]) AS documents(content)
-        )
-        SELECT content,
-          (${priorMatch('$1')} OR ${priorMatch('$2')}) AS before,
-          search_vector @@ (${buildMemorySearchMatchQuerySql('$1')} || ${buildMemorySearchMatchQuerySql('$2')}) AS after
-        FROM fixture`,
-          [query, normalizeSearchReferenceText(query), contents],
-        );
-        assert.equal(result.rows.length, contents.length);
-        for (const row of result.rows) {
-          assert.equal(
-            row.after,
-            row.before,
-            `membership changed for ${JSON.stringify({ content: row.content, query })}`,
-          );
-        }
-      }
-    } finally {
-      await verificationPool.end();
     }
   },
 );

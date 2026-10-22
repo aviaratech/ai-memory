@@ -110,8 +110,8 @@ export function buildSearchQueryTokens(queryText: string) {
   return Array.from(deduped);
 }
 
-/** Match identifiers with reference markers, not the same number used as a measurement. */
-export function buildSearchReferencePattern(queryText: string, goalText = ''): string | undefined {
+/** Issue and pull-request numbers the query refers to; ordinary quantities are not references. */
+export function extractSearchReferenceNumbers(queryText: string, goalText = ''): string[] {
   const numbers = new Set<string>();
   // A bare number is a precise lookup; quantities in descriptive queries are not.
   if (/^\d+$/u.test(queryText.trim())) numbers.add(queryText.trim());
@@ -123,8 +123,27 @@ export function buildSearchReferencePattern(queryText: string, goalText = ''): s
     if (match[1] !== undefined) numbers.add(match[1]);
     if (numbers.size >= MAX_QUERY_TOKENS) break;
   }
-  if (numbers.size === 0) return undefined;
-  return `(^|[^a-z0-9])((issues?|prs?|pulls?)[\t\r\n #/:._-]*|#)(${[...numbers].join('|')})([^a-z0-9]|$)`;
+  return [...numbers];
+}
+
+/** Match identifiers with reference markers, not the same number used as a measurement. */
+export function buildSearchReferencePattern(queryText: string, goalText = ''): string | undefined {
+  const numbers = extractSearchReferenceNumbers(queryText, goalText);
+  if (numbers.length === 0) return undefined;
+  return `(^|[^a-z0-9])((issues?|prs?|pulls?)[\t\r\n #/:._-]*|#)(${numbers.join('|')})([^a-z0-9]|$)`;
+}
+
+/**
+ * Values for exact memory-key and tag lookups. Keys are matched against the whole
+ * query; tags are stored lowercase, so each query token is also a tag candidate.
+ */
+export function buildSearchExactLookups(queryText: string) {
+  const trimmed = queryText.trim();
+  const keys = [...new Set([trimmed, trimmed.toLowerCase()])];
+  // A term the query negates must not select tag matches.
+  const positiveText = queryText.replace(/(^|\s)-("[^"]*"|\S+)/gu, ' ');
+  const tags = [...new Set([trimmed.toLowerCase(), ...buildSearchQueryTokens(positiveText)])];
+  return { keys, tags };
 }
 
 export async function getLatestSessionSnapshotWithClient(client: DatabaseClient, sessionId: string) {

@@ -10,7 +10,10 @@
  * corpus, as agent queries do in practice. It refuses to run against a
  * database that already holds other memories.
  *
- * Run via `npm run search:benchmark -w @aviaratech/ai-memory -- [--rows <n>] [--json]`.
+ * `--explain` also plans one query per class with the default planner settings
+ * and reports the indexes it reads and any sequential scan of the memory table.
+ *
+ * Run via `npm run search:benchmark -w @aviaratech/ai-memory -- [--rows <n>] [--json] [--explain]`.
  */
 
 import type { DbPool } from '@aviaratech/ai-memory/internal';
@@ -53,10 +56,19 @@ interface ClassSummary {
   runs: number;
 }
 
+interface PlanSummary {
+  /** Most rows any one scan of the memory table read and then discarded with a filter or recheck. */
+  discardedRows: number;
+  indexes: string[];
+  /** Sequential scans of the memory table in the candidate-retrieval statement. */
+  tableScans: number;
+}
+
 export interface SearchBenchmarkReport {
   byClass: Record<BenchmarkQueryClass, ClassSummary>;
   embeddings: boolean;
   measuredAt: string;
+  plans?: Record<BenchmarkQueryClass, PlanSummary>;
   rows: number;
 }
 
@@ -158,6 +170,60 @@ export function buildBenchmarkQueries(): BenchmarkQuery[] {
   ];
 }
 
+export type LabelledFrequency = 'common' | 'frequent' | 'medium' | 'rare';
+
+export interface LabelledQuery {
+  /** How common the query's terms are in the synthetic corpus. */
+  frequency: LabelledFrequency;
+  query: string;
+  /** Contents of the planted records that answer the query; plant them before searching. */
+  relevantContents: string[];
+}
+
+const LABELLED_QUERIES_PER_BAND = 8;
+const LABELLED_BANDS: Record<LabelledFrequency, [number, number]> = {
+  // Indexes into the benchmark vocabulary, whose use is skewed toward the first entries.
+  common: [0, 12],
+  frequent: [12, 60],
+  medium: [150, 450],
+  rare: [3000, 3999],
+};
+
+/**
+ * Deterministic labelled queries for ranking at scale. Each query is five terms drawn from one frequency
+ * band, and two planted records answer it by containing those terms in a short sentence. Planted records
+ * should be old, so recency alone cannot find them. Rare and medium bands need only the index; the common
+ * band, where thousands of rows contain every term, is where ranking by density matters.
+ */
+export function buildLabelledQueries(): LabelledQuery[] {
+  const vocabulary = buildBenchmarkVocabulary();
+  let state = 0x1abe1;
+  const random = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
+  };
+  const queries: LabelledQuery[] = [];
+  for (const frequency of ['rare', 'medium', 'frequent', 'common'] as const) {
+    const [low, high] = LABELLED_BANDS[frequency];
+    for (let index = 0; index < LABELLED_QUERIES_PER_BAND; index += 1) {
+      const terms = new Set<string>();
+      while (terms.size < 5) terms.add(vocabulary[low + Math.floor(random() * (high - low))] ?? '');
+      const words = [...terms];
+      queries.push({
+        frequency,
+        query: words.join(' '),
+        relevantContents: [
+          `Decision record: ${words.join(' ')} were reviewed together.`,
+          `Follow-up note on ${words.slice(0, 3).join(' ')} and ${words.slice(3).join(' ')} in one review.`,
+        ],
+      });
+    }
+  }
+  return queries;
+}
+
 /** Mirrors search's token-OR membership for reporting how many rows a query reaches. */
 function toTokenOrQuery(text: string): string {
   return text
@@ -177,12 +243,47 @@ function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function parseArgs(argv: string[]): { embeddings: boolean; json: boolean; rows: number } {
-  const args = { embeddings: true, json: false, rows: DEFAULT_ROWS };
+interface PlanNode {
+  'Actual Loops'?: number;
+  'Index Name'?: string;
+  'Node Type': string;
+  Plans?: PlanNode[];
+  'Relation Name'?: string;
+  'Rows Removed by Filter'?: number;
+  'Rows Removed by Index Recheck'?: number;
+}
+
+function collectPlanNodes(node: PlanNode): PlanNode[] {
+  return [node, ...(node.Plans ?? []).flatMap(collectPlanNodes)];
+}
+
+async function summarizePlan(pool: DbPool, sql: string, params: readonly unknown[]): Promise<PlanSummary> {
+  // ANALYZE runs the statement: an index-order walk shows up as discarded rows, not as a scan type.
+  const result = await pool.query<{ 'QUERY PLAN': { Plan: PlanNode }[] }>(`EXPLAIN (ANALYZE, FORMAT JSON) ${sql}`, [
+    ...params,
+  ]);
+  const root = result.rows[0]?.['QUERY PLAN'][0]?.Plan;
+  if (root === undefined) throw new Error('EXPLAIN returned no plan');
+  const nodes = collectPlanNodes(root);
+  const discarded = (node: PlanNode) =>
+    (node['Actual Loops'] ?? 1) *
+    ((node['Rows Removed by Filter'] ?? 0) + (node['Rows Removed by Index Recheck'] ?? 0));
+  return {
+    discardedRows: Math.max(0, ...nodes.filter(node => node['Relation Name'] === 'ai_memory_entries').map(discarded)),
+    indexes: [...new Set(nodes.flatMap(node => (node['Index Name'] === undefined ? [] : [node['Index Name']])))].sort(),
+    tableScans: nodes.filter(node => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'ai_memory_entries')
+      .length,
+  };
+}
+
+function parseArgs(argv: string[]): { embeddings: boolean; explain: boolean; json: boolean; rows: number } {
+  const args = { embeddings: true, explain: false, json: false, rows: DEFAULT_ROWS };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--json') {
       args.json = true;
+    } else if (value === '--explain') {
+      args.explain = true;
     } else if (value === '--no-embeddings') {
       args.embeddings = false;
     } else if (value === '--rows') {
@@ -199,8 +300,15 @@ function parseArgs(argv: string[]): { embeddings: boolean; json: boolean; rows: 
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const { assertLocalDatabaseUrl, closePool, getCapabilities, initializeDatabase, pool, searchMemories } =
-    await import('@aviaratech/ai-memory/internal');
+  const {
+    assertLocalDatabaseUrl,
+    buildHybridSearchQuery,
+    closePool,
+    getCapabilities,
+    initializeDatabase,
+    pool,
+    searchMemories,
+  } = await import('@aviaratech/ai-memory/internal');
   const databaseUrl = process.env.AI_MEMORY_DATABASE_URL;
   if (databaseUrl === undefined) throw new Error('AI_MEMORY_DATABASE_URL must name a disposable local database');
   assertLocalDatabaseUrl(databaseUrl);
@@ -219,10 +327,22 @@ async function main(): Promise<void> {
     await removeSyntheticSearchCorpus(pool, BENCHMARK_PROJECT);
     process.stderr.write(`Seeding ${String(args.rows)} synthetic memories...\n`);
     await seedSyntheticSearchCorpus(pool, { embeddings, project: BENCHMARK_PROJECT, rows: args.rows, seed: 0.42 });
-    await pool.query('ANALYZE ai_memory_entries');
+    // Vacuum as autovacuum would: a bulk load leaves unset hint bits and pending index entries behind.
+    await pool.query('VACUUM (ANALYZE) ai_memory_entries');
 
     const samples = new Map<BenchmarkQueryClass, { matched: number[]; timings: number[] }>();
+    const plans: Partial<Record<BenchmarkQueryClass, PlanSummary>> = {};
     for (const query of buildBenchmarkQueries()) {
+      if (args.explain && plans[query.queryClass] === undefined) {
+        const statement = buildHybridSearchQuery({
+          includeInactive: false,
+          limit: 8,
+          project: BENCHMARK_PROJECT,
+          queryEmbedding: null,
+          queryText: query.text,
+        });
+        plans[query.queryClass] = await summarizePlan(pool, statement.sql, statement.params);
+      }
       const matched = await pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM ai_memory_entries
          WHERE project = $3 AND search_vector @@ (websearch_to_tsquery('english', $1) || websearch_to_tsquery('english', $2))`,
@@ -256,6 +376,7 @@ async function main(): Promise<void> {
       byClass,
       embeddings,
       measuredAt: new Date().toISOString(),
+      ...(args.explain ? { plans: plans as Record<BenchmarkQueryClass, PlanSummary> } : {}),
       rows: args.rows,
     };
 
@@ -269,6 +390,12 @@ async function main(): Promise<void> {
             `matched(p50)=${String(summary.medianMatchedRows)} p50=${String(summary.p50Ms)}ms ` +
             `p95=${String(summary.p95Ms)}ms max=${String(summary.maxMs)}ms\n`,
         );
+        const plan = report.plans?.[queryClass as BenchmarkQueryClass];
+        if (plan !== undefined) {
+          process.stdout.write(
+            `  ${''.padEnd(10)} plan: table scans=${String(plan.tableScans)} discarded rows=${String(plan.discardedRows)} indexes=${plan.indexes.join(', ')}\n`,
+          );
+        }
       }
     }
   } finally {

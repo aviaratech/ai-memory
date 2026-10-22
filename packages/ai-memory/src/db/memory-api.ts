@@ -16,8 +16,8 @@ import {
 } from './importance.js';
 import {
   buildMemorySearchKeywordHintSql,
-  buildMemorySearchMatchQuerySql,
   buildMemorySearchOrRankSql,
+  buildMemorySearchPoolCtes,
   buildMemorySearchReferenceMatchSql,
   buildMemorySearchSemanticRankSql,
 } from './memory-sql.js';
@@ -25,8 +25,10 @@ import { storeMemoryWithClient } from './memory-store.js';
 import { normalizeMemoryType } from './memory-types.js';
 import { normalizeBoolean, normalizeLimit, normalizeMemoryInput, normalizeOptionalText } from './normalization.js';
 import {
+  buildSearchExactLookups,
   buildSearchQueryTokens,
   buildSearchReferencePattern,
+  extractSearchReferenceNumbers,
   normalizeSearchReferenceText,
   rerankHybridSearchRows,
   resolveSearchCandidateLimits,
@@ -34,7 +36,7 @@ import {
 import { runBoundedQuery } from './query-runner.js';
 import { toMemoryRecord } from './records.js';
 import { applyReadReversalPenalties } from './retrieval-penalty.js';
-import { pool, SEARCH_VECTOR_SQL } from './runtime.js';
+import { pool } from './runtime.js';
 import { TAXONOMY_TIERS } from './taxonomy.js';
 import { isRecord } from './type-guards.js';
 
@@ -344,32 +346,31 @@ export async function resolveContestedMemory(input: unknown) {
   });
 }
 
-export async function searchMemories(input: unknown) {
-  const request = isRecord(input) ? input : {};
-  const queryText = normalizeOptionalText(request.query);
-  if (queryText === undefined) {
-    throw new Error('query must be a non-empty string');
-  }
+export interface HybridSearchQueryInput {
+  activeGoal?: string | undefined;
+  category?: string | undefined;
+  includeInactive: boolean;
+  limit: number;
+  memoryType?: string | undefined;
+  project?: string | undefined;
+  /** Query embedding for the vector channel; null skips the vector channel. */
+  queryEmbedding: null | number[];
+  queryText: string;
+  sessionId?: string | undefined;
+}
 
-  const project = normalizeOptionalText(request.project);
-  const category = normalizeOptionalText(request.category);
-  const activeGoal = normalizeOptionalText(request.activeGoal);
-  const memoryType = normalizeMemoryType(request.memoryType ?? request.memory_type, 'memoryType');
-  const sessionId = normalizeOptionalText(request.sessionId ?? request.session_id);
-  const includeEmbedding = normalizeBoolean(request.includeEmbedding, true);
-  const includeInactive = normalizeBoolean(request.includeInactive, false);
-  const limit = normalizeLimit(request.limit, { fallback: 8, max: 25 });
-  const defaultHalfLifeDays = resolveDecayHalfLifeDays();
-  const decayedImportanceSql = buildDecayedImportanceSqlExpression(defaultHalfLifeDays);
+/**
+ * Builds the default hybrid search statement and its parameters. Exported so
+ * integration tests and the benchmark can explain the exact statement that
+ * searchMemories runs. Callers pass a null embedding when the embedding column
+ * is absent (searchMemories does).
+ */
+export function buildHybridSearchQuery(input: HybridSearchQueryInput): { params: unknown[]; sql: string } {
+  const { activeGoal, category, includeInactive, limit, memoryType, project, queryEmbedding, queryText, sessionId } =
+    input;
+  const decayedImportanceSql = buildDecayedImportanceSqlExpression(resolveDecayHalfLifeDays());
   const { combinedCandidateLimit, keywordCandidateLimit, semanticCandidateLimit, vectorCandidateLimit } =
     resolveSearchCandidateLimits(limit);
-  const goalText = activeGoal;
-
-  const hasEmbeddingColumn = getCapabilities().hasEmbeddingColumn;
-  // Compute query embedding before acquiring DB connection, but only when search can use it.
-  const queryEmbedding =
-    includeEmbedding && hasEmbeddingColumn ? await getEmbedding(queryText, { operation: 'search_memories' }) : null;
-
   const baseConditions: string[] = [];
   const params: unknown[] = [];
 
@@ -385,16 +386,36 @@ export async function searchMemories(input: unknown) {
   }
   const referencePattern = buildSearchReferencePattern(queryText, activeGoal);
   let referenceMatchSql = 'FALSE';
+  let poolReference: { numbersParam: string; patternParam: string } | undefined;
+  let goalReference: { numbersParam: string; patternParam: string } | undefined;
   if (referencePattern !== undefined) {
     params.push(referencePattern);
-    referenceMatchSql = buildMemorySearchReferenceMatchSql(`$${String(params.length)}`);
+    const hintPatternParam = `$${String(params.length)}`;
+    referenceMatchSql = buildMemorySearchReferenceMatchSql(hintPatternParam);
+    // References in the active goal may re-rank rows; only the query text selects them.
+    const queryReferencePattern = buildSearchReferencePattern(queryText);
+    if (queryReferencePattern !== undefined) {
+      let queryPatternParam = hintPatternParam;
+      if (queryReferencePattern !== referencePattern) {
+        params.push(queryReferencePattern);
+        queryPatternParam = `$${String(params.length)}`;
+      }
+      params.push(extractSearchReferenceNumbers(queryText));
+      poolReference = { numbersParam: `$${String(params.length)}`, patternParam: queryPatternParam };
+    }
+    if (queryReferencePattern !== referencePattern) {
+      params.push(extractSearchReferenceNumbers(queryText, activeGoal));
+      goalReference = { numbersParam: `$${String(params.length)}`, patternParam: hintPatternParam };
+    }
   }
   const keywordHintSql = textQueryParams.map(buildMemorySearchKeywordHintSql).join(' OR ');
   const orRanks = textQueryParams.map(buildMemorySearchOrRankSql);
   const orRankSql = `GREATEST(${orRanks.join(', ')})`;
-  // Keep original joined lexemes eligible while adding normalized reference terms.
-  const textSearchQuerySql = textQueryParams.map(buildMemorySearchMatchQuerySql).join(' || ');
-  const textSearchCondition = `${SEARCH_VECTOR_SQL} @@ (SELECT text_query FROM search_query)`;
+  const exactLookups = buildSearchExactLookups(queryText);
+  params.push(exactLookups.keys);
+  const exactKeysParam = `$${String(params.length)}`;
+  params.push(exactLookups.tags);
+  const exactTagsParam = `$${String(params.length)}`;
 
   if (!includeInactive) {
     baseConditions.push(`status IN ('active', 'contested')`);
@@ -421,8 +442,6 @@ export async function searchMemories(input: unknown) {
     baseConditions.push(`session_id = $${String(params.length)}`);
   }
 
-  const filteredCandidateConditions = [textSearchCondition, ...baseConditions];
-
   params.push(semanticCandidateLimit);
   const semanticCandidateLimitParam = `$${String(params.length)}`;
 
@@ -433,7 +452,7 @@ export async function searchMemories(input: unknown) {
   let vectorCandidateCte = '';
   let vectorCandidateUnion = '';
 
-  if (queryEmbedding !== null && hasEmbeddingColumn) {
+  if (queryEmbedding !== null) {
     params.push(JSON.stringify(queryEmbedding));
     const embeddingParam = `$${String(params.length)}`;
     params.push(vectorCandidateLimit);
@@ -468,22 +487,32 @@ export async function searchMemories(input: unknown) {
   params.push(combinedCandidateLimit);
   const combinedCandidateLimitParam = `$${String(params.length)}`;
 
+  const poolCtes = buildMemorySearchPoolCtes({
+    baseConditions,
+    exactKeysParam,
+    exactTagsParam,
+    queryParams: textQueryParams,
+    goalReference,
+    reference: poolReference,
+  });
+
+  // The index channels pick the candidate pool; features and ranks are computed
+  // only for rows in that pool, never for every row that could match.
   const sql = `
-    WITH filtered_candidates AS (
-      WITH search_query AS MATERIALIZED (
-        SELECT (${textSearchQuerySql}) AS text_query
-      ), candidate_features AS MATERIALIZED (
-        SELECT
-          id,
-          created_at,
-          -- Copy each stored vector out of TOAST once; every rank and lexeme check reuses it.
-          (search_vector || ''::tsvector) AS search_vector,
-          CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
-          CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
-          ${decayedImportanceSql} AS decayed_importance
-        FROM ai_memory_entries
-        WHERE ${filteredCandidateConditions.join(' AND ')}
-      )
+    WITH ${poolCtes},
+    candidate_features AS MATERIALIZED (
+      SELECT
+        id,
+        created_at,
+        -- Copy each stored vector out of TOAST once; every rank and lexeme check reuses it.
+        (search_vector || ''::tsvector) AS search_vector,
+        CASE WHEN ${keywordHintSql} THEN 1 ELSE 0 END AS keyword_hint,
+        CASE WHEN ${referenceMatchSql} THEN 1 ELSE 0 END AS reference_hint,
+        ${decayedImportanceSql} AS decayed_importance
+      FROM ai_memory_entries
+      WHERE id IN (SELECT id FROM text_pool)
+    ),
+    filtered_candidates AS (
       SELECT
         id,
         created_at,
@@ -559,6 +588,43 @@ export async function searchMemories(input: unknown) {
       candidates.created_at DESC
   `;
 
+  return { params, sql };
+}
+
+export async function searchMemories(input: unknown) {
+  const request = isRecord(input) ? input : {};
+  const queryText = normalizeOptionalText(request.query);
+  if (queryText === undefined) {
+    throw new Error('query must be a non-empty string');
+  }
+
+  const project = normalizeOptionalText(request.project);
+  const category = normalizeOptionalText(request.category);
+  const activeGoal = normalizeOptionalText(request.activeGoal);
+  const memoryType = normalizeMemoryType(request.memoryType ?? request.memory_type, 'memoryType');
+  const sessionId = normalizeOptionalText(request.sessionId ?? request.session_id);
+  const includeEmbedding = normalizeBoolean(request.includeEmbedding, true);
+  const includeInactive = normalizeBoolean(request.includeInactive, false);
+  const limit = normalizeLimit(request.limit, { fallback: 8, max: 25 });
+  const goalText = activeGoal;
+
+  const hasEmbeddingColumn = getCapabilities().hasEmbeddingColumn;
+  // Compute query embedding before acquiring DB connection, but only when search can use it.
+  const queryEmbedding =
+    includeEmbedding && hasEmbeddingColumn ? await getEmbedding(queryText, { operation: 'search_memories' }) : null;
+
+  const { params, sql } = buildHybridSearchQuery({
+    activeGoal,
+    category,
+    includeInactive,
+    limit,
+    memoryType,
+    project,
+    queryEmbedding,
+    queryText,
+    sessionId,
+  });
+
   const result = await runDbReadQuery({
     operation: 'search_memories',
     task: client => client.query(sql, params),
@@ -631,7 +697,7 @@ export async function searchTemporalMemories(input: unknown) {
   // Text relevance filter: match task tokens against content
   params.push(queryText);
   const queryParam = `$${String(params.length)}`;
-  const textFilter = `(${SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('english', ${queryParam}) OR content ILIKE '%' || ${queryParam} || '%')`;
+  const textFilter = `(search_vector @@ websearch_to_tsquery('english', ${queryParam}) OR content ILIKE '%' || ${queryParam} || '%')`;
   conditions.push(textFilter);
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

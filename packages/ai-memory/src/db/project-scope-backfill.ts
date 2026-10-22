@@ -523,11 +523,7 @@ export async function artifactIdentity() {
   const generatedExpression = /GENERATED ALWAYS AS \(([\s\S]+)\) STORED;/u.exec(
     sources.get('007_stored_search_vector.sql') ?? '',
   )?.[1];
-  const membershipExpression = /USING GIN \(([\s\S]+)\);/u.exec(
-    sources.get('003_searchable_provenance.sql') ?? '',
-  )?.[1];
-  if (generatedExpression === undefined || membershipExpression === undefined)
-    throw new Error('incompatible_migration_assets');
+  if (generatedExpression === undefined) throw new Error('incompatible_migration_assets');
   const functions = [
     {
       name: 'ai_memory_tags_to_search_text',
@@ -570,7 +566,6 @@ export async function artifactIdentity() {
     code: stableJsonHash(bytes),
     functions,
     generatedExpression,
-    membershipExpression,
     migrationNames: names.map(name => name.slice(0, -4)),
   };
 }
@@ -628,7 +623,7 @@ function assertCompatibleSchema(
           throw new Error('incompatible_schema');
       } else if (column.is_generated !== 'NEVER') throw new Error('incompatible_schema');
     }
-  const indexes: [string, string, boolean, string[], string?][] = [
+  const indexes: [string, string, boolean, string[], (string | undefined)?, string?][] = [
     ['ai_memory_entries_memory_key_uidx', 'btree', true, ['memory_key'], 'memory_key IS NOT NULL'],
     [
       'ai_memory_entries_dedupe_hash_idx',
@@ -640,18 +635,17 @@ function assertCompatibleSchema(
     ['ai_memory_entries_session_idx', 'btree', false, ['session_id']],
     ['ai_memory_entries_project_created_idx', 'btree', false, ['project', 'created_at DESC']],
     ['ai_memory_entries_project_status_created_idx', 'btree', false, ['project', 'status', 'created_at DESC']],
-    ['ai_memory_entries_search_idx', 'gin', false, [artifact.membershipExpression]],
-    ['ai_memory_entries_reference_search_idx', 'gin', false, [artifact.generatedExpression]],
+    ['ai_memory_entries_search_vector_idx', 'gin', false, ['search_vector'], undefined, 'fastupdate=off'],
     ['ai_sessions_repo_id_updated_idx', 'btree', false, ['repo_id', 'updated_at DESC']],
     ['ai_continuity_packs_project_updated_idx', 'btree', false, ['project', 'updated_at DESC']],
     ['ai_continuity_packs_session_idx', 'btree', false, ['session_id'], 'session_id IS NOT NULL'],
     ['ai_memory_events_memory_created_idx', 'btree', false, ['memory_id', 'created_at DESC']],
     ['ai_session_events_session_created_idx', 'btree', false, ['session_id', 'created_at DESC']],
   ];
-  for (const [name, method, unique, keys, predicate] of indexes) {
+  for (const [name, method, unique, keys, predicate, storage] of indexes) {
     const index = input.indexes.find(row => row.indexname === name);
     const definition = String(index?.indexdef ?? '').split(' USING ')[1];
-    const expected = `${method} (${keys.join(',')})${predicate === undefined ? '' : ` WHERE ${predicate}`}`;
+    const expected = `${method} (${keys.join(',')})${storage === undefined ? '' : ` WITH (${storage})`}${predicate === undefined ? '' : ` WHERE ${predicate}`}`;
     if (
       index === undefined ||
       index.valid !== true ||
