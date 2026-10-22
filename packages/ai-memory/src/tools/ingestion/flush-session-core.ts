@@ -18,6 +18,9 @@ import {
 
 import type { ParsedFlushInput } from './flush-session.js';
 
+import { isKnowledgeMemory } from '../../db/knowledge-eligibility.js';
+import { normalizeMemoryInput } from '../../db/normalization.js';
+
 import {
   buildActionableMemoryWrites,
   buildCheckpointMemoryInput,
@@ -225,9 +228,9 @@ async function attachEmbedding(input: {
   operation: string;
 }): Promise<Record<string, unknown>> {
   const { getEmbeddingFn, inputRecord, operation } = input;
-  const rawContent = typeof inputRecord.content === 'string' ? inputRecord.content.trim() : '';
-  const rawCategory = typeof inputRecord.category === 'string' ? inputRecord.category.trim() : '';
-  const embedding = await getEmbeddingFn(rawContent, { category: rawCategory, operation });
+  const normalized = normalizeMemoryInput(inputRecord);
+  if (!isKnowledgeMemory(normalized)) return { ...inputRecord, embedding: null };
+  const embedding = await getEmbeddingFn(normalized.content, { category: normalized.category, operation });
   return { ...inputRecord, embedding };
 }
 

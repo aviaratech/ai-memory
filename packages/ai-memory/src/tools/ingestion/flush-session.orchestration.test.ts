@@ -11,6 +11,60 @@ const TEST_DELTA_ID = 'delta-1381-test';
 const TEST_NOW_ISO = '2026-02-23T12:00:00.000Z';
 const TEST_SESSION_ID = 'session-1381-test';
 
+test('checkpoint prose and flush fragments retain their bytes without requesting embeddings', async () => {
+  const harness = createHarness('none');
+  const readable = 'The fixture remains blocked because its input is incomplete; do not claim that it passed.';
+  const decision = 'Keep the existing keyed fact and its source lineage.';
+  const writes: Record<string, unknown>[] = [];
+  let embeddingCalls = 0;
+  harness.dependencies.getEmbedding = () => {
+    embeddingCalls += 1;
+    return Promise.resolve([0.1]);
+  };
+  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
+  assert.ok(originalStore);
+  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
+    writes.push(input as Record<string, unknown>);
+    return originalStore(client, input, mode);
+  };
+  await flushSession({ decisions: [decision], sessionId: TEST_SESSION_ID, summary: readable }, harness.dependencies);
+  assert.equal(embeddingCalls, 0, 'ephemeral flush writes must not consume embedding requests');
+  assert.equal(writes.find(write => write.category === 'session-summary')?.content, readable);
+  assert.equal(writes.find(write => write.category === 'decision')?.content, decision);
+  assert.ok(writes.every(write => write.embedding === null));
+});
+
+test('flush root causes retain derived durable keys and their online embedding path', async () => {
+  const harness = createHarness('none');
+  const writes: ReturnType<typeof normalizeMemoryInput>[] = [];
+  const embeddedContent: string[] = [];
+  const rootCause = 'The synthetic fixture failed because its input was inconsistent.';
+  harness.dependencies.getEmbedding = content => {
+    embeddedContent.push(content);
+    return Promise.resolve([0.1]);
+  };
+  const originalStore = harness.dependencies.storeMemoryWithAuditEvent;
+  assert.ok(originalStore);
+  harness.dependencies.storeMemoryWithAuditEvent = (client, input, mode) => {
+    writes.push(normalizeMemoryInput(input));
+    return originalStore(client, input, mode);
+  };
+  await flushSession(
+    {
+      decisions: ['Retry after correcting the synthetic input.'],
+      rootCauses: [rootCause],
+      sessionId: TEST_SESSION_ID,
+      summary: 'Retain the synthetic root cause and checkpoint its pending verification.',
+    },
+    harness.dependencies,
+  );
+  assert.deepEqual(embeddedContent, [rootCause]);
+  const durable = writes.find(write => write.category === 'root-cause');
+  assert.ok(durable?.memoryKey);
+  assert.deepEqual(durable.embedding, [0.1]);
+  assert.ok(writes.filter(write => write !== durable).every(write => write.embedding === null));
+});
+
 test('explicit flush decisions are expiring episodic fragments without changing other core writes', async () => {
   const harness = createHarness('none');
   const writes: ReturnType<typeof normalizeMemoryInput>[] = [];

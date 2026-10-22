@@ -3,6 +3,7 @@ import type { DbClient } from './pool.js';
 import { resolveTimeoutPolicy } from '../timeout-policy.js';
 import { getCapabilities } from './capabilities.js';
 import { getEmbedding } from './embeddings.js';
+import { isKnowledgeMemory, KNOWLEDGE_MEMORY_SQL } from './knowledge-eligibility.js';
 import { insertMemoryEventWithClient } from './failure-events.js';
 import {
   buildBaseImportanceSqlExpression,
@@ -20,7 +21,7 @@ import {
 } from './memory-sql.js';
 import { storeMemoryWithClient } from './memory-store.js';
 import { normalizeMemoryType } from './memory-types.js';
-import { normalizeBoolean, normalizeLimit, normalizeOptionalText } from './normalization.js';
+import { normalizeBoolean, normalizeLimit, normalizeMemoryInput, normalizeOptionalText } from './normalization.js';
 import {
   buildSearchQueryTokens,
   buildSearchReferencePattern,
@@ -88,6 +89,8 @@ export function buildTokenFallbackQuery(input: {
   const decayedImportanceSql = buildDecayedImportanceSqlExpression(resolveDecayHalfLifeDays());
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  if (sessionId === undefined) conditions.push(KNOWLEDGE_MEMORY_SQL);
 
   if (!includeInactive) {
     conditions.push(`status = 'active'`);
@@ -248,7 +251,7 @@ export async function recallMemories(input: unknown = {}) {
   });
   const decayedImportanceSql = buildDecayedImportanceSqlExpression(resolveDecayHalfLifeDays());
 
-  const conditions: string[] = ['created_at >= NOW() - make_interval(days => $1::int)'];
+  const conditions: string[] = ['created_at >= NOW() - make_interval(days => $1::int)', KNOWLEDGE_MEMORY_SQL];
   const params: unknown[] = [sinceDays];
 
   if (!includeInactive) {
@@ -365,6 +368,8 @@ export async function searchMemories(input: unknown) {
 
   const baseConditions: string[] = [];
   const params: unknown[] = [];
+
+  if (sessionId === undefined) baseConditions.push(KNOWLEDGE_MEMORY_SQL);
 
   params.push(queryText);
   const queryParam = `$${String(params.length)}`;
@@ -597,7 +602,7 @@ export async function searchTemporalMemories(input: unknown) {
   const includeInactive = normalizeBoolean(request.includeInactive, false);
   const limit = normalizeLimit(request.limit, { fallback: 5, max: 5 });
 
-  const conditions: string[] = [];
+  const conditions: string[] = [KNOWLEDGE_MEMORY_SQL];
   const params: unknown[] = [];
 
   if (!includeInactive) {
@@ -652,9 +657,10 @@ export async function searchTemporalMemories(input: unknown) {
 
 export async function storeMemory(input: unknown) {
   const request = isRecord(input) ? input : {};
-  const rawContent = typeof request.content === 'string' ? request.content.trim() : '';
-  const rawCategory = typeof request.category === 'string' ? request.category.trim() : '';
-  const embedding = await getEmbedding(rawContent, { category: rawCategory, operation: 'store_memory' });
+  const normalized = normalizeMemoryInput(request);
+  const embedding = isKnowledgeMemory(normalized)
+    ? await getEmbedding(normalized.content, { category: normalized.category, operation: 'store_memory' })
+    : null;
   const enrichedInput = { ...request, embedding };
 
   return runDbWriteQuery({
