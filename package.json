@@ -14,7 +14,7 @@
     "format": "oxfmt packages plugins package.json vitest.config.ts vitest.integration.config.ts .oxlintrc.json .oxfmtrc.json tsconfig.base.json tsconfig.scripts.json",
     "format:check": "oxfmt --check packages plugins package.json vitest.config.ts vitest.integration.config.ts .oxlintrc.json .oxfmtrc.json tsconfig.base.json tsconfig.scripts.json",
     "lint": "oxlint packages plugins vitest.config.ts vitest.integration.config.ts",
-    "scan:secrets": "betterleaks git . --log-opts=--all --ignore-gitleaks-allow --redact=100 --no-banner --no-color && betterleaks dir . --ignore-gitleaks-allow --redact=100 --no-banner --no-color",
+    "scan:secrets": "betterleaks git . --log-opts=--all --ignore-gitleaks-allow --redact=100 --no-banner --no-color --report-format=template --report-template=scripts/secret-scan-metadata.tmpl --report-path=- && betterleaks dir . --ignore-gitleaks-allow --redact=100 --no-banner --no-color --report-format=template --report-template=scripts/secret-scan-metadata.tmpl --report-path=-",
     "scan:secrets:probe": "node --test scripts/secret-scanner-probe.test.mjs",
     "typecheck": "npm run typecheck -w @aviaratech/ai-memory && tsc -p tsconfig.scripts.json",
     "test": "vitest run --config vitest.config.ts && node --test scripts/verify-release-admission.test.mjs scripts/stage-assets.test.mjs scripts/ci-postgres-impact.test.mjs",
