@@ -123,6 +123,52 @@ test('memory_store write path inserts a non-null embedding when plugin env conta
   assert.deepEqual(memory.embedding, EMBEDDING_VECTOR);
 });
 
+for (const fixture of [
+  { category: 'convention', source: 'manual-flush', tags: [], expectedCalls: 1 },
+  { category: 'root-cause', source: 'manual-flush', tags: ['memory-flush'], expectedCalls: 1 },
+  { category: 'implementation-note', source: 'manual', tags: [' MEMORY-FLUSH '], expectedCalls: 0 },
+  { category: 'implementation-note', source: 'manual-flush', tags: [], expectedCalls: 0 },
+]) {
+  test(`memory_store gates embeddings using normalized ${fixture.category}/${fixture.source}/${fixture.tags.join(',')}`, async () => {
+    setEnv({
+      AI_MEMORY_EMBEDDING_API_KEY: 'sk-test',
+      AI_MEMORY_EMBEDDING_MODEL: 'text-embedding-3-small',
+      AI_MEMORY_EMBEDDING_PROVIDER: 'openai',
+      AI_MEMORY_LOG_STDERR: '0',
+    });
+    let embeddingCalls = 0;
+    globalThis.fetch = () => {
+      embeddingCalls += 1;
+      return Promise.resolve(
+        new Response(JSON.stringify({ data: [{ embedding: EMBEDDING_VECTOR }] }), { status: 200 }),
+      );
+    };
+    await probeCapabilities({
+      query(sql: string) {
+        return Promise.resolve({
+          rows: sql.includes('information_schema.columns')
+            ? [{ exists: true }]
+            : sql.includes('pg_extension')
+              ? [{ extname: 'vector' }, { extname: 'pg_trgm' }]
+              : [],
+        });
+      },
+    });
+    const client = createMemoryStoreClient();
+    pool.connect = () => Promise.resolve(client);
+    await storeMemory({
+      ...fixture,
+      confidence: 0.8,
+      content: 'Keep the canonical durable fact readable and eligible after normalization.',
+      evidenceRefs: ['https://example.test/fixture'],
+    });
+    assert.equal(embeddingCalls, fixture.expectedCalls);
+    const insertCall = client.calls.find(call => call.sql.includes('INSERT INTO ai_memory_entries'));
+    assert.ok(insertCall);
+    assert.equal(insertCall.params[28], fixture.expectedCalls === 1 ? JSON.stringify(EMBEDDING_VECTOR) : null);
+  });
+}
+
 interface MockDbClient extends DbClient {
   calls: QueryCall[];
 }

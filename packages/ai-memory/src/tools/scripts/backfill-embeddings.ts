@@ -22,6 +22,7 @@ import {
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
+import { KNOWLEDGE_MEMORY_SQL } from '../../db/knowledge-eligibility.js';
 import { bootstrapAiMemoryCliRuntimeEnv } from '../runtimeEnv.js';
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,9 @@ const PENDING_SQL = `
   FROM ai_memory_entries
   WHERE embedding IS NULL
     AND status = 'active'
-    AND (category IS NULL OR category != $1)
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND lower(coalesce(category, '')) <> $1
+    AND ${KNOWLEDGE_MEMORY_SQL}
 `;
 
 const BATCH_SQL = `
@@ -64,7 +67,9 @@ const BATCH_SQL = `
   FROM ai_memory_entries
   WHERE embedding IS NULL
     AND status = 'active'
-    AND (category IS NULL OR category != $1)
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND lower(coalesce(category, '')) <> $1
+    AND ${KNOWLEDGE_MEMORY_SQL}
     AND id > $2
   ORDER BY id ASC
   LIMIT $3
@@ -73,7 +78,12 @@ const BATCH_SQL = `
 const UPDATE_SQL = `
   UPDATE ai_memory_entries
   SET embedding = $1, updated_at = NOW()
-  WHERE id = $2
+  WHERE id = $2 AND content = $3
+    AND embedding IS NULL
+    AND status = 'active'
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND lower(coalesce(category, '')) <> 'session-summary'
+    AND ${KNOWLEDGE_MEMORY_SQL}
 `;
 
 // ---------------------------------------------------------------------------
@@ -169,7 +179,7 @@ async function backfillEmbeddings(options: {
   const total = await countPendingMemories();
 
   if (dryRun) {
-    process.stderr.write(`[backfill] Dry-run: ${String(total)} active memories pending embedding.\n`);
+    process.stderr.write(`[backfill] Dry-run: ${String(total)} eligible durable memories pending embedding.\n`);
     return { batches: 0, dryRun, embedded: 0, errors: 0, skipped: 0, total };
   }
 
@@ -258,9 +268,9 @@ async function embedAndUpdateRow(row: {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(UPDATE_SQL, [JSON.stringify(embedding), row.id]);
+    const updated = await client.query(UPDATE_SQL, [JSON.stringify(embedding), row.id, row.content]);
     await client.query('COMMIT');
-    return 'embedded';
+    return updated.rowCount === 1 ? 'embedded' : 'skipped';
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
@@ -292,7 +302,7 @@ async function main() {
 
   bootstrapAiMemoryCliRuntimeEnv();
 
-  if (!isEmbeddingAvailable()) {
+  if (!options.dryRun && !isEmbeddingAvailable()) {
     process.stderr.write(
       '[backfill] Embedding provider not configured. ' +
         'Set AI_MEMORY_EMBEDDING_PROVIDER=openai and AI_MEMORY_EMBEDDING_API_KEY.\n',
@@ -301,7 +311,7 @@ async function main() {
     return;
   }
 
-  if (!options.skipInit) {
+  if (!options.dryRun && !options.skipInit) {
     await initializeDatabase();
   }
 
@@ -329,8 +339,10 @@ function printHelp() {
       'Usage: npm run backfill:embeddings -- [options]',
       '   or: node packages/ai-memory/dist/tools/scripts/backfill-embeddings.js [options]',
       '',
-      'Backfill embeddings for active memories that lack them.',
-      'Requires AI_MEMORY_EMBEDDING_PROVIDER=openai and AI_MEMORY_EMBEDDING_API_KEY.',
+      'Plan or backfill missing embeddings for active, unexpired durable knowledge.',
+      'Unkeyed session/flush records are excluded; shared keyed facts remain eligible.',
+      'Dry-run does not initialize the schema or require/call an embedding provider.',
+      'Apply requires AI_MEMORY_EMBEDDING_PROVIDER=openai and AI_MEMORY_EMBEDDING_API_KEY.',
       '',
       'Options:',
       '  --dry-run            Show pending count without updating (default).',

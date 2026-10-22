@@ -638,7 +638,11 @@ export const memorySearchInputSchema = z.object({
   memoryType: z.enum(MEMORY_TYPE_VALUES).optional().describe('Optional memory type filter.'),
   project: z.string().min(1).optional().describe('Optional project filter.'),
   query: z.string().min(1).describe('Search query string.'),
-  sessionId: z.string().min(1).optional().describe('Optional exact session id for scoped recovery.'),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Exact session id for scoped history, including unkeyed session/flush records.'),
 });
 
 server.registerTool(
@@ -646,7 +650,7 @@ server.registerTool(
   {
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
     description:
-      'Search durable memories by semantic-ish text query + filters. Returns compact source-linked previews by default; use memory_get for full detail. All detail modes share a 16384-byte serialized result cap; oversized full records become marked compact previews.',
+      'Search durable knowledge by text query + filters. Default search excludes unkeyed session/flush records while preserving shared keyed facts; use sessionId for exact-session history. Returns compact source-linked previews by default; use memory_get for full detail. All detail modes share a 16384-byte serialized result cap; oversized full records become marked compact previews.',
     inputSchema: memorySearchInputSchema.shape,
   },
   (args: unknown) =>

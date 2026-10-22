@@ -1,10 +1,87 @@
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { mock } from 'node:test';
+import { afterEach, test } from 'vitest';
 
-import { buildTokenFallbackQuery } from './memory-api.js';
+import { buildTokenFallbackQuery, recallMemories, searchMemories, searchTemporalMemories } from './memory-api.js';
 import { buildSearchQueryTokens, rerankHybridSearchRows } from './query-helpers.js';
+import { mockPoolConnect } from './test-pool-mock.js';
 
 const TEST_PROJECT = 'test-project';
+
+function emptyQueryResult() {
+  return Promise.resolve({ command: 'SELECT', fields: [], oid: 0, rowCount: 0, rows: [] });
+}
+
+afterEach(() => {
+  mock.restoreAll();
+});
+
+test('orientation temporal fanout preserves the same knowledge eligibility boundary', async () => {
+  const queries: string[] = [];
+  mockPoolConnect(sql => {
+    queries.push(sql);
+    return emptyQueryResult();
+  });
+  await searchTemporalMemories({ project: TEST_PROJECT, query: 'fixture' });
+  const temporal = queries.find(sql => sql.includes('temporal_priority'));
+  assert.ok(temporal !== undefined);
+  assert.ok(temporal.includes('memory_key IS NOT NULL'));
+  assert.ok(temporal.includes("'manual-flush'"));
+});
+
+test('knowledge recall excludes session noise before selecting recent candidates', async () => {
+  const queries: string[] = [];
+  mockPoolConnect(sql => {
+    queries.push(sql);
+    return emptyQueryResult();
+  });
+  await recallMemories({ project: TEST_PROJECT });
+  const recall = queries.find(sql => sql.includes('temporal_priority') || sql.includes('decayed_importance'));
+  assert.ok(recall !== undefined);
+  assert.ok(recall.includes('memory_key IS NOT NULL'));
+  assert.ok(recall.includes("'manual-flush'"));
+});
+
+test('hybrid search uses the same knowledge boundary and bypasses it only for exact-session history', async () => {
+  const queries: string[] = [];
+  mockPoolConnect(sql => {
+    queries.push(sql);
+    return emptyQueryResult();
+  });
+  await searchMemories({ includeEmbedding: false, project: TEST_PROJECT, query: 'fixture' });
+  assert.ok(queries.find(sql => sql.includes('filtered_candidates'))?.includes('memory_key IS NOT NULL'));
+  queries.length = 0;
+  await searchMemories({
+    includeEmbedding: false,
+    project: TEST_PROJECT,
+    query: 'fixture',
+    sessionId: 'exact-session',
+  });
+  const history = queries.find(sql => sql.includes('filtered_candidates'));
+  assert.ok(history !== undefined);
+  assert.ok(history.includes('session_id ='));
+  assert.ok(!history.includes('memory_key IS NOT NULL'));
+});
+
+test('default token search excludes session noise while exact-session history remains available', () => {
+  const input = {
+    category: undefined,
+    includeInactive: false,
+    limit: 5,
+    memoryType: undefined,
+    project: TEST_PROJECT,
+    tokens: ['checkpoint'],
+  };
+  const ordinary = buildTokenFallbackQuery(input);
+  assert.ok(ordinary.sql.includes('memory_key IS NOT NULL'), 'shared keyed facts remain eligible');
+  assert.ok(ordinary.sql.includes("'manual-flush'"), 'legacy manual flush rows need the same exclusion');
+  assert.ok(ordinary.sql.includes("'memory-flush'"), 'flush provenance must be excluded before ranking');
+  assert.ok(ordinary.sql.includes("'session-summary'"), 'session state is not default knowledge');
+  const history = buildTokenFallbackQuery({ ...input, sessionId: 'exact-synthetic-session' });
+  assert.ok(history.sql.includes('session_id ='));
+  assert.ok(history.params.includes('exact-synthetic-session'));
+  assert.ok(!history.sql.includes('memory_key IS NOT NULL'), 'exact-session history includes unkeyed fragments');
+});
 
 test('buildTokenFallbackQuery uses ILIKE instead of lower() LIKE for trigram index compatibility', () => {
   const { sql } = buildTokenFallbackQuery({

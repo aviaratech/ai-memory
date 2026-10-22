@@ -14,6 +14,20 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 For a build containing migration009, `ai-memory-mcp telemetry:ingest` accepts one strict content-free event from stdin. `ai-memory-mcp telemetry:report --project <digest> --task <id> --json` and `npm run health -w @aviaratech/ai-memory -- --workflow --project <digest> --task <id> --json` use the same bounded task report, before legacy collectors. See [telemetry](telemetry.md) for the event contract, source coverage, token-subset accounting, correlation, replay, retention and synthetic example. Applying migrations and enabling installed hooks require their own authorized deployment; the ingest path does not provision or activate them.
 
+## Knowledge search and embedding maintenance
+
+Default `memory_search` and recent `memory_recall` exclude unkeyed session summaries, checkpoints and records marked by the `manual-flush`/`memory-flush` source or `memory-flush` tag. Existing keyed facts remain shared knowledge. This changes eligibility before candidate ranking; it does not delete, expire, rewrite or consolidate records. Pass the existing exact `sessionId` selector to `memory_search` to search that session's retained history. Project and status/expiry filters still apply; use `includeInactive` explicitly when recovering expired or superseded history.
+
+Flush checkpoints and unkeyed flush fragments do not request embeddings. Ordinary durable writes and keyed facts retain their existing embedding path. Write plain sentences with spaces and preserve negation and source references. The compressed-text warning identifies suspect producer input; it does not invent word boundaries or change that text. Search previews keep their existing size bounds, and `memory_get` remains the full-record path.
+
+The existing embedding backfill counts and batches only active, unexpired eligible knowledge with missing vectors. Session summaries remain excluded even if keyed because the embedding provider deliberately skips that category. Its default dry-run performs only the pending-count query: it neither initializes the database nor requires or calls an embedding provider. Use an already initialized, explicitly approved database; source qualification does not grant access to an operator corpus.
+
+```sh
+npm run backfill:embeddings -w @aviaratech/ai-memory -- --dry-run --skip-init
+```
+
+Review the eligible count and existing provider/cost scope before `--apply`. Apply rechecks eligibility, unchanged content and a still-missing vector when updating. The existing bounded batches and stable ID cursor remain in use. A later run skips committed vectors and retries incomplete rows; it does not embed the excluded session population. Preserve the full run output privately and distinguish the proposed count from completed writes. No provider, service or schedule is added.
+
 ## Verified project-scope backfill
 
 From a matching reviewed source workspace, `backfill:project-scope` can reunite eligible bare-name scope projections with a qualified `owner/repo` scope. It requires an explicitly configured, already initialized loopback database. It never initializes or repairs a schema, starts a service, calls a provider, or scans every project. Source verification on disposable data does not authorize running it against an installed corpus.
