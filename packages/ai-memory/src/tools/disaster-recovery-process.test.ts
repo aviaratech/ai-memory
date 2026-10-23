@@ -110,7 +110,8 @@ if (process.argv.includes('get-bucket-versioning')) {
   process.on('SIGTERM', () => {});
   process.on('SIGINT', () => {});
   const descendant = spawn(process.execPath, ['-e',
-    "process.on('SIGTERM',()=>{});process.on('SIGINT',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],
+    "process.on('SIGTERM',()=>{});process.on('SIGINT',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)",
+    'dr-fixture:' + process.env.DR_PIDS],
     { stdio: ['ignore', 'pipe', 'inherit'] });
   descendant.stdout.once('data', () => {
     fs.writeFileSync(process.env.DR_READY_DIR + '/' + process.pid, JSON.stringify([process.pid, descendant.pid]));
@@ -135,10 +136,11 @@ if (phase === process.env.DR_HOLD_PHASE) {
   process.on('SIGTERM', () => {});
   process.on('SIGINT', () => {});
   const descendant = spawn(process.execPath, ['-e',
-    "process.on('SIGTERM',()=>{});process.on('SIGINT',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],
+    "process.on('SIGTERM',()=>{});process.on('SIGINT',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)",
+    'dr-fixture:' + process.env.DR_PIDS],
     { stdio: ['ignore', 'pipe', 'inherit'] });
   descendant.stdout.once('data', () => {
-    fs.writeFileSync(process.env.DR_PIDS, JSON.stringify([process.pid, descendant.pid]));
+    fs.writeFileSync(process.env.DR_PIDS, process.env.DR_PID_CONTENT ?? JSON.stringify([process.pid, descendant.pid]));
     if (process.env.DR_OVERFLOW) process.stdout.write('synthetic-private-marker'.repeat(100000));
     if (process.env.DR_FAIL_EXIT) process.exit(8);
   });
@@ -271,6 +273,56 @@ test('atomic restore completes beyond the former one-hour cap', async () => {
   }
 });
 
+async function waitForPids(file: string, timeout = 5_000) {
+  let pids: number[] | undefined;
+  await waitUntil(
+    () => {
+      try {
+        const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+        if (
+          Array.isArray(value) &&
+          value.length === 2 &&
+          value.every((pid: unknown) => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0) &&
+          value[0] !== value[1]
+        )
+          pids = value as number[];
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+          throw error;
+      }
+      return pids !== undefined;
+    },
+    timeout,
+    `fixture PID readiness did not publish two distinct positive integer PIDs: ${file}`,
+  );
+  assert.ok(pids);
+  return pids;
+}
+
+test('PID readiness waits for a complete valid identity pair', async () => {
+  const current = fixture();
+  const file = current.env.DR_PIDS ?? '';
+  try {
+    for (const partial of [undefined, '', '[', '[1]', '[1,1]', '[0,2]', '[1,"2"]', '{}', 'null', 'malformed']) {
+      if (partial === undefined) rmSync(file, { force: true });
+      else writeFileSync(file, partial);
+      let settled = false;
+      const waiting = waitForPids(file).finally(() => {
+        settled = true;
+      });
+      // Attach a handler before yielding so the old immediate parse is observed
+      // as this assertion's failure rather than an unhandled rejection.
+      void waiting.catch(() => {});
+      await delay(30);
+      assert.equal(settled, false, `accepted incomplete readiness: ${partial}`);
+      writeFileSync(file, '[101,102]');
+      assert.deepEqual(await waiting, [101, 102]);
+    }
+  } finally {
+    rmSync(current.root, { recursive: true, force: true });
+  }
+});
+
 function alive(pid: number) {
   try {
     process.kill(pid, 0);
@@ -281,13 +333,17 @@ function alive(pid: number) {
   }
 }
 
-function processStates(pids: number[]) {
-  if (pids.length === 0) return [];
-  const result = spawnSync('/bin/ps', ['-p', pids.join(','), '-o', 'pid=,ppid=,pgid=,lstart=,stat='], {
-    encoding: 'utf8',
-    timeout: 1000,
-    maxBuffer: 64 * 1024,
-  });
+function processStates(pids?: number[]) {
+  if (pids?.length === 0) return [];
+  const result = spawnSync(
+    '/bin/ps',
+    ['-ww', ...(pids ? ['-p', pids.join(',')] : ['-A']), '-o', 'pid=,ppid=,pgid=,lstart=,stat=,command='],
+    {
+      encoding: 'utf8',
+      timeout: 1000,
+      maxBuffer: pids ? 64 * 1024 : 4 * 1024 * 1024,
+    },
+  );
   assert.ifError(result.error);
   assert.ok(result.status === 0 || (result.status === 1 && !result.stdout.trim()), result.stderr);
   return result.stdout
@@ -296,26 +352,104 @@ function processStates(pids: number[]) {
     .filter(Boolean)
     .map(line => {
       const fields = line.trim().split(/\s+/u);
-      assert.equal(fields.length, 9, line);
+      assert.ok(fields.length >= 9, 'malformed process identity row');
       return {
         pid: Number(fields[0]),
         ppid: Number(fields[1]),
         pgid: Number(fields[2]),
         birth: fields.slice(3, 8).join(' '),
         state: fields[8],
+        command: fields.slice(9).join(' '),
       };
     });
 }
 
+function fixtureProcesses(current: ReturnType<typeof fixture>) {
+  const toolPrefixes = [process.execPath, 'node'].map(node => `${node} ${join(current.root, 'bin')}/`);
+  const descendantSuffix = ` dr-fixture:${current.env.DR_PIDS ?? ''}`;
+  return processStates().filter(
+    identity =>
+      toolPrefixes.some(prefix => identity.command.startsWith(prefix)) ||
+      (identity.command.startsWith(`${process.execPath} -e `) && identity.command.endsWith(descendantSuffix)),
+  );
+}
+
+async function recoverFixture(current: ReturnType<typeof fixture>) {
+  // Readiness can be absent or malformed, and a dead CLI no longer parents its
+  // detached tools. Their unique fixture paths/markers remain independent
+  // ownership evidence. Re-scan after killing a leader to catch a concurrent
+  // descendant spawn; recoverOwned rechecks birth and group before each signal.
+  const deadline = Date.now() + 1_000;
+  let owned = fixtureProcesses(current);
+  while (owned.length > 0) {
+    await recoverOwned(owned);
+    owned = fixtureProcesses(current);
+    assert.ok(owned.length === 0 || Date.now() < deadline, 'fixture recovery still has owned descendants');
+  }
+}
+
+for (const content of ['[', 'malformed', '[1]']) {
+  test(
+    `fixture recovery before identity assignment tolerates ${JSON.stringify(content)}`,
+    { timeout: 10_000 },
+    async () => {
+      const current = fixture();
+      const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+      const peerObserved = observe(peer);
+      const child = spawn(process.execPath, [script, 'backup'], {
+        env: { ...current.env, DR_HOLD_PHASE: 'version', DR_PID_CONTENT: content },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const observed = observe(child);
+      let expected: ReturnType<typeof processStates> = [];
+      try {
+        await waitUntil(
+          () => existsSync(current.env.DR_PIDS ?? ''),
+          5_000,
+          'fixture never published incomplete readiness',
+        );
+        expected = fixtureProcesses(current);
+        assert.equal(expected.length, 2);
+        const owned = expected.map(identity => identity.pid);
+        await assert.rejects(waitForPids(current.env.DR_PIDS ?? '', 100), /fixture PID readiness did not publish/u);
+        assert.equal(processStates(owned).length, 2, 'readiness failure unexpectedly drained the fixture');
+        child.kill('SIGKILL');
+        await waitUntil(() => child.signalCode === 'SIGKILL', 1000, 'CLI did not terminate');
+        assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
+        await recoverFixture(current);
+        assert.equal(processStates(owned).length, 0, 'recovery lost descendants before identity assignment');
+        assert.ok(peer.pid !== undefined && alive(peer.pid));
+        assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
+        await observed.closed;
+      } finally {
+        child.kill('SIGKILL');
+        // The regression's independent pre-failure observation also owns its
+        // rescue path, including when the behavior under test is deliberately red.
+        await recoverOwned(expected);
+        await observed.closed;
+        peer.kill('SIGKILL');
+        await peerObserved.closed;
+        rmSync(current.root, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
 async function recoverOwned(identities: ReturnType<typeof processStates>) {
+  const signaled: ReturnType<typeof processStates> = [];
   for (const current of processStates(identities.map(identity => identity.pid))) {
     if (
       identities.some(
-        identity => identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
+        identity =>
+          identity.pid === current.pid &&
+          identity.birth === current.birth &&
+          identity.pgid === current.pgid &&
+          identity.command === current.command,
       )
     ) {
       try {
         process.kill(current.pid, 'SIGKILL');
+        signaled.push(current);
       } catch (error) {
         assert.ok(error instanceof Error && 'code' in error && error.code === 'ESRCH');
       }
@@ -323,8 +457,8 @@ async function recoverOwned(identities: ReturnType<typeof processStates>) {
   }
   await waitUntil(
     () =>
-      !processStates(identities.map(identity => identity.pid)).some(current =>
-        identities.some(
+      !processStates(signaled.map(identity => identity.pid)).some(current =>
+        signaled.some(
           identity =>
             identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
         ),
@@ -417,7 +551,7 @@ test('failed parallel S3 preflight closes resistant siblings and preserves peers
     });
     observed = observe(child);
     await waitUntil(() => readdirSync(ready).length === 4, 5_000, 'parallel siblings never became active');
-    owned = readdirSync(ready).flatMap(name => JSON.parse(readFileSync(join(ready, name), 'utf8')) as number[]);
+    owned = (await Promise.all(readdirSync(ready).map(name => waitForPids(join(ready, name))))).flat();
     await waitUntil(() => child?.exitCode !== null, 7_000, 'failed preflight kept siblings alive');
     await observed.closed;
     assert.equal(child.exitCode, 1);
@@ -429,9 +563,7 @@ test('failed parallel S3 preflight closes resistant siblings and preserves peers
   } finally {
     child?.kill('SIGKILL');
     await observed?.closed;
-    // Also recover identities if a readiness assertion failed partway through.
-    owned = readdirSync(ready).flatMap(name => JSON.parse(readFileSync(join(ready, name), 'utf8')) as number[]);
-    for (const pid of owned) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    await recoverFixture(current);
     peer.kill('SIGKILL');
     await peerObserved.closed;
     rmSync(current.root, { recursive: true, force: true });
@@ -470,10 +602,7 @@ for (const [phase, stop] of [
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       observed = observe(child);
-      const deadline = Date.now() + 5_000;
-      while (!existsSync(current.env.DR_PIDS ?? '') && Date.now() < deadline) await delay(10);
-      assert.ok(existsSync(current.env.DR_PIDS ?? ''), observed.output().stderr);
-      owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      owned = await waitForPids(current.env.DR_PIDS ?? '');
       identities = processStates(owned);
       if (stop === 'SIGINT' || stop === 'SIGTERM') child.kill(stop);
       await observed.closed;
@@ -512,7 +641,7 @@ for (const [phase, stop] of [
       throw error;
     } finally {
       child?.kill('SIGKILL');
-      await recoverOwned(identities);
+      await recoverFixture(current);
       await observed?.closed;
       peer.kill('SIGKILL');
       await peerClosed;
@@ -535,8 +664,7 @@ test(
     const observed = observe(child);
     let identities: ReturnType<typeof processStates> = [];
     try {
-      await waitUntil(() => existsSync(current.env.DR_PIDS ?? ''), 5_000, 'owned fixture never became ready');
-      const owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      const owned = await waitForPids(current.env.DR_PIDS ?? '');
       identities = processStates(owned);
       assert.equal(identities.length, 2);
       child.kill('SIGKILL');
@@ -544,14 +672,14 @@ test(
       assert.equal(processStates(owned).length, 2, 'CLI exit unexpectedly drained detached descendants');
       assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
       // Their inherited pipes prevent close until recovery has signaled them.
-      await recoverOwned(identities);
+      await recoverFixture(current);
       await observed.closed;
       assert.equal(processStates(owned).length, 0);
       assert.ok(peer.pid !== undefined && alive(peer.pid));
       assert.ok(existsSync(join(current.backups, '.backup-owner.json')));
     } finally {
       child.kill('SIGKILL');
-      await recoverOwned(identities);
+      await recoverFixture(current);
       await observed.closed;
       peer.kill('SIGKILL');
       await peerObserved.closed;
@@ -595,8 +723,7 @@ for (const [phase, signal, stop, code, attempt] of [
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       observed = observe(child);
-      await waitUntil(() => existsSync(current.env.DR_PIDS ?? ''), 5_000, 'owned fixture never became ready');
-      const owned = JSON.parse(readFileSync(current.env.DR_PIDS ?? '', 'utf8')) as number[];
+      const owned = await waitForPids(current.env.DR_PIDS ?? '');
       identities = processStates(owned);
       if (stop === 'SIGTERM') child.kill('SIGTERM');
       await observed.closed;
@@ -675,7 +802,7 @@ for (const [phase, signal, stop, code, attempt] of [
       throw error;
     } finally {
       child?.kill('SIGKILL');
-      await recoverOwned(identities);
+      await recoverFixture(current);
       await observed?.closed;
       peer.kill('SIGKILL');
       await peerObserved.closed;
