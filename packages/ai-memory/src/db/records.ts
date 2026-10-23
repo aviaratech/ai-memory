@@ -32,6 +32,7 @@ export function toMemoryRecord(row: unknown) {
   return {
     agent: normalizedRow.agent,
     calibratedConfidence: toNumberOrUndefined(normalizedRow.calibrated_confidence),
+    audience: toArrayOrDefault(normalizedRow.audience),
     category: normalizedRow.category,
     confidence: toNumberOrUndefined(normalizedRow.confidence),
     content: normalizedRow.content,
@@ -44,6 +45,7 @@ export function toMemoryRecord(row: unknown) {
     expiresAt: toIsoIfDate(normalizedRow.expires_at),
     id: toNumberOrUndefined(normalizedRow.id) ?? 0,
     importance: toNumberOrUndefined(normalizedRow.importance),
+    lastVerifiedAt: toIsoIfDate(normalizedRow.last_verified_at),
     memory_type: memoryType,
     memoryKey: normalizedRow.memory_key,
     memoryType,
@@ -52,6 +54,7 @@ export function toMemoryRecord(row: unknown) {
     orgId: normalizedRow.org_id,
     project: normalizedRow.project,
     relevance: toNumberOrUndefined(normalizedRow.relevance),
+    pinned: normalizedRow.pinned === true,
     repoId: normalizedRow.repo_id,
     repoSlug: normalizedRow.repo_slug,
     sensitivity: normalizedRow.sensitivity,

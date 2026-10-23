@@ -30,10 +30,16 @@ it('preserves host provenance and the existing agent-writer gate through the pro
     const server = pathToFileURL(join(dirname(cli), 'server.js')).href;
     writeFileSync(
       join(root, 'mcp-server.bundle.js'),
-      `import {detectAgentContext,memoryFlushInputSchema,mergeDetectedDefaults} from ${JSON.stringify(server)}; const context=detectAgentContext();console.log(JSON.stringify({context, accepted:memoryFlushInputSchema.safeParse(mergeDetectedDefaults({summary:'fixture'},context)).success,classify:process.env.AI_MEMORY_CLASSIFY_API_KEY,model:process.env.AI_MEMORY_CLASSIFY_MODEL}));`,
+      `import {detectAgentContext,memoryFlushInputSchema,mergeDetectedDefaults} from ${JSON.stringify(server)}; const context=detectAgentContext();console.log(JSON.stringify({context, accepted:memoryFlushInputSchema.safeParse(mergeDetectedDefaults({summary:'fixture'},context)).success,classify:process.env.AI_MEMORY_CLASSIFY_API_KEY,model:process.env.AI_MEMORY_CLASSIFY_MODEL,role:process.env.AI_MEMORY_ROLE,cache:process.env.AI_MEMORY_BRIEF_CACHE_DIR}));`,
     );
     const result = spawnSync(process.execPath, [join(root, 'mcp-launcher.js')], {
-      env: { HOME: home, CLAUDECODE: '1', CLAUDE_MODEL: 'fixture-host-model' },
+      env: {
+        HOME: home,
+        CLAUDECODE: '1',
+        CLAUDE_MODEL: 'fixture-host-model',
+        AI_MEMORY_ROLE: 'lead',
+        AI_MEMORY_BRIEF_CACHE_DIR: join(home, 'brief-cache'),
+      },
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
     });
@@ -43,11 +49,15 @@ it('preserves host provenance and the existing agent-writer gate through the pro
       accepted: boolean;
       classify: string;
       model: string;
+      role: string;
+      cache: string;
     };
     assert.deepEqual(value.context, { agent: 'claude-code', source: 'claude-code', model: 'fixture-host-model' });
     assert.equal(value.accepted, false);
     assert.equal(value.classify, undefined, 'retired classification settings are not forwarded');
     assert.equal(value.model, undefined);
+    assert.equal(value.role, 'lead');
+    assert.equal(value.cache, join(home, 'brief-cache'));
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

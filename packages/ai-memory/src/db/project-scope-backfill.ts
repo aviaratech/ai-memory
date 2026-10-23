@@ -546,6 +546,16 @@ export async function artifactIdentity() {
       volatility: 'i',
     },
     {
+      name: 'ai_memory_default_verified_at',
+      file: '011_pinned_brief.sql',
+      args: '',
+      language: 'plpgsql',
+      returns: 'trigger',
+      parallel: 'u',
+      strict: false,
+      volatility: 'v',
+    },
+    {
       name: 'prevent_event_update',
       file: '001_baseline.sql',
       args: '',
@@ -583,6 +593,16 @@ function canonicalSql(value: unknown) {
     .join('');
 }
 
+const SCHEMA_TRIGGERS = [
+  {
+    table: 'ai_memory_entries',
+    name: 'ai_memory_entries_default_verified_at',
+    type: 7,
+    functionName: 'ai_memory_default_verified_at',
+  },
+  { table: 'ai_session_events', name: 'ai_session_events_no_update', type: 19, functionName: 'prevent_event_update' },
+] as const;
+
 function assertCompatibleSchema(
   input: {
     columns: Record<string, unknown>[];
@@ -594,7 +614,7 @@ function assertCompatibleSchema(
 ) {
   const columns: Record<string, string> = {
     ai_memory_entries:
-      'id:int8! content:text! project:text category:text tags:_text! source:text! confidence:float8! created_at:timestamptz! updated_at:timestamptz! memory_key:text status:text! supersedes_id:int8 agent:text model:text tool:text session_id:text thread_id:text org_id:text repo_id:text repo_slug:text user_id:text sensitivity:text! expires_at:timestamptz evidence_refs:jsonb! metadata_json:jsonb! updated_by:text dedupe_hash:text memory_type:text! declared_confidence:float8 calibrated_confidence:float8 search_vector:tsvector last_accessed_at:timestamptz',
+      'id:int8! content:text! project:text category:text tags:_text! source:text! confidence:float8! created_at:timestamptz! updated_at:timestamptz! memory_key:text status:text! supersedes_id:int8 agent:text model:text tool:text session_id:text thread_id:text org_id:text repo_id:text repo_slug:text user_id:text sensitivity:text! expires_at:timestamptz evidence_refs:jsonb! metadata_json:jsonb! updated_by:text dedupe_hash:text memory_type:text! declared_confidence:float8 calibrated_confidence:float8 search_vector:tsvector last_accessed_at:timestamptz audience:_text! pinned:bool! last_verified_at:timestamptz!',
     ai_sessions:
       'session_id:text! org_id:text repo_id:text repo_slug:text user_id:text agent:text! model:text tool:text task_id:text task_type:text task_title:text status:text! metadata_json:jsonb! started_at:timestamptz! updated_at:timestamptz! ended_at:timestamptz',
     ai_continuity_packs:
@@ -693,15 +713,12 @@ function assertCompatibleSchema(
     )
       throw new Error('incompatible_schema');
   }
-  const trigger = input.triggers[0];
-  if (
-    input.triggers.length !== 1 ||
-    trigger?.relname !== 'ai_session_events' ||
-    trigger.tgname !== 'ai_session_events_no_update' ||
-    trigger.enabled !== 'O' ||
-    trigger.type !== 19
-  )
-    throw new Error('incompatible_schema');
+  if (input.triggers.length !== SCHEMA_TRIGGERS.length) throw new Error('incompatible_schema');
+  for (const expected of SCHEMA_TRIGGERS) {
+    const trigger = input.triggers.find(row => row.relname === expected.table && row.tgname === expected.name);
+    if (trigger === undefined || trigger.enabled !== 'O' || trigger.type !== expected.type)
+      throw new Error('incompatible_schema');
+  }
 }
 
 export async function databaseIdentity(
@@ -778,14 +795,16 @@ export async function databaseIdentity(
     )
       throw new Error('incompatible_schema');
   }
-  const trigger = triggers.rows[0]!;
-  if (
-    trigger.function_oid !== functions.rows.find(row => row.name === 'prevent_event_update')?.oid ||
-    trigger.args !== 0 ||
-    trigger.columns !== '' ||
-    trigger.unconditional !== true
-  )
-    throw new Error('incompatible_schema');
+  for (const expected of SCHEMA_TRIGGERS) {
+    const trigger = triggers.rows.find(row => row.relname === expected.table && row.tgname === expected.name)!;
+    if (
+      trigger.function_oid !== functions.rows.find(row => row.name === expected.functionName)?.oid ||
+      trigger.args !== 0 ||
+      trigger.columns !== '' ||
+      trigger.unconditional !== true
+    )
+      throw new Error('incompatible_schema');
+  }
   return {
     code: artifact.code,
     namespace: JSON.stringify(namespace),

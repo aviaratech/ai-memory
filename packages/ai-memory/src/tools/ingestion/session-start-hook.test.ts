@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'vitest';
+import { buildBrief } from '../brief.js';
 
 import {
   runSessionStartHook,
@@ -14,7 +15,14 @@ const hookState: {
   continuityInputs: unknown[];
   continuityPack: Awaited<ReturnType<SessionStartHookDependencies['getContinuityPack']>>;
   infoEvents: { event: string; fields: Record<string, unknown> }[];
-  memories: { category: string; confidence: number; content: string; memoryKey?: string; project?: string }[];
+  memories: {
+    category: string;
+    confidence: number;
+    content: string;
+    memoryKey?: string;
+    project?: string;
+    audience?: string[];
+  }[];
   orientError: Error | undefined;
   orientInputs: unknown[];
   orientResult: unknown;
@@ -41,6 +49,84 @@ const hookState: {
   warnEvents: [],
 };
 const TEST_CWD = '/workspace/aviaratech-ai';
+
+test('background recall cannot reintroduce memories excluded by the brief audience', async () => {
+  hookState.memories = [
+    {
+      category: 'convention',
+      confidence: 0.9,
+      content: 'WORKER_ONLY_RULE',
+      memoryKey: 'rule/worker',
+      project: 'example/catalog',
+      audience: ['worker'],
+    },
+  ];
+  const outcome = await runSessionStartHook(undefined, { host: 'codex', dependencies: TEST_DEPENDENCIES });
+  assert.doesNotMatch(serializeSessionStartHook(outcome), /WORKER_ONLY_RULE/u);
+});
+
+test('startup, clear, compact and Codex preserve the complete brief and use scoped cached fallback on outage', async () => {
+  const scope = { project: 'example/catalog', host: 'claude-code', role: 'lead' };
+  const fixtures = Array.from({ length: 40 }, (_, index) => ({
+    id: index,
+    project: scope.project,
+    category: 'convention',
+    memoryKey: `rule/${String(index)}`,
+    content: `Synthetic standing rule ${String(index)}. ` + 'Complete synthetic content. '.repeat(5),
+    status: 'active',
+    pinned: true,
+    importance: index / 100,
+    audience: [index % 2 === 0 ? 'all' : 'worker'],
+    lastVerifiedAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    evidenceRefs: ['https://example.com/rule'],
+  }));
+  const brief = buildBrief(scope, [
+    ...fixtures,
+    { ...fixtures[0]!, memoryKey: 'state/lead', category: 'state', content: 'Complete state.' },
+  ]);
+  const calls: unknown[] = [];
+  const dependencies = {
+    ...TEST_DEPENDENCIES,
+    refreshBrief: (scope: unknown) => {
+      calls.push(scope);
+      return Promise.resolve(brief);
+    },
+    readCachedBrief: (scope: unknown) => {
+      calls.push(scope);
+      return Promise.resolve({ text: brief, generatedAt: '2026-10-01T00:00:00.000Z' });
+    },
+  };
+  const priorRole = process.env.AI_MEMORY_ROLE;
+  process.env.AI_MEMORY_ROLE = 'lead';
+  try {
+    for (const host of ['claude-code', 'codex'] as const) {
+      for (const source of ['startup', 'clear', 'compact']) {
+        const outcome = await runSessionStartHook(undefined, { host, source, dependencies });
+        assert.equal(outcome.briefText, brief);
+        const serialized = serializeSessionStartHook(outcome);
+        const envelope = JSON.parse(serialized) as { hookSpecificOutput: { additionalContext: string } };
+        assert.ok(envelope.hookSpecificOutput.additionalContext.includes(brief));
+        assert.ok(envelope.hookSpecificOutput.additionalContext.length <= 8000);
+        assert.deepEqual(calls.at(-1), { project: 'example/catalog', host, role: 'lead' });
+      }
+    }
+    hookState.postgresStatus = { ok: false };
+    const fallback = await runSessionStartHook(undefined, { host: 'codex', dependencies });
+    assert.match(fallback.briefText ?? '', /generated at 2026-10-01T00:00:00.000Z/u);
+    assert.match(fallback.briefText ?? '', /Complete state\./u);
+    assert.equal(fallback.continue, true);
+    hookState.postgresStatus = { ok: true };
+    const failed = await runSessionStartHook(undefined, {
+      host: 'codex',
+      dependencies: { ...dependencies, initializeDatabase: () => Promise.reject(new Error('connection refused')) },
+    });
+    assert.match(failed.briefText ?? '', /Complete state\./u);
+  } finally {
+    if (priorRole === undefined) delete process.env.AI_MEMORY_ROLE;
+    else process.env.AI_MEMORY_ROLE = priorRole;
+  }
+});
 
 const TEST_DEPENDENCIES: SessionStartHookDependencies = {
   armPromptRetrieval: input => {

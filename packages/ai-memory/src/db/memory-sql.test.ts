@@ -19,7 +19,7 @@ describe('memory write SQL builders', () => {
     const updateSql = buildMemoryUpdateByIdSql(true);
 
     assert.ok(insertSql.includes('embedding'));
-    assert.ok(insertSql.includes('$29'));
+    assert.ok(insertSql.includes('$32'));
     assert.ok(insertSql.includes('memory_type'));
     assert.ok(insertSql.includes('importance'));
     assert.ok(insertSql.includes('declared_confidence'));
@@ -34,8 +34,8 @@ describe('memory write SQL builders', () => {
     assert.ok(updateSql.includes('declared_confidence = $8'));
     assert.ok(updateSql.includes('calibrated_confidence = $9'));
     assert.ok(updateSql.includes('importance = $10'));
-    assert.ok(updateSql.includes('embedding = $29'));
-    assert.ok(updateSql.includes('WHERE id = $30'));
+    assert.ok(updateSql.includes('embedding = $32'));
+    assert.ok(updateSql.includes('WHERE id = $33'));
   });
 
   test('omit embedding column and params when hasEmbeddingColumn is false', () => {
@@ -58,8 +58,8 @@ describe('memory write SQL builders', () => {
     assert.ok(updateSql.includes('declared_confidence = $8'));
     assert.ok(updateSql.includes('calibrated_confidence = $9'));
     assert.ok(updateSql.includes('importance = $10'));
-    assert.ok(!updateSql.includes('embedding = $29'));
-    assert.ok(updateSql.includes('WHERE id = $29'));
+    assert.ok(!updateSql.includes('embedding = $32'));
+    assert.ok(updateSql.includes('WHERE id = $32'));
   });
 });
 

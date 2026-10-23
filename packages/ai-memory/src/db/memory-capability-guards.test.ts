@@ -302,6 +302,6 @@ describe('memory capability guards', () => {
     assert.ok(writeCall !== undefined);
     assert.ok(writeCall.sql.includes('ON CONFLICT (memory_key)'));
     assert.ok(!writeCall.sql.includes('embedding'));
-    assert.equal(writeCall.params?.length, 28);
+    assert.equal(writeCall.params?.length, 31);
   });
 });

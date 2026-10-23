@@ -72,6 +72,9 @@ export function loadPluginRuntimeEnv(input: { env?: NodeJS.ProcessEnv; home?: st
       throw new Error('Use an owner-owned regular protected plugin.env file (0600) in a protected directory (0700).');
     }
     const globalEnv = parseSimpleEnvFile(readFileSync(fd, 'utf8'));
+    for (const key of ['AI_MEMORY_ROLE', 'AI_MEMORY_BRIEF_CACHE_DIR']) {
+      if (env[key] === undefined && globalEnv[key] !== undefined) env[key] = globalEnv[key];
+    }
     const runtime = bootstrapAiMemoryCliRuntimeEnv({ env, globalEnv });
     return { env, filePath, fileState: 'protected', runtime };
   } finally {

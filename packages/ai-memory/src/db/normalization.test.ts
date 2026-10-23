@@ -17,6 +17,32 @@ const MEMORY_KEY_SHOULD_BE_DERIVED = 'memoryKey should be auto-derived';
 const VALID_CONTENT = 'This is a durable memory payload that is long enough.';
 const VALID_EVIDENCE_REFS = ['packages/foo/src/bar.ts'];
 
+test('brief metadata defaults safely and accepts explicit audience, pin and verification time', () => {
+  const base = { category: 'decision', content: VALID_CONTENT };
+  const defaults = normalizeMemoryInput(base);
+  assert.deepEqual(defaults.audience, ['all']);
+  assert.equal(defaults.pinned, false);
+  assert.equal(defaults.lastVerifiedAt, undefined);
+  const explicit = normalizeMemoryInput({
+    ...base,
+    audience: ['lead', 'codex'],
+    pinned: true,
+    lastVerifiedAt: '2026-10-01T00:00:00.000Z',
+  });
+  assert.deepEqual(explicit.audience, ['lead', 'codex']);
+  assert.equal(explicit.pinned, true);
+  assert.equal(explicit.lastVerifiedAt, '2026-10-01T00:00:00.000Z');
+  for (const bad of [
+    { audience: 'lead' },
+    { audience: [''] },
+    { audience: [] },
+    { pinned: 'false' },
+    { lastVerifiedAt: 'yesterday' },
+  ]) {
+    assert.throws(() => normalizeMemoryInput({ ...base, ...bad }));
+  }
+});
+
 test('a verified GitHub host-qualified identity resolves its own repository basename', () => {
   assert.equal(normalizeProjectScope({ project: 'catalog', repoId: 'github.com/example/catalog' }), 'example/catalog');
 });
