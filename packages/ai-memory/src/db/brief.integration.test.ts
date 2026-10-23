@@ -20,6 +20,77 @@ afterAll(async () => {
 });
 
 test(
+  're-storing an unchanged key refreshes verification in place without creating a version',
+  { skip: databaseUrl === undefined, timeout: 0 },
+  async () => {
+    assert.ok(databaseUrl);
+    assertLocalDatabaseUrl(databaseUrl);
+    const verification = createPool({ connectionString: databaseUrl, max: 1 });
+    const project = `synthetic/verified-${randomUUID()}`;
+    const home = await mkdtemp(join(tmpdir(), 'stale-cli-'));
+    const input = {
+      project,
+      memoryKey: `${project}:rule`,
+      category: 'convention',
+      content: 'Synthetic unchanged standing rule.',
+      confidence: 0.8,
+      evidenceRefs: ['docs/synthetic.md'],
+    };
+    try {
+      await initializeDatabase();
+      const original = await storeMemory({ ...input, lastVerifiedAt: '2026-01-01T00:00:00.000Z' });
+      const stale = spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL('../../dist/tools/pluginCli.js', import.meta.url)),
+          'stale',
+          '--project',
+          project,
+          '--json',
+        ],
+        {
+          env: {
+            HOME: home,
+            PATH: process.env.PATH,
+            AI_MEMORY_DATABASE_URL: databaseUrl,
+            AI_MEMORY_BRIEF_CACHE_DIR: join(home, 'cache'),
+          },
+          encoding: 'utf8',
+          timeout: 20000,
+          maxBuffer: 128000,
+        },
+      );
+      assert.equal(stale.status, 0, stale.stderr);
+      assert.equal(stale.stderr.trim().split('\n').length, 1);
+      assert.match(stale.stderr, /No GitHub token/u);
+      assert.deepEqual(JSON.parse(stale.stdout), [
+        {
+          project,
+          memoryKey: input.memoryKey,
+          lastVerifiedAt: '2026-01-01T00:00:00.000Z',
+          reasons: ['unverified_30d'],
+        },
+      ]);
+      const before = Date.now();
+      const refreshed = await storeMemory(input);
+      assert.equal(refreshed.id, original.id);
+      assert.equal(refreshed.createdAt, original.createdAt);
+      assert.ok(Date.parse(String(refreshed.lastVerifiedAt)) >= before);
+      assert.ok(Date.parse(String(refreshed.lastVerifiedAt)) <= Date.now());
+      assert.equal(
+        (await verification.query('SELECT id FROM ai_memory_entries WHERE memory_key=$1', [input.memoryKey])).rows
+          .length,
+        1,
+      );
+    } finally {
+      await verification.query('DELETE FROM ai_memory_entries WHERE project=$1', [project]);
+      await verification.end();
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   '011 preserves existing rows and defaults verification to their updated time, including subsequent raw inserts',
   { skip: adminUrl === undefined, timeout: 0 },
   async () => {

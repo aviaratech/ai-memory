@@ -16,7 +16,7 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { isRecord } from '../../db/type-guards.js';
-import { armPromptRetrieval, type MemoryHost } from '../../db/tool-invocations.js';
+import { armPromptRetrieval, recordMemoryConsumption, type MemoryHost } from '../../db/tool-invocations.js';
 
 import { ensurePostgresRunning, formatPostgresRecoveryHint } from '../ensure-postgres.js';
 import { resolveRepoIdFromCwd } from './auto-session-ingest.js';
@@ -88,6 +88,7 @@ export interface SessionStartHookContext {
 }
 
 export interface SessionStartHookDependencies {
+  recordMemoryConsumption?: typeof recordMemoryConsumption;
   refreshBrief?: typeof refreshBrief;
   readCachedBrief?: typeof readCachedBrief;
   armPromptRetrieval: typeof armPromptRetrieval;
@@ -137,6 +138,7 @@ export interface SessionStartPostgresStatus {
 }
 
 const DEFAULT_DEPENDENCIES: SessionStartHookDependencies = {
+  recordMemoryConsumption,
   refreshBrief,
   readCachedBrief,
   armPromptRetrieval,
@@ -213,11 +215,15 @@ async function attachBrief(
     });
     if (!failed && outcome.status !== 'unavailable') {
       try {
+        let memoryIds: number[] = [];
         const briefText = await dependencies.withTimeout({
           operation: 'memory_brief.session_start',
           timeoutMs: 1000,
           task: () =>
             dependencies.refreshBrief!(scope, {
+              onSelected: ids => {
+                memoryIds = ids;
+              },
               onCacheError: () => {
                 dependencies.logAiMemoryWarn('hook.session_start_brief_cache_failed', {
                   message: 'Brief built; cached fallback could not be refreshed.',
@@ -225,12 +231,14 @@ async function attachBrief(
               },
             }),
         });
+        await recordBriefInjection(memoryIds);
         return { ...outcome, briefText, suppressOutput: false };
       } catch {
         /* A failed refresh must not replace the last successful file. */
       }
     }
     const cached = await dependencies.readCachedBrief(scope);
+    if (cached !== undefined) await recordBriefInjection(cached.memoryIds ?? []);
     return cached === undefined
       ? outcome
       : {
@@ -238,6 +246,23 @@ async function attachBrief(
           briefText: `Cached brief (generated at ${cached.generatedAt}):\n${cached.text}`,
           suppressOutput: false,
         };
+    async function recordBriefInjection(memoryIds: number[]): Promise<void> {
+      if (!context?.sessionId || context.host === undefined || memoryIds.length === 0) return;
+      try {
+        await dependencies.recordMemoryConsumption?.({
+          host: context.host,
+          project: scope.project,
+          sessionId: context.sessionId,
+          kind: 'injected',
+          memoryIds,
+          observation: 'prompt',
+        });
+      } catch {
+        dependencies.logAiMemoryWarn('hook.session_start_brief_telemetry_failed', {
+          message: 'Brief injection telemetry unavailable.',
+        });
+      }
+    }
   } catch {
     dependencies.logAiMemoryWarn('hook.session_start_brief_failed', {
       message: 'Scoped brief unavailable; continuing with existing context.',

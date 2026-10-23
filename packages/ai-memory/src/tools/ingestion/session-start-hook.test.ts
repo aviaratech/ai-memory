@@ -65,6 +65,73 @@ test('background recall cannot reintroduce memories excluded by the brief audien
   assert.doesNotMatch(serializeSessionStartHook(outcome), /WORKER_ONLY_RULE/u);
 });
 
+test('hook serializes stale flags and observes only IDs of brief items actually injected', async () => {
+  const observations: unknown[] = [];
+  const dependencies: SessionStartHookDependencies = {
+    ...TEST_DEPENDENCIES,
+    recordMemoryConsumption: input => {
+      observations.push(input);
+      return Promise.resolve();
+    },
+    refreshBrief: (scope, options) =>
+      Promise.resolve(
+        buildBrief(
+          scope,
+          [
+            {
+              id: 41,
+              project: scope.project,
+              memoryKey: 'example/catalog:old',
+              content: 'Old synthetic rule.',
+              importance: 1,
+              status: 'active',
+              pinned: true,
+              audience: ['all'],
+              lastVerifiedAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 42,
+              project: scope.project,
+              memoryKey: 'example/catalog:huge',
+              content: 'x'.repeat(9000),
+              status: 'active',
+              pinned: true,
+              audience: ['all'],
+              lastVerifiedAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 43,
+              project: 'other/catalog',
+              memoryKey: 'other/catalog:rule',
+              content: 'Foreign rule.',
+              status: 'active',
+              pinned: true,
+              audience: ['all'],
+            },
+          ],
+          { onSelected: options?.onSelected },
+        ),
+      ),
+    readCachedBrief: () => Promise.resolve(undefined),
+  };
+  const outcome = await runSessionStartHook(undefined, {
+    host: 'codex',
+    sessionId: 'synthetic-brief-session',
+    dependencies,
+  });
+  assert.match(serializeSessionStartHook(outcome), /\(check: unverified_30d\)/u);
+  assert.deepEqual(observations, [
+    {
+      host: 'codex',
+      project: 'example/catalog',
+      sessionId: 'synthetic-brief-session',
+      kind: 'injected',
+      memoryIds: [41],
+      observation: 'prompt',
+    },
+  ]);
+});
+
 test('startup, clear, compact and Codex preserve the complete brief and use scoped cached fallback on outage', async () => {
   const scope = { project: 'example/catalog', host: 'claude-code', role: 'lead' };
   const fixtures = Array.from({ length: 40 }, (_, index) => ({

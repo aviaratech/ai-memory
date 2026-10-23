@@ -10,6 +10,8 @@ import { toMemoryRecord } from '../db/records.js';
 import { pool } from '../db/runtime.js';
 import { isRecord } from '../db/type-guards.js';
 import { loadPluginRuntimeEnv } from './pluginEnv.js';
+import { createGithubEvidenceLookup, findStaleMemories, verificationReasons } from './stale.js';
+import { parseConsumptionMemoryIds } from '../db/tool-invocations.js';
 
 // Leave space in the existing 8,000-character host envelope for guidance and
 // cache provenance. The same item budget applies to CLI and hook output.
@@ -22,12 +24,14 @@ export interface BriefScope {
 interface CachedBrief {
   text: string;
   generatedAt: string;
+  memoryIds?: number[];
 }
 interface BriefDependencies {
   cacheDir?: string | undefined;
   load?: ((scope: BriefScope) => Promise<Record<string, unknown>[]>) | undefined;
   now?: (() => Date) | undefined;
   onCacheError?: ((error: unknown) => void) | undefined;
+  onSelected?: ((memoryIds: number[]) => void) | undefined;
 }
 
 export function resolveBriefScope(scope: BriefScope): BriefScope {
@@ -65,8 +69,16 @@ export async function loadBriefMemories(
   return result.rows.map(toMemoryRecord);
 }
 
-export function buildBrief(input: BriefScope, memories: readonly Record<string, unknown>[]): string {
+export function buildBrief(
+  input: BriefScope,
+  memories: readonly Record<string, unknown>[],
+  options: {
+    now?: Date;
+    onSelected?: ((memoryIds: number[]) => void) | undefined;
+  } = {},
+): string {
   const scope = resolveBriefScope(input);
+  const now = options.now ?? new Date();
   const [stateKey, legacyKey] = roleStateKeys(scope);
   const eligible = memories.filter(
     memory =>
@@ -76,7 +88,7 @@ export function buildBrief(input: BriefScope, memories: readonly Record<string, 
       memory.memoryKey.length > 0 &&
       (memory.pinned === true || (memory.category === 'state' && [stateKey, legacyKey].includes(memory.memoryKey))) &&
       (memory.category !== 'state' || [stateKey, legacyKey].includes(memory.memoryKey)) &&
-      (memory.expiresAt == null || Date.parse(String(memory.expiresAt)) > Date.now()) &&
+      (memory.expiresAt == null || Date.parse(String(memory.expiresAt)) > now.getTime()) &&
       matchesBriefAudience(memory, scope.host, scope.role),
   );
   const hasCanonicalState = eligible.some(memory => memory.category === 'state' && memory.memoryKey === stateKey);
@@ -96,7 +108,14 @@ export function buildBrief(input: BriefScope, memories: readonly Record<string, 
       ? (evidence.url ?? evidence.path ?? evidence.issue ?? evidence.pr)
       : evidence;
     const updated = memory.category === 'state' ? `; updated ${oneLine(memory.updatedAt)}` : '';
-    return `- [${oneLine(memory.memoryKey)}] verified ${oneLine(memory.lastVerifiedAt ?? memory.updatedAt)}${updated}; source ${oneLine(source)}: ${oneLine(memory.content)}`;
+    const reasons = [
+      ...verificationReasons(memory, now),
+      ...(Array.isArray(memory.staleReasons) && memory.staleReasons.includes('evidence_closed')
+        ? ['evidence_closed']
+        : []),
+    ];
+    const checks = reasons.map(reason => ` (check: ${reason})`).join('');
+    return `- [${oneLine(memory.memoryKey)}] verified ${oneLine(memory.lastVerifiedAt ?? memory.updatedAt)}${updated}${checks}; source ${oneLine(source)}: ${oneLine(memory.content)}`;
   });
   let omitted = 0;
   const footer = () =>
@@ -108,6 +127,13 @@ export function buildBrief(input: BriefScope, memories: readonly Record<string, 
     length -= lines.pop()!.length + 1;
     omitted += 1;
   }
+  options.onSelected?.(
+    selected
+      .slice(0, lines.length)
+      .map(memory => memory.id)
+      .filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
+      .slice(0, 100),
+  );
   return [header, ...lines].join('\n') + footer();
 }
 
@@ -161,7 +187,8 @@ export async function readCachedBrief(input: BriefScope, directory?: string): Pr
       !Number.isFinite(Date.parse(value.generatedAt))
     )
       return undefined;
-    return { text: value.text, generatedAt: value.generatedAt };
+    const memoryIds = parseConsumptionMemoryIds(value.memoryIds);
+    return { text: value.text, generatedAt: value.generatedAt, ...(memoryIds === undefined ? {} : { memoryIds }) };
   } catch {
     return undefined;
   }
@@ -180,7 +207,30 @@ async function atomicWrite(path: string, contents: string): Promise<void> {
 
 export async function refreshBrief(input: BriefScope, dependencies: BriefDependencies = {}): Promise<string> {
   const scope = resolveBriefScope(input);
-  const text = buildBrief(scope, await (dependencies.load ?? loadBriefMemories)(scope));
+  const now = (dependencies.now ?? (() => new Date()))();
+  const memories = await (dependencies.load ?? loadBriefMemories)(scope);
+  // Hooks only read the 24-hour evidence cache; the explicit stale command owns GitHub requests.
+  const flagged = await findStaleMemories(memories, {
+    project: scope.project,
+    now,
+    lookupClosure: createGithubEvidenceLookup({
+      cacheOnly: true,
+      ...(dependencies.cacheDir ? { cacheDir: dependencies.cacheDir } : {}),
+      now: () => now,
+    }),
+  });
+  const flags = new Map(flagged.map(memory => [memory.memoryKey, memory.reasons]));
+  let memoryIds: number[] = [];
+  const text = buildBrief(
+    scope,
+    memories.map(memory => ({ ...memory, staleReasons: flags.get(String(memory.memoryKey)) })),
+    {
+      now,
+      onSelected: ids => {
+        memoryIds = ids;
+      },
+    },
+  );
   try {
     await atomicWrite(
       briefCachePath(scope, dependencies.cacheDir),
@@ -188,12 +238,14 @@ export async function refreshBrief(input: BriefScope, dependencies: BriefDepende
         version: 1,
         scope,
         text,
-        generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+        memoryIds,
+        generatedAt: now.toISOString(),
       }),
     );
   } catch (error) {
     dependencies.onCacheError?.(error);
   }
+  dependencies.onSelected?.(memoryIds);
   return text;
 }
 

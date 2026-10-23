@@ -263,6 +263,8 @@ function createMinimalReport(overrides?: DeepPartial<HealthReport>): HealthRepor
     database,
     generatedAt: overrides?.generatedAt ?? '2026-01-15T00:00:00.000Z',
     memoryConsumption: {
+      items: [],
+      pruneCandidates: [],
       status: 'partial',
       window: { days: 7, start: '2026-01-08T00:00:00.000Z', end: '2026-01-15T00:00:00.000Z' },
       hosts: [],
@@ -2992,6 +2994,9 @@ Memory use observed in the last 7 days
 - Counts are observed injection/session/ID pairs; use is a lower bound from successful gets and timestamped citations. Coverage is partial.
 - No injection cohort observed; use rate unavailable.
 
+Per-key observed use (7 and 30 days; project-qualified injection/session/ID cohorts)
+Pinned prune candidates (zero observed uses in 30 days; review coverage before pruning):
+
 Write Calibration
 - No calibrated writes in window.
 
@@ -3209,6 +3214,9 @@ MCP Usage
 Memory use observed in the last 7 days
 - Counts are observed injection/session/ID pairs; use is a lower bound from successful gets and timestamped citations. Coverage is partial.
 - No injection cohort observed; use rate unavailable.
+
+Per-key observed use (7 and 30 days; project-qualified injection/session/ID cohorts)
+Pinned prune candidates (zero observed uses in 30 days; review coverage before pruning):
 
 Write Calibration
 - No calibrated writes in window.

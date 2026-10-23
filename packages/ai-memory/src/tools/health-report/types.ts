@@ -229,6 +229,13 @@ export interface MemoryConsumptionMetrics {
     useRatePct: number | null;
     coverage: 'partial' | 'unobserved';
   }[];
+  items: {
+    project: string | null;
+    memoryKey: string;
+    pinned: boolean;
+    windows: { days: 7 | 30; injectedCount: number; usedCount: number; lastUsedAt: string | null }[];
+  }[];
+  pruneCandidates: { project: string | null; memoryKey: string }[];
 }
 
 export type JsonRecord = Record<string, unknown>;
