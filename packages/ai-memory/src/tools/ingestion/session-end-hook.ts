@@ -13,10 +13,11 @@ import {
   resolveRepoIdFromCwd,
 } from './auto-session-ingest.js';
 import { runIngestPipeline } from './pipeline.js';
-import { recordSessionCitationObservations } from './session-task-hooks.js';
+import { memoryHookHost, recordSessionCitationObservations } from './session-task-hooks.js';
 
 const CLAUDE_SESSION_END_SOURCE = 'claude-session-end';
 const GROK_SESSION_END_SOURCE = 'grok-session-end';
+const UNKNOWN_SESSION_END_SOURCE = 'session-end';
 
 /** Hook event names that indicate a session-end ingestion should run. */
 const SESSION_END_EVENT_NAMES = new Set(['SessionEnd', 'Stop', 'unknown']);
@@ -59,9 +60,9 @@ export function isGrokSessionEndHook(
 
 export async function runSessionEndHook(input: SessionEndHookInput): Promise<SessionEndHookOutcome> {
   const failureContext: FailureContext = {
-    agent: 'claude-code',
+    agent: 'unknown',
     details: {},
-    source: CLAUDE_SESSION_END_SOURCE,
+    source: UNKNOWN_SESSION_END_SOURCE,
     stage: 'hook_init',
   };
 
@@ -165,15 +166,32 @@ async function runSessionEndHookCore(
   }
 
   const isGrok = isGrokSessionEndHook(payload);
-  const isCodex = hookEventName === 'Stop';
-  let agent = 'claude-code';
-  let source = CLAUDE_SESSION_END_SOURCE;
+  const detectedHost = memoryHookHost(process.env);
+  // The shared resolver prefers Codex; session-end must not guess when both hosts are signaled.
+  const conflictingSignals =
+    detectedHost === 'codex' &&
+    (process.env.CLAUDECODE === '1' ||
+      process.env.CLAUDE_PLUGIN_ROOT !== undefined ||
+      process.env.AI_AGENT_IDENTITY === 'claude-code');
+  const host = conflictingSignals ? undefined : detectedHost;
+  const isCodex = !isGrok && host === 'codex';
+  const isClaude = !isGrok && host === 'claude-code';
+  let agent = 'unknown';
+  let source = UNKNOWN_SESSION_END_SOURCE;
   if (isGrok) {
     agent = 'grok-build';
     source = GROK_SESSION_END_SOURCE;
   } else if (isCodex) {
     agent = 'codex-cli';
     source = 'codex-hook';
+  } else if (isClaude) {
+    agent = 'claude-code';
+    source = CLAUDE_SESSION_END_SOURCE;
+  } else {
+    logAiMemoryWarn('hook.session_end_unknown_host', {
+      message: 'Session-end host signal missing or conflicting; recording agent unknown.',
+      source,
+    });
   }
   failureContext.agent = agent;
   failureContext.source = source;
@@ -239,7 +257,7 @@ async function runSessionEndHookCore(
       // If Codex session file is unavailable, fall back to payload-only ingestion.
       createdAt = resolveIngestCreatedAt(payload, transcriptPath);
     }
-  } else {
+  } else if (isClaude) {
     const claudeSummary = parseClaudeTranscriptSummary(transcriptPath);
     lastAssistantMessage = claudeSummary.lastAssistantMessage;
     lastUserMessage = claudeSummary.lastUserMessage;
@@ -247,6 +265,8 @@ async function runSessionEndHookCore(
     toolCallCount = claudeSummary.toolCallCount;
     history = claudeSummary.history;
     createdAt = resolveIngestCreatedAt(payload, transcriptPath);
+  } else {
+    createdAt = resolveIngestCreatedAt(payload, undefined);
   }
 
   const repoId =
@@ -292,7 +312,9 @@ async function runSessionEndHookCore(
   });
 
   // Citation evidence is optional and ID-only. Failed/unsupported observation never fails ingestion.
-  await recordSessionCitationObservations(payload).catch(() => {});
+  if (isClaude || isCodex) {
+    await recordSessionCitationObservations(payload).catch(() => {});
+  }
 
   return { continue: true, ingested: true, suppressOutput: true };
 }

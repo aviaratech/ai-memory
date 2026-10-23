@@ -16,12 +16,13 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 
 import type { IngestSource, SessionIngestEvent } from './contract.js';
 
 import { buildFlushSnapshotValue, collectContinuityQualityWarnings, parseFlushInput } from './flush-session.js';
 import { runIngestPipeline } from './pipeline.js';
+import * as autoIngest from './auto-session-ingest.js';
 
 // ─── Contract shape tests ───────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ test('SessionIngestEvent accepts all canonical IngestSource values', () => {
     'codex-launchd',
     'codex-wrapper',
     'grok-session-end',
+    'session-end',
     'manual',
     'manual-flush',
   ];
@@ -79,6 +81,7 @@ test('runIngestPipeline routing: auto-session sources are distinct from flush so
     'codex-wrapper',
     'codex-launchd',
     'grok-session-end',
+    'session-end',
   ];
   const flushSources: IngestSource[] = ['manual-flush', 'manual'];
 
@@ -90,7 +93,23 @@ test('runIngestPipeline routing: auto-session sources are distinct from flush so
 
   // Union covers all canonical IngestSource values.
   const all: IngestSource[] = [...autoSources, ...flushSources];
-  assert.equal(all.length, 7);
+  assert.equal(all.length, 8);
+});
+
+test('neutral session-end source dispatches unknown host input through automatic ingestion', async () => {
+  const input = { source: 'session-end', agent: 'unknown', sessionId: 'synthetic-neutral-session' };
+  const ingest = vi.spyOn(autoIngest, 'ingestAutoSessionDelta').mockResolvedValue({
+    continuityWarnings: [],
+    deltaId: 'synthetic-neutral-delta',
+    eventsIngested: 1,
+    sessionId: input.sessionId,
+  });
+  try {
+    assert.deepEqual(await runIngestPipeline(input), { flushed: true, sessionId: input.sessionId });
+    assert.deepEqual(ingest.mock.calls, [[input, {}]]);
+  } finally {
+    ingest.mockRestore();
+  }
 });
 
 test('runIngestPipeline routing: unknown source is rejected', async () => {
