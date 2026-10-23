@@ -46,6 +46,9 @@ test('HTTP origins default empty and accept only exact serialized origins', () =
   );
   for (const origin of [
     '*',
+    'https://*.example.com',
+    'http://*',
+    'https://exa*mple.com',
     'null',
     'https://client.example/',
     'https://user@client.example',

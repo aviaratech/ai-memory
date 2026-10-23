@@ -177,7 +177,7 @@ export function loadAiMemoryMcpEnvConfig(input: { env?: NodeJS.ProcessEnv } = {}
       } catch {
         throw new Error('AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS must contain comma-separated exact http/https origins.');
       }
-      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin) {
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin || origin.includes('*')) {
         throw new Error(
           'AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS must contain comma-separated exact http/https origins without wildcards, credentials or paths.',
         );
