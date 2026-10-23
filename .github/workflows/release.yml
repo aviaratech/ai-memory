@@ -254,8 +254,9 @@ jobs:
           fi
           if ! gh release view "$tag" --json tagName,name,body,isDraft,isPrerelease,assets > "$release_dir/github-release.json" 2> "$release_dir/github-release.err"; then
             grep -qx 'release not found' "$release_dir/github-release.err" || { cat "$release_dir/github-release.err"; exit 1; }
+            node scripts/verify-release-state.mjs --notes "$tag" "$SOURCE_SHA" > "$release_dir/release-notes.md"
             gh release create "$tag" --draft --verify-tag --target "$SOURCE_SHA" \
-              --title "ai-memory $tag" --notes "Reviewed ai-memory release from $SOURCE_SHA."
+              --title "ai-memory $tag" --notes-file "$release_dir/release-notes.md"
           fi
           remote_tag="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
             awk '$2 ~ /\^\{\}$/ { peeled=$1 } $2 !~ /\^\{\}$/ { direct=$1 } END { print (peeled == "" ? direct : peeled) }')"

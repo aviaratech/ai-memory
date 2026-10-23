@@ -10,6 +10,114 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 `npm run smoke -w @aviaratech/ai-memory` uses bundled fictional fixtures and writes to the selected database. Run it only against an isolated disposable database. `npm run pg:ensure -w @aviaratech/ai-memory` can start a local service when `AI_MEMORY_POSTGRES_START_COMMAND` is configured; it does not choose a remote database or Docker fallback.
 
+## Adopting 0.3.0
+
+This checklist is for the operator of **one existing macOS install with manual stdio registrations**. Source/release verification does not execute it on your host. Use Node 24/npm 11 and PostgreSQL 18 with matching `pg_dump`/`pg_restore`. Keep the old package, migration files, configuration preimages and recovery key. Export absolute path variables `AI_MEMORY_INSTALL` (a new versioned install directory), `AI_MEMORY_PREVIOUS_INSTALL` (the old npm install), `AI_MEMORY_ADOPTION_STATE` (an owner-only directory outside either install), and `AI_MEMORY_EDITOR` (your editor executable). Supply the database-owner URL and the [protected backup variables](#encrypted-local-backup) through your existing credential workflow; leave optional S3/provider settings unset unless separately configured. Do not put credentials in the commands or registrations below.
+
+1. **Stage the package and update saved registrations without restarting clients.**
+
+   ```sh
+   umask 077
+   mkdir -p "$AI_MEMORY_ADOPTION_STATE"
+   chmod 700 "$AI_MEMORY_ADOPTION_STATE"
+   npm install --prefix "$AI_MEMORY_INSTALL" --save-exact --ignore-scripts @aviaratech/ai-memory@0.3.0
+   export AI_MEMORY_TOOLS="$AI_MEMORY_INSTALL/node_modules/@aviaratech/ai-memory/dist/tools"
+   export AI_MEMORY_PREVIOUS_TOOLS="$AI_MEMORY_PREVIOUS_INSTALL/node_modules/@aviaratech/ai-memory/dist/tools"
+   node -p 'require(process.env.AI_MEMORY_INSTALL + "/node_modules/@aviaratech/ai-memory/package.json").version'
+   cp -p "$HOME/.codex/config.toml" "$AI_MEMORY_ADOPTION_STATE/codex.toml.before"
+   cp -p "$HOME/.claude.json" "$AI_MEMORY_ADOPTION_STATE/claude.json.before"
+   cp -p "$HOME/Library/Application Support/Claude/claude_desktop_config.json" "$AI_MEMORY_ADOPTION_STATE/desktop.json.before"
+   "$AI_MEMORY_EDITOR" "$HOME/.codex/config.toml" "$HOME/.claude.json" "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+   ```
+
+   Expected: version `0.3.0`; three private preimages; each saved ai-memory `command`/`args` selects the exact Node executable and the new absolute `dist/tools/server.js`. For a protected wrapper, update only its selected package target through its existing owner/loader procedure instead of removing that loader. Preserve every other field, especially Codex `[mcp_servers.ai-memory.tools.memory_flush]`, and unrelated registrations. Claude Code USER uses `mcpServers.ai-memory` in `.claude.json`; Desktop uses that key in its own file. A native plugin update does not repoint manual entries. Compare the saved files locally; do not publish their contents. **Rollback before migration:** restore the three preimages and the previous wrapper target. Registration changes alone do not prove a running client loaded 0.3.0.
+
+2. **Pause ingestion and all old database clients.** Close Codex, Claude Code and Claude Desktop normally, allow their final session-end hooks to finish, and keep them closed. If the existing Codex ingestion job is installed, unload its exact plist:
+
+   ```sh
+   launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.aviaratech.ai-memory.codex-ingest.plist"
+   launchctl print "gui/$(id -u)/com.aviaratech.ai-memory.codex-ingest"
+   ```
+
+   Expected: the job is absent (`print` exits nonzero); an already absent job needs no removal. Confirm no manual ingestion, session-end hooks, MCP clients or scheduled backups remain in flight through your existing process/DB monitoring. Do not proceed on an uncertain writer. Keep ingestion paused through step 6. **Rollback:** restore the saved registration/hook selections; reload only a previously installed job after choosing a compatible database/package pair.
+
+3. **Preserve a pre-010 recovery point, initialize, then take the cleanup backup.** Use a separate protected backup directory for the previous package's backup so the two releases never share pending backup state. With `AI_MEMORY_BACKUP_DIR` selecting that old-version recovery directory:
+
+   ```sh
+   node "$AI_MEMORY_PREVIOUS_TOOLS/backup-launchd-agent.js" run-once
+   node "$AI_MEMORY_PREVIOUS_TOOLS/disaster-recovery.js" status
+   ```
+
+   Expected: `{"stage":"complete",...}` and then `{"stage":"status","state":"healthy",...}`, both exit 0. Retain that archive, manifest, key and **executing previous package** together through separate protected channels. Record its backup id. If no compatible previous backup command is available, establish and verify the equivalent pre-upgrade recovery point before continuing.
+
+   Switch `AI_MEMORY_BACKUP_DIR` to a different owner-only 0.3.0 backup directory; keep the same source identity and database target. Then:
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/init-db.js"
+   node "$AI_MEMORY_TOOLS/backup-launchd-agent.js" run-once
+   node "$AI_MEMORY_TOOLS/disaster-recovery.js" status
+   ```
+
+   Expected: `[ai-memory] schema is ready (...)` after migrations through `010_index_first_search`, backup stage `complete`, and status `healthy`, all exit 0. These are the packaged equivalents of `init`, `backup:run-once` and `backup:check`. **Stop on any failed check.** A pre-010 backup is for rollback; cleanup needs this fresh 0.3.0 backup of the migrated database. **Rollback after migration:** restore the previous backup with its matching previous package into a new database, verify it, then switch clients to that verified target. An older initializer rejects the 010 ledger; changing registrations alone cannot undo it.
+
+4. **Inspect and install the optional daily backup job.** Set `AI_MEMORY_BACKUP_DATABASE_URL_FILE` to the owner-only URL file for this database, outside the backup directory/install; keep the key in its separate owner-only file. Retain a pre-existing job's plist/schedule before replacement. On macOS:
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/backup-launchd-agent.js" install --dry-run
+   node "$AI_MEMORY_TOOLS/backup-launchd-agent.js" install
+   node "$AI_MEMORY_TOOLS/backup-launchd-agent.js" status
+   ```
+
+   Expected: a redacted plist preview, then `{"label":"com.aviaratech.ai-memory.backup","schedule":"daily at 03:00","status":"installed"}` and status `loaded`. This is `backup:install`; it schedules snapshots, not point-in-time recovery. Accept the [snapshot loss window](#encrypted-local-backup) before enabling it. **Rollback:** `node "$AI_MEMORY_TOOLS/backup-launchd-agent.js" uninstall`, then restore/reload only the previous owned job if one existed. During synthetic review, isolate HOME and use a fixture `launchctl`; never bootstrap the real GUI domain.
+
+5. **Review the cleanup dry run and capture its backup id.**
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/cleanup.js" --dry-run --json > "$AI_MEMORY_ADOPTION_STATE/cleanup-plan.json"
+   node -e 'const p=require(process.env.AI_MEMORY_ADOPTION_STATE+"/cleanup-plan.json"); if(p.mode!=="dry-run" || p.backup.state!=="healthy" || !p.backup.backupId) process.exit(1); console.log(JSON.stringify({backupId:p.backup.backupId,totals:p.report.totals,kept:p.report.kept},null,2))'
+   export AI_MEMORY_CLEANUP_BACKUP_ID="$(node -p 'require(process.env.AI_MEMORY_ADOPTION_STATE+"/cleanup-plan.json").backup.backupId')"
+   ```
+
+   Expected: dry-run mode, healthy backup, a UUID, per-table deletion totals and kept counts; no data deleted. Review source/category reasons and lineage/contested protection in the full plan. `backup:check` itself does not print the id. **Stop if unhealthy or missing an id.** No rollback is needed for the read-only plan. If the backup changes, rerun and review this step.
+
+6. **Apply only the reviewed backup-bound cleanup.**
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/disaster-recovery.js" status
+   node "$AI_MEMORY_TOOLS/cleanup.js" --apply --backup-id "$AI_MEMORY_CLEANUP_BACKUP_ID" --vacuum-full --json > "$AI_MEMORY_ADOPTION_STATE/cleanup-applied.json"
+   node -e 'const p=require(process.env.AI_MEMORY_ADOPTION_STATE+"/cleanup-applied.json"); if(p.mode!=="apply" || p.maintenanceWarning) process.exit(1); console.log(JSON.stringify({totals:p.report.totals,kept:p.report.kept,sizesBefore:p.sizesBefore,sizesAfter:p.sizesAfter},null,2))'
+   ```
+
+   Expected: healthy backup; apply totals match the unchanged reviewed plan; curated/lineage/contested rows remain. `VACUUM FULL` takes table locks. A `maintenanceWarning` means deletions **already committed**, even if the cleanup command exited 0; investigate maintenance rather than blindly reapplying. A failed `backup:check` must stop the procedure. Cleanup independently refuses an unhealthy/mismatched backup and refuses `--apply` without `--backup-id` before deletion. This is covered by [`corpus-cleanup.integration.test.ts`](../packages/ai-memory/src/db/corpus-cleanup.integration.test.ts) and the CLI argument tests. **Rollback:** restore this 0.3.0 backup with 0.3.0 into a new database and verify it before any switch; it cannot restore a pre-010 ledger.
+
+7. **Resume only compatible clients and the previously enabled ingestion job.** Restore the intended hook selections, reopen the three clients against the migrated 0.3.0 target, and, only if it was enabled before step 2:
+
+   ```sh
+   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.aviaratech.ai-memory.codex-ingest.plist"
+   launchctl print "gui/$(id -u)/com.aviaratech.ai-memory.codex-ingest"
+   ```
+
+   Expected: the owned job is loaded; each new client session completes its normal MCP connection/tool discovery, including Codex `memory_flush`. Update any ingestion/hook command still selecting the old package before re-enabling it. Stop on old executable/launcher selection or schema errors. This proves the fresh sessions only, not an already running conversation. **Rollback:** pause again and use the compatible restore procedure from step 3 or 6.
+
+8. **Backfill kept knowledge when an embedding provider is configured.**
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/scripts/backfill-embeddings.js" --dry-run --skip-init
+   node "$AI_MEMORY_TOOLS/scripts/backfill-embeddings.js" --apply --skip-init
+   node "$AI_MEMORY_TOOLS/scripts/backfill-embeddings.js" --dry-run --skip-init
+   ```
+
+   Expected: JSON `{dryRun,total,embedded,errors,skipped,batches,...}`; the apply has `errors: 0`, and the final pending `total` is 0 on a quiescent fixture. New writes during real operation can add pending work. Dry-run needs no provider. With no provider configured, **omit apply**: it otherwise exits 1 with `Embedding provider not configured`; retain the measured pending count and use local text search. Do not claim vectors were filled. A configured provider may incur charges. Existing vectors and memory `updated_at` are preserved. **Rollback:** stop provider work; restore the step-6 backup if undoing new vectors is required.
+
+9. **Record health numbers and observe the adopted install.**
+
+   ```sh
+   node "$AI_MEMORY_TOOLS/health-report.js" --days 7 --json > "$AI_MEMORY_ADOPTION_STATE/health-after.json"
+   node "$AI_MEMORY_TOOLS/disaster-recovery.js" status
+   ```
+
+   Expected: health JSON including `database.durableMemoriesCreated`, `durableMemoriesUpdated`, `ingestionFailures` and continuity readiness; backup remains healthy. Compare cleanup kept/deleted counts, table bytes and backfill pending/errors with the saved reports. Health reads its selected logs/transcripts/retros too; synthetic review supplies isolated empty paths with `--log-file`, `--transcripts-dir`, `--retros-dir`. A clean synthetic run does not establish a real seven-day error rate, corpus reduction or p95 latency. Measure those separately; existing #32–34 operational acceptance remains open. **Rollback:** stop writers and restore a verified, matching package/backup into a new database using [restore](#restore-into-a-new-database); promote it only after verification. Keep both pre-010 and 0.3.0 recovery assets until operational acceptance.
+
 ## Task workflow telemetry
 
 For a build containing migration009, `ai-memory-mcp telemetry:ingest` accepts one strict content-free event from stdin. `ai-memory-mcp telemetry:report --project <digest> --task <id> --json` and `npm run health -w @aviaratech/ai-memory -- --workflow --project <digest> --task <id> --json` use the same bounded task report, before legacy collectors. See [telemetry](telemetry.md) for the event contract, source coverage, token-subset accounting, correlation, replay, retention and synthetic example. Applying migrations and enabling installed hooks require their own authorized deployment; the ingest path does not provision or activate them.
