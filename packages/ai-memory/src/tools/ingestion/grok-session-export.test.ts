@@ -24,11 +24,10 @@ test('parseGrokSessionExport preserves ordered user and assistant turns while co
   assert.match(parsed.lastAssistantMessage ?? '', /bounded continuity pack/u);
 });
 
-test('Grok export keeps an earlier decision searchable after a newer turn and resumes idempotently', () => {
+test('Grok export resumes idempotently and never proposes durable memories', () => {
   const parsed = parseGrokSessionExport(GROK_SESSION_EXPORT_FIXTURE);
   const firstRun = buildAutoMemoryDelta({
     agent: 'grok-build',
-    autoDurablePromotionEnabled: true,
     createdAt: TEST_CREATED_AT,
     evidenceRefs: [`grok://session/${TEST_SESSION_ID}`],
     history: parsed.history.slice(0, 2),
@@ -38,7 +37,6 @@ test('Grok export keeps an earlier decision searchable after a newer turn and re
   });
   const resumedRun = buildAutoMemoryDelta({
     agent: 'grok-build',
-    autoDurablePromotionEnabled: true,
     createdAt: TEST_CREATED_AT,
     evidenceRefs: [`grok://session/${TEST_SESSION_ID}`],
     history: parsed.history,
@@ -47,18 +45,19 @@ test('Grok export keeps an earlier decision searchable after a newer turn and re
     source: 'grok-session-end',
   });
 
-  const firstKeys = new Set(firstRun.x_durable_memories?.map(memory => memory.memory_key) ?? []);
-  const resumedMemories = resumedRun.x_durable_memories ?? [];
-  const resumedKeys = resumedMemories.map(memory => memory.memory_key);
+  const replayedRun = buildAutoMemoryDelta({
+    agent: 'grok-build',
+    createdAt: TEST_CREATED_AT,
+    evidenceRefs: [`grok://session/${TEST_SESSION_ID}`],
+    history: parsed.history,
+    repoId: 'example/catalog',
+    sessionId: TEST_SESSION_ID,
+    source: 'grok-session-end',
+  });
 
-  assert.ok(
-    resumedMemories.some(memory => /early-decision marker/u.test(memory.content)),
-    'the earlier decision must remain in the searchable durable proposals after later turns arrive',
-  );
-  assert.equal(new Set(resumedKeys).size, resumedKeys.length, 'one replay must not create duplicate turn keys');
-  for (const key of firstKeys) {
-    assert.ok(resumedKeys.includes(key), `resumed ingestion must retain stable key ${key}`);
-  }
+  assert.notEqual(firstRun.delta_id, resumedRun.delta_id, 'new turns give a new delta');
+  assert.equal(resumedRun.delta_id, replayedRun.delta_id, 'replay must be idempotent');
+  assert.equal('x_durable_memories' in resumedRun, false, 'ingestion never proposes durable memories');
   assert.equal(resumedRun.created_at, TEST_CREATED_AT, 'the source event timestamp must be retained on the delta');
 });
 

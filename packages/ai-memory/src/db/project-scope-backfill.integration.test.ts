@@ -345,13 +345,10 @@ test(
           task: 'logical:task',
         },
         {
-          getEmbedding: () => Promise.resolve(null),
           getSessionProject,
-          isEmbeddingAvailable: () => false,
           pool,
           now: () => new Date('2026-10-18T00:00:00Z'),
           refreshContinuityPack: () => Promise.resolve({ reason: 'missing_project', status: 'skipped' }),
-          runReflection: () => Promise.resolve({ reflectionResult: undefined, storedMemories: [] }),
         },
       );
       assert.deepEqual(

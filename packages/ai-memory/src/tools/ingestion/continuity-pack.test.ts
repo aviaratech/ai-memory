@@ -12,7 +12,7 @@ import { parseFlushInput } from './flush-session.js';
 const TEST_NOW_ISO = '2026-06-28T20:00:00.000Z';
 const TEST_SESSION_ID = 'session-continuity-pack';
 
-test('buildContinuityPackFromFlush preserves curated flush provenance and reflection count', () => {
+test('buildContinuityPackFromFlush preserves curated flush provenance', () => {
   const parsed = parseFlushInput({
     agent: 'codex-builder',
     contextNeeded: ['Review the latest ai-reviewer verdict before publishing.'],
@@ -35,7 +35,6 @@ test('buildContinuityPackFromFlush preserves curated flush provenance and reflec
     budgetChars: 1200,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 2,
     sessionId: TEST_SESSION_ID,
   });
 
@@ -45,7 +44,7 @@ test('buildContinuityPackFromFlush preserves curated flush provenance and reflec
   assert.equal(pack.pack.provenance.sessionId, TEST_SESSION_ID);
   assert.equal(pack.pack.provenance.source, 'manual-flush');
   assert.equal(pack.pack.provenance.continuityFields, 'agent-authored');
-  assert.equal(pack.pack.reflection.count, 2);
+  assert.equal('reflection' in pack.pack, false);
   assert.deepEqual(pack.pack.nextActions, ['Wire continuity pack reads into the session-start hook.']);
   assert.deepEqual(pack.pack.contextNeeded, ['Review the latest ai-reviewer verdict before publishing.']);
 
@@ -78,7 +77,6 @@ test('buildScopedContinuityPacksFromFlush retains project startup context withou
     budgetChars: 1200,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 0,
     sessionId: TEST_SESSION_ID,
   });
 
@@ -115,7 +113,6 @@ test('buildContinuityPackFromFlush enforces the bootstrap budget at write time',
     budgetChars: 420,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 0,
     sessionId: TEST_SESSION_ID,
   });
 
@@ -142,7 +139,6 @@ test('buildContinuityPackFromFlush hard-caps unusually tiny budgets', () => {
     budgetChars: 80,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 0,
     sessionId: TEST_SESSION_ID,
   });
 
@@ -173,7 +169,6 @@ test('buildContinuityPackFromFlush keeps unrendered structured models out of the
     budgetChars: 1200,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 1,
     sessionId: TEST_SESSION_ID,
   });
   const packJson = JSON.stringify(pack.pack);
@@ -203,7 +198,6 @@ test('buildContinuityPackDebugPayload renders the exact startup pack with budget
     budgetChars: 1200,
     nowIso: TEST_NOW_ISO,
     parsed,
-    reflectionCount: 1,
     sessionId: TEST_SESSION_ID,
   });
 
@@ -271,7 +265,6 @@ test('reconnected and cross-harness checkpoints retain logical task state after 
     for (const pack of buildScopedContinuityPacksFromFlush({
       nowIso: TEST_NOW_ISO,
       parsed,
-      reflectionCount: 0,
       sessionId: write.sessionId,
     }))
       latest.set(pack.scopeKey, pack);

@@ -5,18 +5,16 @@
  * This barrel consolidates all deep paths that package operations need.
  */
 
-// ── standalone modules ──────────────────────────────────────────────
-export * from './consolidation/consolidateMemories.js';
-
 // ── contracts (MemoryType collides with db/memory-types — resolve) ──
 export * from './contracts/types.js';
 
 // ── db barrel (curated public-ish surface from db/index) ────────────
 export * from './db.js';
 // ── db sub-modules with no overlap ──────────────────────────────────
+export * from './db/durable-write-gate.js';
 export * from './db/ingest-memory-delta-in-transaction.js';
 // ── db/memory-api (items NOT already in the db barrel) ──────────────
-export { buildRecallTierOrderSql, buildTokenFallbackQuery, storeMemoryWithAuditEvent } from './db/memory-api.js';
+export { buildRecallTierOrderSql, buildTokenFallbackQuery, storeFixtureMemory } from './db/memory-api.js';
 export * from './db/memory-types.js';
 // Re-export MemoryType explicitly to resolve the ambiguity
 // (contracts/types re-exports the same type from db/memory-types)

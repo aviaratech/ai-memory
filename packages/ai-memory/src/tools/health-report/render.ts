@@ -1,5 +1,4 @@
 import type {
-  ConsolidationMetrics,
   ContinuityAdoptionMetrics,
   DatabaseMetrics,
   FailureByStageMetric,
@@ -60,55 +59,10 @@ export function renderReport(report: HealthReport): string {
   renderReflectSection(lines, report.database.reflect);
   renderOrchestrationSection(lines, report.orchestration);
   renderRetentionSection(lines, report.retention);
-  renderConsolidationSection(lines, report.consolidation);
   renderUsefulnessSection(lines, report.usefulness);
   renderOutcomeSignalsSection(lines, report.database);
 
   return `${lines.join('\n')}\n`;
-}
-
-function renderConsolidationSection(lines: string[], consolidation: ConsolidationMetrics | undefined): void {
-  if (consolidation === undefined) {
-    return;
-  }
-
-  lines.push('Consolidation');
-  const totals = consolidation.totals;
-  lines.push(
-    `- Totals: sessions=${String(totals.sessions)} pairs examined=${String(totals.pairsExamined)} ` +
-      `classified=${String(totals.pairsClassified)} dedupes=${String(totals.dedupes)} ` +
-      `supersedes=${String(totals.supersedes)} refines=${String(totals.refines)} ` +
-      `none=${String(totals.none)} contradictions=${String(totals.contradictionsFlagged)}`,
-  );
-  lines.push(
-    `- Rates: contradiction=${formatPercent(consolidation.contradictionRatePct)} ` +
-      `none=${formatPercent(consolidation.noActionRatePct)}`,
-  );
-
-  if (consolidation.daily.length === 0) {
-    lines.push('- Daily metrics: no consolidation metric events in window');
-  } else {
-    lines.push('- Daily metrics:');
-    for (const day of consolidation.daily) {
-      lines.push(
-        `  - ${day.date}: sessions=${String(day.sessions)} pairs examined=${String(day.pairsExamined)} ` +
-          `classified=${String(day.pairsClassified)} dedupes=${String(day.dedupes)} ` +
-          `supersedes=${String(day.supersedes)} refines=${String(day.refines)} ` +
-          `none=${String(day.none)} contradictions=${String(day.contradictionsFlagged)} ` +
-          `avgLatency=${formatNumber(day.avgLatencyMs, 0)}ms`,
-      );
-    }
-  }
-
-  if (consolidation.topDedupedMemoryKeys.length > 0) {
-    const top = consolidation.topDedupedMemoryKeys
-      .map(metric => `${metric.memoryKey}=${String(metric.count)}`)
-      .join(', ');
-    lines.push(`- Top deduped memoryKeys: ${top}`);
-  } else {
-    lines.push('- Top deduped memoryKeys: none');
-  }
-  lines.push('');
 }
 
 function renderContinuityAdoptionLine(lines: string[], continuity: ContinuityAdoptionMetrics): void {

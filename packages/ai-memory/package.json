@@ -53,6 +53,7 @@
     "backup:status": "node dist/tools/backup-launchd-agent.js status",
     "backup:check": "node dist/tools/disaster-recovery.js status",
     "backup:uninstall": "node dist/tools/backup-launchd-agent.js uninstall",
+    "cleanup": "node dist/tools/cleanup.js",
     "restore": "node dist/tools/disaster-recovery.js restore",
     "codex:bootstrap": "node dist/tools/codexConnectivity.js bootstrap",
     "codex:doctor": "node dist/tools/codexConnectivity.js doctor",

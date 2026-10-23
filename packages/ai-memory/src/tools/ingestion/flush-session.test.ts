@@ -36,7 +36,6 @@ test('verified basename flush writes the canonical repository and retains exact 
   const packs = buildScopedContinuityPacksFromFlush({
     nowIso: TEST_NOW,
     parsed,
-    reflectionCount: 0,
     sessionId: 'producer-session',
   });
   assert.deepEqual(

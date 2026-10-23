@@ -177,7 +177,6 @@ function buildCodexPlistConfig(config: InstallConfig): LaunchdPlistConfig {
       baseEnv: process.env,
       existingEnv: registration.env,
     }),
-    AI_MEMORY_AUTO_DURABLE_PROMOTION: '1',
     AI_MEMORY_LOG_STDERR: '0',
   };
 

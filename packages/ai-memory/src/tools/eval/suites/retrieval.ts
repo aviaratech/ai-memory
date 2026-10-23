@@ -1,4 +1,9 @@
-import { formatError, resetEmbeddingProvider, searchMemories, storeMemory } from '@aviaratech/ai-memory/internal';
+import {
+  formatError,
+  resetEmbeddingProvider,
+  searchMemories,
+  storeFixtureMemory,
+} from '@aviaratech/ai-memory/internal';
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
@@ -39,7 +44,7 @@ interface RetrievalSuiteOptions extends SuiteRunOptions {
 const DEFAULT_DEPENDENCIES: RetrievalSuiteDependencies = {
   cleanupProjectEntries,
   searchMemories,
-  storeMemory,
+  storeMemory: storeFixtureMemory,
 };
 
 interface RetrievalQueryResult {

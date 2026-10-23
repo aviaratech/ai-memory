@@ -188,7 +188,7 @@ test(
       const input = {
         category: 'convention',
         confidence: 0.8,
-        content: 'Synthetic forest issue4821',
+        content: 'Synthetic forest fixture issue4821',
         memoryKey: `${project}:key`,
         project,
         source: 'integration-test',
@@ -200,7 +200,7 @@ test(
       await check();
       const upserted = await storeMemory({
         ...input,
-        content: 'Synthetic harbor issue4822',
+        content: 'Synthetic harbor fixture issue4822',
         tags: ['harbor'],
         evidenceRefs: ['https://example.invalid/issues/4822'],
       });
@@ -344,6 +344,8 @@ test('pgvector memory write and search round trip', { skip: databaseUrl === unde
       category: 'implementation-note',
       confidence: 0.8,
       content: targetContent,
+      evidenceRefs: ['docs/operations.md'],
+      memoryKey: `${project}:target`,
       project,
       source: 'integration-test',
     });
@@ -351,6 +353,8 @@ test('pgvector memory write and search round trip', { skip: databaseUrl === unde
       category: 'implementation-note',
       confidence: 0.8,
       content: decoyContent,
+      evidenceRefs: ['docs/operations.md'],
+      memoryKey: `${project}:decoy`,
       project,
       source: 'integration-test',
     });

@@ -158,8 +158,24 @@ test('memory_orient schema allows stateModel to be omitted', () => {
   assert.equal(parsed.stateModel, undefined);
 });
 
+// memory_store requires a stable key and at least one evidence reference.
+const STORE_IDENTITY = { evidenceRefs: ['docs/operations.md'], memoryKey: 'example/catalog:schema-fixture' };
+
+test('memory_store schema requires memoryKey and at least one evidenceRef', () => {
+  for (const omitted of [
+    { evidenceRefs: ['docs/operations.md'] },
+    { memoryKey: 'example/catalog:schema-fixture' },
+    { evidenceRefs: [], memoryKey: 'example/catalog:schema-fixture' },
+  ]) {
+    assert.throws(() =>
+      memoryStoreInputSchema.parse({ category: 'decision', content: 'missing identity', ...omitted }),
+    );
+  }
+});
+
 test('memory_store schema accepts numeric confidence as both number and JSON-encoded string', () => {
   const asNumber = memoryStoreInputSchema.parse({
+    ...STORE_IDENTITY,
     category: 'decision',
     confidence: 0.9,
     content: 'numeric form',
@@ -167,6 +183,7 @@ test('memory_store schema accepts numeric confidence as both number and JSON-enc
   assert.equal(asNumber.confidence, 0.9);
 
   const asString = memoryStoreInputSchema.parse({
+    ...STORE_IDENTITY,
     category: 'decision',
     confidence: '0.9',
     content: 'string form',
@@ -186,6 +203,7 @@ test('memory_store schema rejects non-numeric strings for confidence', () => {
 
 test('memory_store schema accepts integer fields (importance, supersedesId) as JSON-encoded strings', () => {
   const parsed = memoryStoreInputSchema.parse({
+    ...STORE_IDENTITY,
     category: 'decision',
     content: 'string-encoded integers',
     importance: '0.75',
@@ -366,6 +384,7 @@ test('memory_store schema accepts JSON-stringified array and object params', () 
   const parsed = memoryStoreInputSchema.parse({
     category: 'decision',
     content: 'Accept stringified structured params at the boundary.',
+    memoryKey: 'example/catalog:boundary-coercion',
     evidenceRefs: '["packages/ai-memory/src/tools/server.ts",{"issue":"#90005"}]',
     metadata: '{"path":"packages/ai-memory/src/tools/server.ts","shape":"boundary-coercion"}',
     tags: '["ai-memory","issue-596"]',

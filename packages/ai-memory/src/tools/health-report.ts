@@ -20,7 +20,6 @@ import {
   collectMemoryConsumptionMetrics,
   collectOrchestrationMetrics,
   collectRetentionMetrics,
-  computeConsolidationMetrics,
   computeUsefulnessMetrics,
 } from './health-report/data.js';
 import { renderReport } from './health-report/render.js';
@@ -96,7 +95,7 @@ export async function main(argv: string[] = process.argv.slice(2)) {
       windowEndIso,
       windowStartIso,
     });
-    const [mcpUsage, usefulness, consolidation, memoryConsumption] = await Promise.all([
+    const [mcpUsage, usefulness, memoryConsumption] = await Promise.all([
       collectMcpUsageMetrics({
         logFile: args.logFile,
         logFileSource: args.logFileSource,
@@ -105,7 +104,6 @@ export async function main(argv: string[] = process.argv.slice(2)) {
         windowStartMs: windowStart.getTime(),
       }),
       computeUsefulnessMetrics({ pool, windowEndIso, windowStartIso }),
-      computeConsolidationMetrics({ pool, windowEndIso, windowStartIso }),
       collectMemoryConsumptionMetrics({ pool, windowEndIso }),
     ]);
     const orchestration = collectOrchestrationMetrics({
@@ -136,7 +134,6 @@ export async function main(argv: string[] = process.argv.slice(2)) {
     });
 
     const report = {
-      consolidation,
       database: {
         ...database,
         databaseUrl,
@@ -271,7 +268,6 @@ export {
   buildWriteCalibrationMetricsFromRows,
   collectMcpUsageMetrics,
   computeBrierScore,
-  computeConsolidationMetrics,
   computeDecisionReversalRate,
   computeECE,
   computeRepeatedFixRate,
@@ -286,5 +282,5 @@ export { resolveDatabaseUrl };
 
 export { renderReport } from './health-report/render.js';
 
-export type { ConsolidationMetrics, HealthReport, McpUsageMetrics, UsefulnessMetrics } from './health-report/types.js';
+export type { HealthReport, McpUsageMetrics, UsefulnessMetrics } from './health-report/types.js';
 export { formatNumber, formatPercent, percent } from './health-report/utils.js';

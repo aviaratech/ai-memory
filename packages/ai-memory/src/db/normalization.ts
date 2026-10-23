@@ -1,10 +1,6 @@
 import { createDurableMemoryKey, createMemoryDedupeHash } from './hashing.js';
 import { normalizeMemoryType, resolveMemoryTypeFromCategory } from './memory-types.js';
-import {
-  assertDurableMemoryInputPolicy,
-  assertDurableMemoryProposalPolicy,
-  isStrictMetadataCategory,
-} from './quality-gates.js';
+import { assertDurableMemoryInputPolicy, isStrictMetadataCategory } from './quality-gates.js';
 import {
   MEMORY_STATUS_VALUES,
   PATCH_SNAPSHOT_ID_PREFIX,
@@ -13,16 +9,6 @@ import {
 } from './runtime.js';
 import { isRecord } from './type-guards.js';
 export { redactUrl, toIsoTimestamp, toJsonbParam } from './value-utils.js';
-
-export function addDaysToIso(baseIso: string, ttlDays: number) {
-  const baseDate = new Date(baseIso);
-  if (Number.isNaN(baseDate.valueOf())) {
-    throw new Error('Unable to compute expiresAt because base timestamp is invalid.');
-  }
-
-  baseDate.setUTCDate(baseDate.getUTCDate() + ttlDays);
-  return baseDate.toISOString();
-}
 
 export function isTimestampBefore(leftTimestamp: string, rightTimestamp: unknown) {
   const leftMs = Date.parse(leftTimestamp);
@@ -52,53 +38,6 @@ export function normalizeBoolean(value: unknown, fallback: boolean) {
   }
 
   return value;
-}
-
-export function normalizeDurableMemoryProposals(value: unknown) {
-  if (value === undefined || value === null) {
-    return [];
-  }
-
-  if (!Array.isArray(value)) {
-    throw new Error('x_durable_memories must be an array when provided.');
-  }
-
-  return value.map((proposal, index) => {
-    const proposalIndex = String(index);
-    if (!isRecord(proposal)) {
-      throw new Error(`x_durable_memories[${proposalIndex}] must be an object.`);
-    }
-
-    const normalized = {
-      category: normalizeRequiredText(proposal.category, `x_durable_memories[${proposalIndex}].category`),
-      confidence: normalizeConfidence(proposal.confidence),
-      content: normalizeRequiredText(proposal.content, `x_durable_memories[${proposalIndex}].content`),
-      evidenceRefs: normalizeEvidenceRefs(proposal.evidence_refs),
-      memoryKey: normalizeOptionalText(proposal.memory_key),
-      project: normalizeOptionalText(proposal.project),
-      sensitivity: normalizeEnumValue(proposal.sensitivity, {
-        allowedValues: SENSITIVITY_VALUES,
-        fallback: 'internal',
-        fieldName: `x_durable_memories[${proposalIndex}].sensitivity`,
-      }),
-      source: normalizeOptionalText(proposal.source),
-      sourceModel: proposal.source_model === null ? null : normalizeOptionalText(proposal.source_model),
-      sourceTimestamp: normalizeOptionalTimestamp(
-        proposal.source_timestamp,
-        `x_durable_memories[${proposalIndex}].source_timestamp`,
-      ),
-      status: normalizeEnumValue(proposal.status, {
-        allowedValues: MEMORY_STATUS_VALUES,
-        fallback: 'active',
-        fieldName: `x_durable_memories[${proposalIndex}].status`,
-      }),
-      tags: normalizeTags(proposal.tags),
-      ttlDays: normalizeOptionalInteger(proposal.ttl_days, `x_durable_memories[${proposalIndex}].ttl_days`),
-    };
-
-    assertDurableMemoryProposalPolicy(normalized, index);
-    return normalized;
-  });
 }
 
 export function normalizeEvidenceRefs(value: unknown) {

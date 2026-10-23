@@ -3,7 +3,6 @@ import { test } from 'vitest';
 
 import { createDurableMemoryKey, createMemoryDedupeHash } from './hashing.js';
 import {
-  normalizeDurableMemoryProposals,
   normalizeMemoryInput,
   normalizeProjectScope,
   readOptionalText,
@@ -111,52 +110,6 @@ test('normalizeMemoryInput preserves non-repo project identifiers without runtim
       tags: ['backfill', 'legacy'],
     }),
   );
-});
-
-test('normalizeDurableMemoryProposals preserves proposal project aliases', () => {
-  const normalized = normalizeDurableMemoryProposals([
-    {
-      category: 'decision',
-      content: 'Proposal project aliases should be preserved.',
-      project: 'CONSUMER-MONOREPO',
-    },
-  ]);
-
-  assert.equal(normalized.length, 1);
-  assert.ok(normalized[0] !== undefined);
-  assert.equal(normalized[0].project, 'CONSUMER-MONOREPO');
-});
-
-test('normalizeDurableMemoryProposals preserves non-legacy project identifiers', () => {
-  const normalized = normalizeDurableMemoryProposals([
-    {
-      category: 'decision',
-      content: 'Non-legacy project identifiers are preserved.',
-      project: 'aviaratech/mobile',
-    },
-  ]);
-
-  assert.equal(normalized.length, 1);
-  assert.ok(normalized[0] !== undefined);
-  assert.equal(normalized[0].project, 'aviaratech/mobile');
-});
-
-test('normalizeDurableMemoryProposals preserves an explicit harness source', () => {
-  const normalized = normalizeDurableMemoryProposals([
-    {
-      category: 'session-summary',
-      confidence: 0.4,
-      content: 'The durable proposal retains its originating harness source.',
-      source: 'grok-session-end',
-      source_timestamp: '2026-09-08T11:01:00.000Z',
-      ttl_days: 7,
-    },
-  ]);
-
-  const [proposal] = normalized;
-  assert.ok(proposal !== undefined);
-  assert.equal(proposal.source, 'grok-session-end');
-  assert.equal(proposal.sourceTimestamp, '2026-09-08T11:01:00.000Z');
 });
 
 test('normalizeMemoryInput infers episodic memoryType for root-cause category', () => {

@@ -139,20 +139,19 @@ Search→get attribution is unknown unless an existing session identity proves t
 
 - `summary` is required and must be non-empty.
 - Brief summaries now trigger non-blocking continuity warnings so handoffs include enough implementation context.
-- Durable promotions:
-  - `decisions` and `rootCauses` are promoted to durable actionable memories.
-  - `summary` is recorded as a checkpoint/session-summary signal for continuity/searchability.
+- Session state only: `memory_flush` writes no durable memories. Store reusable decisions and root causes separately with `memory_store`.
 - Continuity snapshot extensions:
   - `activeGoal` is written as `x_active_goal`.
+  - `decisions` and `rootCauses` are written as `x_decisions` and `x_root_causes`.
   - `stateModel` is written as `x_state_model`.
   - `envModel` is written as `x_env_model`.
 - Agent-writer calls (`agent`, `claude-code`, `codex`, or builder/reviewer/retro identities) require non-empty `nextActions`. Missing `openQuestions` or assumptions produce advisory quality warnings; leave them empty when none exist instead of inventing content. Compressed narrative text also returns an advisory without rewriting the payload. Manual flushes and hook/auto-ingest sources remain backward-compatible and may provide sparse continuity fields.
 - Continuity fields `nextActions`, `contextNeeded`, `openQuestions`, `stateModel`, and `envModel` are expected in agent-authored flush payloads. Missing rich continuity fields can still generate named quality warnings in the flush response -- agents should treat these warnings as actionable, not informational.
 - **`stateModel` is especially important**: it seeds `x_state_model` for resume continuity. Missing state model data is visible in snapshot continuity adoption, while launch-gate health now tracks agent-writer payload completeness from `memory_flush` tool telemetry (target: >= 95%).
 - `stateModel` v2 contract: `strategy_confidence` must be `"high"`, `"medium"`, or `"low"` (string literals). If missing or invalid, it is normalized to `"medium"` with a named warning in the flush response. New temporal fields: `updated_at` (ISO timestamp) and `confidence_history` (array of `{value, reason}` entries) are optional. `envModel` gains `probed_at` (ISO timestamp) for staleness tracking.
-- After the core transaction commits, the existing reflection stage runs and then refreshes the bounded project continuity pack available for explicit background reads. Explicit `lead`, `outcome`, and `task` values also refresh matching scoped packs; omit them rather than guessing identity. This keeps long-term cross-chat continuity on the existing flush/reflection path instead of adding a separate reflector.
-- `memory_flush` response includes `warnings`, `reflection`/`consolidation`, and `continuityPack` metadata for operational visibility.
-- Automatic Codex/Claude session-end hooks and the supported Grok Build `SessionEnd` export adapter may extract bounded handoff context. They retain source/session/turn identity and evidence references, but never raw unfiltered logs or secrets. The Grok adapter requires a host that invokes `SessionEnd`; it does not install or mutate a Grok hook. Derived snapshot fields are tagged with `x_*_provenance: "derived"`; values carried forward from an explicit flush are tagged `"carry-forward"`. Derived/carry-forward fields improve continuity but do not satisfy the agent-writer `memory_flush` gate or replace an explicit flush.
+- After the snapshot commits, ai-memory refreshes the bounded project continuity pack available for explicit background reads. Explicit `lead`, `outcome`, and `task` values also refresh matching scoped packs; omit them rather than guessing identity.
+- `memory_flush` response includes `warnings` and `continuityPack` metadata for operational visibility. A flush with `decisions` or `rootCauses` returns a reminder to store reusable knowledge with `memory_store`.
+- Automatic Codex/Claude session-end hooks and the supported Grok Build `SessionEnd` export adapter may extract bounded handoff context. They record a session snapshot with source/session identity and evidence references, never durable memories, raw unfiltered logs or secrets. The Grok adapter requires a host that invokes `SessionEnd`; it does not install or mutate a Grok hook. Derived snapshot fields are tagged with `x_*_provenance: "derived"`; values carried forward from an explicit flush are tagged `"carry-forward"`. Derived/carry-forward fields improve continuity but do not satisfy the agent-writer `memory_flush` gate or replace an explicit flush.
 
 ## Read Path (Required)
 
@@ -204,11 +203,14 @@ The response includes `resolvedVia: "direct" | "fallback" | "not_found"` so call
 
 ## Write Path (Required)
 
-- Store durable outcomes with `memory_store` when they are likely to matter in future sessions.
-- Durable writes must include a non-empty `category`.
-- Confidence policy:
-  - `session-summary` memories are intentionally low-confidence and ephemeral.
-  - Non-`session-summary` durable memories should be higher confidence.
+- Store durable outcomes with `memory_store` when they are likely to matter in future sessions. It is the only durable write path.
+- Every durable write passes the write gate, or it is rejected:
+  - a non-empty `category` and `confidence >= 0.5`;
+  - a stable `memoryKey` (see the convention below);
+  - at least one auditable `evidenceRefs` entry: a repository path, a URL, or an object with `path`, `url`, `issue` or `pr`;
+  - plain sentences of at least four words, with no run of more than 30 letters without spaces;
+  - no secrets, tokens, passwords, email addresses or home-folder paths in the content, key, tags or evidence.
+- `session-summary` memories are not accepted; session state belongs in `memory_flush`.
 - Preferred write targets:
   - Architecture decisions and tradeoffs.
   - Team conventions and stable patterns.
@@ -235,22 +237,15 @@ Every memory category belongs to one of three tiers that determine query-time ra
 
 **Canonical source:** `packages/ai-memory/src/db/taxonomy.ts`
 
-### Strict Metadata Categories
+### Required Metadata
 
-The following categories enforce strict metadata requirements at write time:
+Every `memory_store` write **requires**:
 
-- `convention`
-- `architecture`
-- `preference`
-- `root-cause`
-
-For these categories, `memory_store` **requires**:
-
-| Field          | Required | Purpose                                                          |
-| -------------- | -------- | ---------------------------------------------------------------- |
-| `memoryKey`    | Yes      | Stable idempotency key for upsert; prevents duplicates           |
-| `confidence`   | Yes      | Must be >= 0.5 (enforced for all non-session-summary categories) |
-| `evidenceRefs` | Yes      | At least one file path, PR URL, or issue link for auditability   |
+| Field          | Required | Purpose                                                        |
+| -------------- | -------- | -------------------------------------------------------------- |
+| `memoryKey`    | Yes      | Stable idempotency key for upsert; prevents duplicates         |
+| `confidence`   | Yes      | Must be >= 0.5                                                 |
+| `evidenceRefs` | Yes      | At least one file path, PR URL, or issue link for auditability |
 
 ### Canonical Project Identifier
 
@@ -400,7 +395,7 @@ Builder and implementation sessions often produce durable knowledge that review 
 
 ## Retention Awareness
 
-- `session-summary` memories require `expiresAt` at write time (enforced by quality gate). Default TTL: 14 days (configurable via `AI_MEMORY_RETENTION_SESSION_SUMMARY_DAYS` env var or `sessionSummaryTtlDays` input).
+- Durable memories come only from `memory_store`; session summaries are not stored as memories.
 - Canonical durable categories (`convention`, `architecture`, `preference`, `root-cause`, `decision`, `bugfix`) are non-TTL by default. Their lifecycle is managed via `active`/`superseded`/`archived` status.
 - Transient session data (`ai_sessions`, snapshots, events, context packs, deltas) is subject to a 90-day retention window.
 - For the full retention matrix and purge semantics, see [AI Memory Retention Policy](ai-memory-retention-policy.md).
@@ -464,14 +459,13 @@ Include: key decisions made, root causes found, what should happen next.
 }
 ```
 
-The `summary` is stored as a `checkpoint` memory (searchable but not in recall). `decisions` and `rootCauses` are promoted to durable actionable-tier memories. `nextActions`, `contextNeeded`, and `openQuestions` populate the session snapshot for `memory_session_resume`.
+The flush writes the session snapshot for `memory_session_resume` and the continuity pack. `summary`, `decisions`, `rootCauses`, `nextActions`, `contextNeeded`, and `openQuestions` are kept there; none of them becomes a durable memory.
 
 ## Runtime Notes
 
 - Supported, enabled Claude Code and Codex hooks provide bounded startup continuity, one first-prompt task retrieval, derived PreCompact checkpoints and session-end ingestion. Native host support and activation must be established separately; explicit tools remain available.
 - Existing Codex wrapper/post-session ingestion can continue alongside these hooks. Source and synthetic archive verification do not install host launchers or establish operator-use evidence.
-- Automatic durable-memory promotion is available when `AI_MEMORY_AUTO_DURABLE_PROMOTION=1` is configured for the relevant ingestion path. When Claude's compaction summary is available, it is used as the primary content source (higher signal, 1200-char limit, confidence 0.45). Without a compaction summary, the last assistant message is used (700-char limit, confidence 0.35).
-- Auto-promoted memories are `session-summary` category with TTL (default 14 days), not long-lived canonical decisions. Deliberate `memory_store` writes are still required for durable knowledge.
+- Session-end ingestion never promotes sessions to durable memories. The retired `AI_MEMORY_AUTO_DURABLE_PROMOTION` setting has no effect; deliberate `memory_store` writes are required for durable knowledge.
 - Write-time similarity detection auto-supersedes near-duplicate entries for all actionable categories (`architecture`, `bugfix`, `convention`, `decision`, `preference`, `root-cause`).
 
 ## Contract Documentation

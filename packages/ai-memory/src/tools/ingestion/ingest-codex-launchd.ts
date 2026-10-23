@@ -203,7 +203,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await runIngestPipeline(
+  await runIngestPipeline(
     {
       agent: 'codex-cli',
       assistantMessage: summary.lastAssistantMessage,
@@ -253,7 +253,6 @@ async function main(): Promise<void> {
   });
 
   emitResult({
-    memoriesStored: result.memoriesStored,
     repoId,
     sessionFile,
     sessionId,

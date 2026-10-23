@@ -200,30 +200,26 @@ const memoryStoreEvidenceRefSchema = z.union([z.string().min(1), z.record(z.stri
 
 export const memoryStoreInputSchema = z.object({
   agent: z.string().min(1).optional().describe('Agent identifier writing memory.'),
-  category: z.string().min(1).describe('Memory category (required): decision, convention, bugfix, preference, etc.'),
-  confidence: acceptJsonEncoded(z.number().min(0).max(1).optional()).describe(
-    'Confidence score from 0 to 1. Policy gate: non-session-summary >= 0.5, session-summary <= 0.5.',
-  ),
-  content: z.string().min(1).describe('Memory content to persist.'),
-  evidenceRefs: acceptJsonEncoded(z.array(memoryStoreEvidenceRefSchema).optional()).describe(
-    'Evidence references for auditability. REQUIRED for architecture, convention, methodology, preference, and root-cause categories. Include at least one file path, PR URL, or issue link.',
-  ),
-  expiresAt: z
+  category: z
     .string()
     .min(1)
-    .optional()
-    .describe('Optional expiration timestamp (ISO-8601 recommended). Required for session-summary durable memories.'),
+    .describe('Memory category (required): decision, convention, architecture, root-cause, preference, etc.'),
+  confidence: acceptJsonEncoded(z.number().min(0).max(1).optional()).describe(
+    'Confidence score from 0.5 to 1 (durable memories need at least 0.5).',
+  ),
+  content: z.string().min(1).describe('Plain sentences to persist. No secrets, personal data or compressed shorthand.'),
+  evidenceRefs: acceptJsonEncoded(z.array(memoryStoreEvidenceRefSchema).min(1)).describe(
+    'Required. At least one auditable reference: a repository path, a URL, or an object with path, url, issue or pr.',
+  ),
+  expiresAt: z.string().min(1).optional().describe('Optional expiration timestamp (ISO-8601 recommended).'),
   importance: acceptJsonEncoded(z.number().min(0).max(1).optional()).describe(
     'Optional importance override from 0 to 1. When omitted, ai-memory computes initial importance from confidence + taxonomy tier.',
   ),
   memoryKey: z
     .string()
     .min(1)
-    .optional()
     .describe(
-      'Stable idempotency key for upsert (e.g. "org/repo:document-format"). ' +
-        'Auto-derived from content hash for strict categories (architecture, convention, preference, root-cause) when omitted. ' +
-        'Explicit keys provide better cross-edit upsert semantics; auto-derived keys upsert only when content is identical.',
+      'Required stable key (e.g. "owner/repo:document-format"). A later write with the same key updates this memory.',
     ),
   memoryType: z
     .enum(MEMORY_TYPE_VALUES)
@@ -259,7 +255,9 @@ server.registerTool(
   {
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
     description:
-      'Store a durable memory for cross-session, cross-agent recall. Do not store secrets, PHI, or raw logs. Category-specific requirements: session-summary requires expiresAt and confidence <= 0.5; architecture, convention, methodology, preference, and root-cause require evidenceRefs and memoryKey.',
+      'Store durable, reusable knowledge for cross-session, cross-agent recall: decisions, standing rules, conventions, hard-to-re-derive facts, root causes and pointers. ' +
+      'Every write needs a stable memoryKey, at least one evidenceRef and plain sentences, and must not contain secrets, personal data, email addresses or home-folder paths. ' +
+      'Session state and summaries belong in memory_flush.',
     inputSchema: memoryStoreInputSchema.shape,
   },
   (args: unknown) =>
@@ -302,12 +300,12 @@ const memoryFlushInputShape = {
     .min(1)
     .optional()
     .describe('Optional active goal text to link this flush snapshot to the current goal context.'),
-  agent: z.string().min(1).optional().describe('Optional agent identifier for promoted durable memories.'),
+  agent: z.string().min(1).optional().describe('Optional agent identifier recorded with the checkpoint.'),
   contextNeeded: acceptJsonEncoded(z.array(z.string().min(1)).optional()).describe(
     'Information or operator context the next session needs to proceed. Stored in session snapshot for resume.',
   ),
   decisions: acceptJsonEncoded(z.array(z.string().min(1)).optional()).describe(
-    'Architecture or scope decisions made this session. Stored as durable decision memories.',
+    'Decisions made this session. Kept with the session checkpoint and continuity pack, not as durable memories; use memory_store for reusable knowledge.',
   ),
   detectedSource: z
     .string()
@@ -343,7 +341,7 @@ const memoryFlushInputShape = {
     .optional()
     .describe('Verified owner/repository identity; resolves its project basename to the repository scope.'),
   rootCauses: acceptJsonEncoded(z.array(z.string().min(1)).optional()).describe(
-    'Bugs diagnosed or root causes identified. Stored as durable root-cause memories.',
+    'Root causes identified this session. Kept with the session checkpoint, not as durable memories; use memory_store for reusable knowledge.',
   ),
   sessionId: z
     .string()
@@ -352,7 +350,7 @@ const memoryFlushInputShape = {
     .describe(
       'Actual producing host session identity. If omitted, a generated unattested identity is returned; task remains a separate recovery scope.',
     ),
-  source: z.string().min(1).optional().describe('Optional source identifier for promoted durable memories.'),
+  source: z.string().min(1).optional().describe('Optional source identifier recorded with the checkpoint.'),
   stateModel: acceptJsonEncoded(agentStateModelInputSchema.optional()).describe(
     'Optional agent state model (see AgentStateModel in contracts/types.ts). ' +
       'Fields: strategy_confidence ("high"|"medium"|"low", normalized to "medium" if missing), ' +
@@ -388,10 +386,9 @@ server.registerTool(
   {
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
     description:
-      'Save critical session context before compaction or handoff. ' +
-      'Stores a checkpoint summary (searchable, not in recall), promotes decisions/root-causes to durable memory, ' +
-      'updates the session snapshot with next_actions, context_needed, and open_questions for session resume, and when stateModel is present ' +
-      'generates reflective memories with a returned reflections count.',
+      'Save session state before compaction or handoff. ' +
+      'Updates the session snapshot (summary, decisions, root causes, next_actions, context_needed, open_questions, stateModel, envModel) for session resume ' +
+      'and refreshes the bounded continuity pack. It writes no durable memories; store reusable knowledge with memory_store.',
     inputSchema: memoryFlushInputShape,
   },
   (args: unknown) => {
@@ -704,7 +701,7 @@ server.registerTool(
   {
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
     description:
-      'Validate and ingest a full memory_delta@0.1 payload, including append events and optional durable memory proposals.',
+      'Validate and ingest a full memory_delta@0.1 payload with its snapshot and append events. Durable memories are written only with memory_store.',
     inputSchema: memoryIngestDeltaInputSchema.shape,
   },
   (args: unknown) =>
@@ -1104,18 +1101,6 @@ export function summarizeToolPayload(response: ToolResult, toolName: ToolName): 
       payloadRecord,
       summary,
       summaryKey: 'events_ingested',
-    });
-    appendNumericSummaryValue({
-      payloadKey: 'durableMemoriesStored',
-      payloadRecord,
-      summary,
-      summaryKey: 'durable_memories_stored',
-    });
-    appendNumericSummaryValue({
-      payloadKey: 'durableMemoriesDeduped',
-      payloadRecord,
-      summary,
-      summaryKey: 'durable_memories_deduped',
     });
     appendTrimmedSummaryValue({
       payloadKey: 'sessionId',

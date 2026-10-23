@@ -4,7 +4,6 @@ import {
   DEFAULT_SIMILARITY_THRESHOLD,
   normalizeFingerprintText,
   SIMILARITY_CATEGORIES,
-  createFlushSessionDecisionDedupeHash,
 } from './hashing.js';
 import { computeInitialImportance, detectReviewerDecisionImportance } from './importance.js';
 import {
@@ -70,11 +69,7 @@ const SIMILARITY_CANDIDATES_SQL = `
   LIMIT 50
 `;
 
-export async function storeMemoryWithClient(
-  client: DatabaseClient,
-  input: unknown,
-  storeMode?: 'flush-session-decision',
-): Promise<StoredMemoryRecord> {
+export async function storeMemoryWithClient(client: DatabaseClient, input: unknown): Promise<StoredMemoryRecord> {
   const sourceInput = remapApprovedReviewerDecisionToAuditLogInput(input);
   let memory = normalizeMemoryInput(sourceInput);
   if (memory.sessionId !== undefined && !memory.project?.includes('/')) {
@@ -89,18 +84,6 @@ export async function storeMemoryWithClient(
       }
       memory = normalizeMemoryInput({ ...sourceInput, project });
     }
-  }
-  if (storeMode === 'flush-session-decision') {
-    if (
-      memory.category !== 'decision' ||
-      memory.memoryType !== 'episodic' ||
-      memory.memoryKey !== undefined ||
-      memory.sessionId === undefined ||
-      memory.expiresAt === undefined
-    ) {
-      throw new Error('Scoped flush decisions require an unkeyed episodic decision, sessionId and explicit expiresAt.');
-    }
-    memory.dedupeHash = createFlushSessionDecisionDedupeHash(memory.dedupeHash, memory.sessionId);
   }
   const calibration = await computeWriteCalibration(client, memory);
   const calibratedMemory: CalibrationAwareMemoryInput = {
@@ -140,8 +123,7 @@ export async function storeMemoryWithClient(
     ) as StoredMemoryRecord;
   }
 
-  const similarityScope =
-    storeMode === 'flush-session-decision' ? undefined : buildSimilarityScopeKey(memoryWithImportance);
+  const similarityScope = buildSimilarityScopeKey(memoryWithImportance);
   if (similarityScope !== undefined) {
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [similarityScope]);
 
@@ -184,7 +166,7 @@ export async function storeMemoryWithClient(
 
   const existingResult = await client.query<MemoryIdRow>(
     `
-      SELECT ${storeMode === 'flush-session-decision' ? '*' : 'id'}
+      SELECT id
       FROM ai_memory_entries
       WHERE memory_key IS NULL AND dedupe_hash = $1
       ORDER BY updated_at DESC, id DESC
@@ -197,13 +179,6 @@ export async function storeMemoryWithClient(
   const existingMemoryIdRaw = existingResult.rows[0]?.id;
   const existingMemoryId = Number(existingMemoryIdRaw);
   if (Number.isInteger(existingMemoryId) && existingMemoryId > 0) {
-    if (storeMode === 'flush-session-decision') {
-      // A replay must not extend expiry, reactivate retired state or rewrite provenance.
-      return withCalibration(
-        withWriteDisposition(toMemoryRecord(existingResult.rows[0]), 'dedupe_update'),
-        calibration,
-      ) as StoredMemoryRecord;
-    }
     const result = await client.query(memoryUpdateByIdSql, [
       ...buildMemoryWriteParams(memoryWithImportance, hasEmbeddingColumn),
       existingMemoryId,

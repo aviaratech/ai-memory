@@ -31,43 +31,6 @@ export interface CategoryCountMetric {
   count: number;
 }
 
-export interface ConsolidationDailyMetric {
-  avgLatencyMs: number;
-  contradictionsFlagged: number;
-  date: string;
-  dedupes: number;
-  none: number;
-  pairsClassified: number;
-  pairsExamined: number;
-  refines: number;
-  sessions: number;
-  supersedes: number;
-}
-
-export interface ConsolidationMetrics {
-  contradictionRatePct: number;
-  daily: ConsolidationDailyMetric[];
-  noActionRatePct: number;
-  topDedupedMemoryKeys: ConsolidationTopMemoryKeyMetric[];
-  totals: ConsolidationTotalsMetric;
-}
-
-export interface ConsolidationTopMemoryKeyMetric {
-  count: number;
-  memoryKey: string;
-}
-
-export interface ConsolidationTotalsMetric {
-  contradictionsFlagged: number;
-  dedupes: number;
-  none: number;
-  pairsClassified: number;
-  pairsExamined: number;
-  refines: number;
-  sessions: number;
-  supersedes: number;
-}
-
 export interface ContinuityAdoptionMetrics {
   agentWriterCompliancePct: number;
   agentWriterCompliant: number;
@@ -242,7 +205,6 @@ export interface FailureWindowsMetric {
 
 export interface HealthReport {
   memoryConsumption: MemoryConsumptionMetrics;
-  consolidation?: ConsolidationMetrics | undefined;
   database: ReportDatabaseMetrics;
   generatedAt: string;
   launchGates: LaunchGatesReport;

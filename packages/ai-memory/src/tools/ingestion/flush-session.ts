@@ -1,4 +1,5 @@
 import {
+  findCompressedWord,
   getSessionProject,
   isRecord,
   normalizeProjectScope,
@@ -10,19 +11,13 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import {
-  commitCoreFlushWrites,
-  type ConsolidationRunMetrics,
+  commitFlushCheckpoint,
   createDefaultFlushSessionCoreDependencies,
   FLUSH_SOURCE,
   type FlushSessionCoreDependencies,
   logContinuityWarnings,
-  prepareCoreWrites,
-  runConsolidation,
-  type StoredMemoryCalibration,
-  type StoredMemoryInfo,
 } from './flush-session-core.js';
 import { type ContinuityPackRefreshResult, refreshContinuityPackFromFlush } from './continuity-pack.js';
-import { runReflection } from './reflection.js';
 
 export interface ParsedFlushInput {
   activeGoal: string | undefined;
@@ -45,19 +40,9 @@ export interface ParsedFlushInput {
   task: string | undefined;
 }
 
-interface FlushCalibrationResult extends Omit<StoredMemoryCalibration, 'category' | 'memoryId'> {
-  entries: StoredMemoryCalibration[];
-}
-
 interface FlushResult {
-  calibration?: FlushCalibrationResult | undefined;
-  consolidation?: ConsolidationRunMetrics | undefined;
   continuityPack?: ContinuityPackRefreshResult | undefined;
   flushed: true;
-  memoriesStored: number;
-  reflections?: {
-    count: number;
-  };
   sessionId: string;
   warnings?: string[];
 }
@@ -65,17 +50,18 @@ interface FlushResult {
 interface FlushSessionDependencies extends FlushSessionCoreDependencies {
   getSessionProject: typeof getSessionProject;
   refreshContinuityPack: typeof refreshContinuityPackFromFlush;
-  runReflection: typeof runReflection;
   uuid: () => string;
 }
 
 const MIN_CONTINUITY_SUMMARY_CHARS = 120;
+const DURABLE_KNOWLEDGE_NOTICE =
+  'decisions and rootCauses are saved with this session checkpoint only. ' +
+  'Store reusable knowledge with memory_store, including a memoryKey and evidenceRefs.';
 
 const DEFAULT_DEPENDENCIES: FlushSessionDependencies = {
   ...createDefaultFlushSessionCoreDependencies(),
   getSessionProject,
   refreshContinuityPack: refreshContinuityPackFromFlush,
-  runReflection,
   uuid: () => randomUUID(),
 };
 
@@ -102,6 +88,8 @@ export function buildFlushSnapshotValue(
     },
     snapshot_id: `${FLUSH_SOURCE}-snapshot-${sessionId}-${Date.now().toString()}`,
     ...(parsed.activeGoal !== undefined ? { x_active_goal: parsed.activeGoal } : {}),
+    ...(parsed.decisions.length > 0 ? { x_decisions: parsed.decisions } : {}),
+    ...(parsed.rootCauses.length > 0 ? { x_root_causes: parsed.rootCauses } : {}),
     ...(parsed.stateModel !== undefined
       ? { x_state_model: parsed.stateModel, x_state_model_provenance: 'agent-authored' }
       : {}),
@@ -152,16 +140,7 @@ export function collectContinuityQualityWarnings(parsed: ParsedFlushInput): stri
     ...parsed.contextNeeded,
     ...readStringArray(parsed.stateModel?.assumptions),
   ];
-  const hasCompressedText = narrative.some(text =>
-    text.split(/\s+/u).some(token => {
-      if (token.includes('/') || token.includes('\\') || token.includes('@') || token.includes('`')) return false;
-      return token.split(/[^\p{L}\p{N}_.+$=-]+/u).some(part => {
-        const word = part.replace(/^\p{P}+|\p{P}+$/gu, '');
-        return /^\p{L}{31,}$/u.test(word) && !/\p{Ll}\p{Lu}/u.test(word) && !/^[a-fA-F]{32,}$/u.test(word);
-      });
-    }),
-  );
-  if (hasCompressedText) {
+  if (narrative.some(text => findCompressedWord(text) !== undefined)) {
     warnings.push(
       'Continuity quality warning: narrative may contain compressed text (a word over 30 letters). ' +
         'Preserve spaces between words for reliable retrieval.',
@@ -201,62 +180,29 @@ export async function flushSession(
     warnings: continuityWarnings,
   });
 
-  const preparedCoreWrites = await prepareCoreWrites({
-    dependencies,
-    parsed,
-    sessionId: resolvedSessionId,
-  });
-  const coreWrites = await commitCoreFlushWrites({
+  await commitFlushCheckpoint({
     buildFlushSnapshotValue,
     dependencies,
     parsed,
-    preparedCoreWrites,
     sessionId: resolvedSessionId,
   });
 
-  const coreStored = [...coreWrites.actionableMemories];
-  let memoriesStored = coreWrites.totalStored;
-  const postCommit = await runPostCommitStages({
-    coreStored,
+  const continuityPack = await refreshContinuityPackAfterCommit({
     dependencies,
     parsed,
     sessionId: resolvedSessionId,
   });
-  const responseWarnings = [...continuityWarnings, ...postCommit.warnings];
-
-  memoriesStored += postCommit.reflection.storedMemories.length;
+  const responseWarnings = [
+    ...continuityWarnings,
+    ...(parsed.decisions.length > 0 || parsed.rootCauses.length > 0 ? [DURABLE_KNOWLEDGE_NOTICE] : []),
+    ...(continuityPack.status === 'error' ? [`Continuity pack refresh warning: ${continuityPack.message}`] : []),
+  ];
 
   return {
-    ...(coreWrites.calibrations.length > 0
-      ? { calibration: buildFlushCalibrationResult(coreWrites.calibrations) }
-      : {}),
-    ...(postCommit.consolidation !== undefined ? { consolidation: postCommit.consolidation } : {}),
-    continuityPack: postCommit.continuityPack,
-    ...(postCommit.reflection.storedMemories.length > 0
-      ? { reflections: { count: postCommit.reflection.storedMemories.length } }
-      : {}),
+    continuityPack,
     flushed: true,
-    memoriesStored,
     sessionId: resolvedSessionId,
     ...(responseWarnings.length > 0 ? { warnings: responseWarnings } : {}),
-  };
-}
-
-function buildFlushCalibrationResult(entries: StoredMemoryCalibration[]): FlushCalibrationResult {
-  const representative = [...entries].sort((left, right) => right.priorMemoryCount - left.priorMemoryCount)[0];
-  if (representative === undefined) {
-    throw new Error('Cannot build memory_flush calibration result without entries.');
-  }
-
-  return {
-    calibratedConfidence: representative.calibratedConfidence,
-    declaredConfidence: representative.declaredConfidence,
-    entries,
-    meanDeclaredConfidence: representative.meanDeclaredConfidence,
-    priorMemoryCount: representative.priorMemoryCount,
-    reversalRate: representative.reversalRate,
-    scope: representative.scope,
-    window: representative.window,
   };
 }
 
@@ -391,13 +337,11 @@ function normalizeStateModelConfidence(raw: Record<string, unknown>): {
 async function refreshContinuityPackAfterCommit(input: {
   dependencies: FlushSessionDependencies;
   parsed: ParsedFlushInput;
-  reflectionCount: number;
   sessionId: string;
 }): Promise<ContinuityPackRefreshResult> {
   try {
     return await input.dependencies.refreshContinuityPack({
       parsed: input.parsed,
-      reflectionCount: input.reflectionCount,
       sessionId: input.sessionId,
     });
   } catch (error: unknown) {
@@ -412,40 +356,4 @@ async function refreshContinuityPackAfterCommit(input: {
       status: 'error',
     };
   }
-}
-
-async function runPostCommitStages(input: {
-  coreStored: StoredMemoryInfo[];
-  dependencies: FlushSessionDependencies;
-  parsed: ParsedFlushInput;
-  sessionId: string;
-}) {
-  const reflection = await input.dependencies.runReflection({
-    agent: input.parsed.agent,
-    decisions: input.parsed.decisions,
-    project: input.parsed.project,
-    rootCauses: input.parsed.rootCauses,
-    sessionId: input.sessionId,
-    source: input.parsed.source,
-    stateModel: input.parsed.stateModel,
-    summary: input.parsed.summary,
-  });
-
-  const continuityPack = await refreshContinuityPackAfterCommit({
-    dependencies: input.dependencies,
-    parsed: input.parsed,
-    reflectionCount: reflection.storedMemories.length,
-    sessionId: input.sessionId,
-  });
-  const warnings =
-    continuityPack.status === 'error' ? [`Continuity pack refresh warning: ${continuityPack.message}`] : [];
-
-  input.coreStored.push(...reflection.storedMemories);
-  const consolidation = await runConsolidation({
-    dependencies: input.dependencies,
-    memories: input.coreStored,
-    sessionId: input.sessionId,
-  });
-
-  return { consolidation, continuityPack, reflection, warnings };
 }

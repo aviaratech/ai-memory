@@ -205,21 +205,6 @@ export interface ContextPackV01 extends ExtensionFields {
 
 export type ContinuityFieldProvenance = (typeof CONTINUITY_FIELD_PROVENANCE_VALUES)[number];
 
-export interface DurableMemoryProposal {
-  category?: string;
-  confidence?: number;
-  content: string;
-  evidence_refs?: JsonValue[];
-  memory_key?: string;
-  project?: string;
-  sensitivity?: Sensitivity;
-  source?: string;
-  source_timestamp?: string;
-  status?: MemoryStatus;
-  tags?: string[];
-  ttl_days?: number;
-}
-
 export interface EnvironmentModel {
   blocked_by?: string[];
   branch?: string;
@@ -255,10 +240,6 @@ export interface MemoryDeltaEvent extends ExtensionFields {
   type: SessionEventType;
 }
 
-// x_durable_memories is added via intersection because DurableMemoryProposal's
-// optional properties include undefined under exactOptionalPropertyTypes: false,
-// making it structurally incompatible with ExtensionFields' JsonValue constraint.
-// Deferred until exactOptionalPropertyTypes is enabled (see tsconfig.json).
 export type MemoryDeltaV01 = ExtensionFields & {
   append_events?: MemoryDeltaEvent[];
   artifacts?: MemoryArtifact[];
@@ -286,7 +267,6 @@ export type MemoryDeltaV01 = ExtensionFields & {
     user_id?: string;
   };
   workflow?: WorkflowRefV01;
-  x_durable_memories?: DurableMemoryProposal[];
 };
 
 export type MemoryStatus = 'active' | 'archived' | 'contested' | 'expired' | 'superseded';

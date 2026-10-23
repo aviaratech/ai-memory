@@ -24,10 +24,6 @@ import type {
   CalibrationActualOutcome,
   CalibrationSignal,
   CategoryCountMetric,
-  ConsolidationDailyMetric,
-  ConsolidationMetrics,
-  ConsolidationTopMemoryKeyMetric,
-  ConsolidationTotalsMetric,
   ContinuityChannelMetrics,
   DecisionReversalMetric,
   ECEResult,
@@ -202,15 +198,6 @@ export async function collectMemoryConsumptionMetrics(input: {
   } catch {
     return buildMemoryConsumptionMetrics(undefined, input.windowEndIso);
   }
-}
-
-interface ConsolidationDailyAccumulator extends ConsolidationDailyMetric {
-  latencyTotalMs: number;
-}
-
-interface ConsolidationEventRow extends JsonRecord {
-  created_at: unknown;
-  payload_json: unknown;
 }
 
 interface WriteCalibrationRow extends JsonRecord {
@@ -1491,105 +1478,6 @@ export function computeBrierScore(signals: CalibrationSignal[]): null | number {
   return Number((total / signals.length).toFixed(4));
 }
 
-export async function computeConsolidationMetrics({
-  pool,
-  windowEndIso,
-  windowStartIso,
-}: {
-  pool: Pool;
-  windowEndIso: string;
-  windowStartIso: string;
-}): Promise<ConsolidationMetrics> {
-  const rows = await queryRows<ConsolidationEventRow>(pool, {
-    params: [windowStartIso, windowEndIso],
-    sql: `
-      SELECT created_at::text AS created_at, payload_json
-      FROM ai_session_events
-      WHERE event_type = 'consolidation_metrics'
-        AND created_at >= $1::timestamptz
-        AND created_at <= $2::timestamptz
-      ORDER BY created_at ASC
-    `,
-  });
-
-  const totals = createEmptyConsolidationTotals();
-  const dailyByDate = new Map<string, ConsolidationDailyAccumulator>();
-  const dedupedKeyCounts = new Map<string, number>();
-
-  for (const row of rows) {
-    const createdAtMs = parseTimestampMs(row.created_at);
-    const payload = parseJsonObject(row.payload_json);
-    if (createdAtMs === null || payload === null) {
-      continue;
-    }
-
-    const date = new Date(createdAtMs).toISOString().slice(0, 10);
-    const daily = getDailyConsolidationAccumulator(dailyByDate, date);
-    const actions = parseConsolidationActionCounts(payload.actions);
-    const latencyMs = toNumber(payload.latency_ms);
-    const pairsExamined = toNumber(payload.pairs_examined);
-    const pairsClassified = toNumber(payload.pairs_classified);
-    const contradictionsFlagged = toNumber(payload.contradictions_flagged);
-
-    addConsolidationCounts(totals, {
-      contradictionsFlagged,
-      dedupes: actions.dedupes,
-      none: actions.none,
-      pairsClassified,
-      pairsExamined,
-      refines: actions.refines,
-      sessions: 1,
-      supersedes: actions.supersedes,
-    });
-    addConsolidationCounts(daily, {
-      contradictionsFlagged,
-      dedupes: actions.dedupes,
-      none: actions.none,
-      pairsClassified,
-      pairsExamined,
-      refines: actions.refines,
-      sessions: 1,
-      supersedes: actions.supersedes,
-    });
-    daily.latencyTotalMs += latencyMs;
-    daily.avgLatencyMs = daily.sessions > 0 ? Math.round(daily.latencyTotalMs / daily.sessions) : 0;
-
-    collectDedupedMemoryKeys(payload.outcomes, dedupedKeyCounts);
-  }
-
-  const daily = [...dailyByDate.values()]
-    .map(metric => ({
-      avgLatencyMs: metric.avgLatencyMs,
-      contradictionsFlagged: metric.contradictionsFlagged,
-      date: metric.date,
-      dedupes: metric.dedupes,
-      none: metric.none,
-      pairsClassified: metric.pairsClassified,
-      pairsExamined: metric.pairsExamined,
-      refines: metric.refines,
-      sessions: metric.sessions,
-      supersedes: metric.supersedes,
-    }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const topDedupedMemoryKeys: ConsolidationTopMemoryKeyMetric[] = [...dedupedKeyCounts.entries()]
-    .map(([memoryKey, count]) => ({ count, memoryKey }))
-    .sort((a, b) => {
-      if (b.count !== a.count) {
-        return b.count - a.count;
-      }
-      return a.memoryKey.localeCompare(b.memoryKey);
-    })
-    .slice(0, 10);
-
-  return {
-    contradictionRatePct: percent(totals.contradictionsFlagged, totals.pairsClassified),
-    daily,
-    noActionRatePct: percent(totals.none, totals.pairsClassified),
-    topDedupedMemoryKeys,
-    totals,
-  };
-}
-
 export async function computeDecisionReversalRate(
   pool: Pool,
   windowDays = DEFAULT_DECISION_REVERSAL_WINDOW_DAYS,
@@ -2107,17 +1995,6 @@ export function parseCalibrationSignal(signal: unknown): CalibrationSignal | nul
   };
 }
 
-function addConsolidationCounts(target: ConsolidationTotalsMetric, delta: ConsolidationTotalsMetric): void {
-  target.contradictionsFlagged += delta.contradictionsFlagged;
-  target.dedupes += delta.dedupes;
-  target.none += delta.none;
-  target.pairsClassified += delta.pairsClassified;
-  target.pairsExamined += delta.pairsExamined;
-  target.refines += delta.refines;
-  target.sessions += delta.sessions;
-  target.supersedes += delta.supersedes;
-}
-
 function aggregateInvocationRows(
   invocations: ToolInvocation[],
 ): Omit<McpUsageMetrics, 'logFile' | 'logFileSource' | 'telemetrySource' | 'toolTelemetryCoverage'> {
@@ -2382,23 +2259,6 @@ function buildTopFailureSignatures(rows: { error_message: unknown; source: unkno
     .slice(0, TOP_FAILURE_SIGNATURE_LIMIT);
 }
 
-function collectDedupedMemoryKeys(outcomes: unknown, counts: Map<string, number>): void {
-  if (!Array.isArray(outcomes)) {
-    return;
-  }
-
-  for (const outcome of outcomes) {
-    if (!isRecord(outcome) || outcome.action_taken !== 'dedupe') {
-      continue;
-    }
-    const memoryKey = toText(outcome.candidate_memory_key) || toText(outcome.new_memory_key);
-    if (memoryKey.length === 0) {
-      continue;
-    }
-    counts.set(memoryKey, (counts.get(memoryKey) ?? 0) + 1);
-  }
-}
-
 function computeMedian(values: number[]): null | number {
   if (values.length === 0) {
     return null;
@@ -2444,19 +2304,6 @@ function computeSnapshotContinuityScore(snapshot: JsonRecord | null): number {
     score += 1;
   }
   return score;
-}
-
-function createEmptyConsolidationTotals(): ConsolidationTotalsMetric {
-  return {
-    contradictionsFlagged: 0,
-    dedupes: 0,
-    none: 0,
-    pairsClassified: 0,
-    pairsExamined: 0,
-    refines: 0,
-    sessions: 0,
-    supersedes: 0,
-  };
 }
 
 function createEmptyOrientMetrics(): OrientMetrics {
@@ -2517,25 +2364,6 @@ function emptyMcpUsageMetrics({
   };
 }
 
-function getDailyConsolidationAccumulator(
-  dailyByDate: Map<string, ConsolidationDailyAccumulator>,
-  date: string,
-): ConsolidationDailyAccumulator {
-  const existing = dailyByDate.get(date);
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const created = {
-    ...createEmptyConsolidationTotals(),
-    avgLatencyMs: 0,
-    date,
-    latencyTotalMs: 0,
-  };
-  dailyByDate.set(date, created);
-  return created;
-}
-
 function isCalibrationActualOutcome(value: unknown): value is CalibrationActualOutcome {
   return value === 'success' || value === 'partial' || value === 'failure';
 }
@@ -2591,21 +2419,6 @@ function orientTimeoutWarningCountsAgainstLaunchGate(invocation: ToolInvocation)
     return true;
   }
   return invocation.responseStatus !== 'ok';
-}
-
-function parseConsolidationActionCounts(value: unknown): {
-  dedupes: number;
-  none: number;
-  refines: number;
-  supersedes: number;
-} {
-  const actions = parseJsonObject(value);
-  return {
-    dedupes: toNumber(actions?.dedupe),
-    none: toNumber(actions?.none),
-    refines: toNumber(actions?.refine),
-    supersedes: toNumber(actions?.supersede),
-  };
 }
 
 function parseEvidenceRefs(value: unknown): unknown[] {

@@ -1,8 +1,10 @@
 import type { DbClient } from './pool.js';
 
 import { resolveTimeoutPolicy } from '../timeout-policy.js';
+import { recordAiMemoryWarningDetail } from '../warning-channel.js';
 import { getCapabilities } from './capabilities.js';
-import { getEmbedding } from './embeddings.js';
+import { assertDurableContent, assertDurableWriteGate } from './durable-write-gate.js';
+import { getEmbedding, isEmbeddingAvailable } from './embeddings.js';
 import { isKnowledgeMemory, KNOWLEDGE_MEMORY_SQL } from './knowledge-eligibility.js';
 import { insertMemoryEventWithClient } from './failure-events.js';
 import {
@@ -327,6 +329,8 @@ export async function resolveContestedMemory(input: unknown) {
   if (action === 'merge' && (typeof mergedContent !== 'string' || mergedContent.trim().length === 0)) {
     throw new Error('mergedContent is required when action is merge');
   }
+  // The merged text becomes a new durable memory, so it meets the same content rules.
+  if (action === 'merge' && typeof mergedContent === 'string') assertDurableContent(mergedContent, 'mergedContent');
 
   return await runDbWriteQuery({
     operation: 'resolve_contested_memory',
@@ -655,12 +659,30 @@ export async function searchTemporalMemories(input: unknown) {
   return result.rows.map(row => toMemoryRecord(row));
 }
 
+/** The durable write path: every memory_store write passes the durable write gate and is embedded. */
 export async function storeMemory(input: unknown) {
   const request = isRecord(input) ? input : {};
+  assertDurableWriteGate(request);
+  return writeEmbeddedMemory(request);
+}
+
+/** Seeds a synthetic eval fixture without the durable write gate. Never use it for agent or operator writes. */
+export async function storeFixtureMemory(input: unknown) {
+  return writeEmbeddedMemory(isRecord(input) ? input : {});
+}
+
+async function writeEmbeddedMemory(request: Record<string, unknown>) {
   const normalized = normalizeMemoryInput(request);
-  const embedding = isKnowledgeMemory(normalized)
+  const knowledge = isKnowledgeMemory(normalized);
+  const embedding = knowledge
     ? await getEmbedding(normalized.content, { category: normalized.category, operation: 'store_memory' })
     : null;
+  if (knowledge && embedding === null && isEmbeddingAvailable()) {
+    recordAiMemoryWarningDetail({
+      code: 'embedding.missing',
+      message: 'Stored without an embedding vector. Run backfill:embeddings to add it.',
+    });
+  }
   const enrichedInput = { ...request, embedding };
 
   return runDbWriteQuery({
@@ -669,12 +691,8 @@ export async function storeMemory(input: unknown) {
   });
 }
 
-export async function storeMemoryWithAuditEvent(
-  client: Parameters<typeof storeMemoryWithClient>[0],
-  input: unknown,
-  storeMode?: Parameters<typeof storeMemoryWithClient>[2],
-) {
-  const memory = await storeMemoryWithClient(client, input, storeMode);
+export async function storeMemoryWithAuditEvent(client: Parameters<typeof storeMemoryWithClient>[0], input: unknown) {
+  const memory = await storeMemoryWithClient(client, input);
   await insertMemoryEventWithClient(client, {
     actor: typeof memory.agent === 'string' ? memory.agent : undefined,
     eventType: 'stored_via_memory_store',

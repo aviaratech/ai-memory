@@ -176,7 +176,7 @@ async function replayFixtureFlush(input: {
       sessionId,
     }),
   );
-  await input.dependencies.refreshContinuityPack({ parsed, reflectionCount: 0, sessionId });
+  await input.dependencies.refreshContinuityPack({ parsed, sessionId });
   return sessionId;
 }
 

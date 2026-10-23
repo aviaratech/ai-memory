@@ -3,8 +3,9 @@
  *
  * All session-end sources normalise their inputs into a `SessionIngestEvent`
  * before passing through `runIngestPipeline`. This ensures a single pipeline
- * shape owns flush orchestration, reflection/calibration, and continuity
- * snapshot writes — regardless of which ingest source triggers the run.
+ * shape owns flush orchestration and continuity snapshot writes — regardless
+ * of which ingest source triggers the run. Ingestion never writes durable
+ * memories; those come only from memory_store.
  *
  * Source literals match the persisted `source` field in the database to keep
  * analytics and health-report bucketing stable.
@@ -30,10 +31,6 @@ export type IngestSource =
 /** Result returned by `runIngestPipeline` for every source type. */
 export interface RunIngestPipelineResult {
   flushed: true;
-  memoriesStored: number;
-  reflections?: {
-    count: number;
-  };
   sessionId: string;
   warnings?: string[];
 }
@@ -52,7 +49,7 @@ export interface SessionIngestEvent {
   /** Operator or project context the next session needs to proceed. */
   contextNeeded?: string[];
 
-  /** Key decisions made during the session. */
+  /** Key decisions made during the session, kept with the session checkpoint. */
   decisions?: string[];
 
   /** Environment context (branch, openPrs, failingChecks, etc.). */
@@ -73,7 +70,7 @@ export interface SessionIngestEvent {
   /** Project scope for memory storage (e.g. 'org/repo'). */
   project?: string;
 
-  /** Root causes identified (used for reflection calibration). */
+  /** Root causes identified during the session, kept with the session checkpoint. */
   rootCauses?: string[];
 
   /** Explicit session ID — generated if omitted. */
@@ -82,10 +79,7 @@ export interface SessionIngestEvent {
   /** The ingest source that produced this event (also persisted to the DB). */
   source: IngestSource;
 
-  /**
-   * Agent state model at session end.
-   * Must include `strategy_confidence: 'high' | 'medium' | 'low'` for reflection.
-   */
+  /** Agent state model at session end, kept with the session checkpoint. */
   stateModel?: Record<string, unknown>;
 
   /**

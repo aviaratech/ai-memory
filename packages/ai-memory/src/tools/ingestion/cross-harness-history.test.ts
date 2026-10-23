@@ -51,37 +51,19 @@ test('Codex history retains each source model across a model switch and replay w
       type: 'event_msg',
     },
   ];
-  const parseDelta = () => {
-    const parsed = parseCodexSessionSummary(codexPath);
-    return buildAutoMemoryDelta({
-      agent: 'codex-cli',
-      autoDurablePromotionEnabled: true,
-      createdAt: parsed.createdAt,
-      history: parsed.history,
-      model: parsed.model,
-      repoId: PROJECT,
-      sessionId: parsed.sessionId,
-      source: 'codex-session-end',
-    });
-  };
-  const sourceModels = (delta: ReturnType<typeof buildAutoMemoryDelta>) =>
-    (delta.x_durable_memories ?? [])
-      .filter(memory => memory.tags.includes('session-history'))
-      .map(memory => ({
-        key: memory.memory_key,
-        model: memory.source_model,
-      }));
+  const sourceModels = () =>
+    parseCodexSessionSummary(codexPath).history.map(turn => ({ model: turn.model ?? null, turnId: turn.turnId }));
 
   try {
     writeFileSync(codexPath, earlierEntries.map(entry => JSON.stringify(entry)).join('\n'));
-    const earlier = sourceModels(parseDelta());
+    const earlier = sourceModels();
     assert.deepEqual(
       earlier.map(turn => turn.model),
       [null, 'fixture-model-a'],
     );
 
     writeFileSync(codexPath, [...earlierEntries, ...laterEntries].map(entry => JSON.stringify(entry)).join('\n'));
-    const resumed = sourceModels(parseDelta());
+    const resumed = sourceModels();
     assert.deepEqual(
       resumed.map(turn => turn.model),
       [null, 'fixture-model-a', 'fixture-model-b', null],
@@ -91,13 +73,13 @@ test('Codex history retains each source model across a model switch and replay w
       earlier,
       'later model changes cannot rewrite earlier attribution',
     );
-    assert.deepEqual(sourceModels(parseDelta()), resumed, 'replay retains the same turn attribution');
+    assert.deepEqual(sourceModels(), resumed, 'replay retains the same turn attribution');
   } finally {
     rmSync(fixtureDir, { force: true, recursive: true });
   }
 });
 
-test('Claude message models and unknown Grok export models survive durable history construction', () => {
+test('Claude message models and unknown Grok export models survive history parsing', () => {
   const fixtureDir = mkdtempSync(join(tmpdir(), 'ai-memory-harness-models-'));
   const claudePath = join(fixtureDir, 'claude.jsonl');
   try {
@@ -117,31 +99,18 @@ test('Claude message models and unknown Grok export models survive durable histo
         )
         .join('\n'),
     );
-    for (const { expected, history, source } of [
+    for (const { expected, history } of [
       {
         expected: ['fixture-claude-a', 'fixture-claude-b', null],
         history: parseClaudeTranscriptSummary(claudePath).history,
-        source: 'claude-session-end',
       },
       {
         expected: [null, null, null, null],
         history: parseGrokSessionExport(GROK_SESSION_EXPORT_FIXTURE).history,
-        source: 'grok-session-end',
       },
     ]) {
-      const delta = buildAutoMemoryDelta({
-        agent: source,
-        autoDurablePromotionEnabled: true,
-        createdAt: SOURCE_EVENT_AT,
-        history,
-        model: 'enclosing-producer-is-not-the-source-turn',
-        repoId: PROJECT,
-        sessionId: source,
-        source,
-      });
-      const durable = (delta.x_durable_memories ?? []).filter(memory => memory.tags.includes('session-history'));
       assert.deepEqual(
-        durable.map(memory => memory.source_model),
+        history.map(turn => turn.model ?? null),
         expected,
       );
     }
@@ -150,7 +119,7 @@ test('Claude message models and unknown Grok export models survive durable histo
   }
 });
 
-test('Codex, Claude, and Grok retain bounded earlier decisions with stable source-linked turn identity', () => {
+test('Codex, Claude, and Grok history gives replay-stable deltas without durable memory proposals', () => {
   const fixtureDir = mkdtempSync(join(tmpdir(), 'ai-memory-cross-harness-'));
   const codexPath = join(fixtureDir, 'codex.jsonl');
   const claudePath = join(fixtureDir, 'claude.jsonl');
@@ -242,7 +211,6 @@ test('Codex, Claude, and Grok retain bounded earlier decisions with stable sourc
           : harness.history;
       const earlyRun = buildAutoMemoryDelta({
         agent: harness.agent,
-        autoDurablePromotionEnabled: true,
         createdAt: SOURCE_EVENT_AT,
         evidenceRefs: [`https://github.com/example/catalog/issues/2930#${harness.sessionId}`],
         history: sourceHistory.slice(0, 2),
@@ -252,7 +220,6 @@ test('Codex, Claude, and Grok retain bounded earlier decisions with stable sourc
       });
       const resumedRun = buildAutoMemoryDelta({
         agent: harness.agent,
-        autoDurablePromotionEnabled: true,
         createdAt: SOURCE_EVENT_AT,
         evidenceRefs: [`https://github.com/example/catalog/issues/2930#${harness.sessionId}`],
         history: sourceHistory,
@@ -262,7 +229,6 @@ test('Codex, Claude, and Grok retain bounded earlier decisions with stable sourc
       });
       const replayedRun = buildAutoMemoryDelta({
         agent: harness.agent,
-        autoDurablePromotionEnabled: true,
         createdAt: SOURCE_EVENT_AT,
         evidenceRefs: [`https://github.com/example/catalog/issues/2930#${harness.sessionId}`],
         history: sourceHistory,
@@ -270,31 +236,13 @@ test('Codex, Claude, and Grok retain bounded earlier decisions with stable sourc
         sessionId: harness.sessionId,
         source: harness.source,
       });
-      const earlyKeys = new Set(earlyRun.x_durable_memories?.map(memory => memory.memory_key) ?? []);
-      const durable = resumedRun.x_durable_memories ?? [];
-      const durableKeys = durable.map(memory => memory.memory_key);
-
-      assert.ok(
-        durable.some(memory => memory.content.includes(EARLY_DECISION_MARKER)),
-        `${harness.source} must preserve an earlier decision after later turns arrive`,
-      );
-      assert.equal(new Set(durableKeys).size, durableKeys.length, `${harness.source} turn keys must be unique`);
-      for (const key of earlyKeys) {
-        assert.ok(durableKeys.includes(key), `${harness.source} must preserve turn key ${key}`);
-      }
+      assert.notEqual(earlyRun.delta_id, resumedRun.delta_id, `${harness.source} new turns give a new delta`);
       assert.equal(resumedRun.delta_id, replayedRun.delta_id, `${harness.source} replay must be idempotent`);
       assert.equal(resumedRun.created_at, SOURCE_EVENT_AT, `${harness.source} retains source event time`);
+      assert.equal('x_durable_memories' in resumedRun, false, `${harness.source} never proposes durable memories`);
       assert.ok(
-        durable.some(memory => memory.tags.includes(harness.source)),
-        `${harness.source} must retain harness provenance in a searchable tag`,
-      );
-      assert.ok(
-        durable.every(memory => memory.source === harness.source),
-        `${harness.source} must retain harness provenance at the persistence boundary`,
-      );
-      assert.ok(
-        durable.some(memory => memory.evidence_refs.some(ref => ref.type === 'provided')),
-        `${harness.source} must retain an evidence reference`,
+        sourceHistory.some(turn => turn.content.includes(EARLY_DECISION_MARKER)),
+        `${harness.source} parses earlier turns`,
       );
 
       if (harness.source === 'grok-session-end') {
@@ -302,20 +250,10 @@ test('Codex, Claude, and Grok retain bounded earlier decisions with stable sourc
           sourceHistory.every(turn => turn.timestamp === undefined),
           'Grok export must not invent per-turn timestamps',
         );
-        assert.ok(
-          durable.every(memory => memory.source_timestamp === undefined),
-          'Grok durable history must not invent timestamps',
-        );
       } else {
         assert.ok(
           sourceHistory.every(turn => turn.timestamp !== undefined),
           `${harness.source} retains turn timestamps`,
-        );
-        assert.ok(
-          durable
-            .filter(memory => memory.tags.includes('session-history'))
-            .every(memory => memory.source_timestamp !== undefined),
-          `${harness.source} must persist source turn timestamps with bounded history`,
         );
       }
     }

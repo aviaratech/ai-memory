@@ -22,8 +22,6 @@ import type { IngestSource, SessionIngestEvent } from './contract.js';
 
 import { buildFlushSnapshotValue, collectContinuityQualityWarnings, parseFlushInput } from './flush-session.js';
 import { runIngestPipeline } from './pipeline.js';
-import { compareOutcomes, toStateModel } from './reflection-compare.js';
-import { runReflection } from './reflection.js';
 
 // ─── Contract shape tests ───────────────────────────────────────────────────
 
@@ -280,53 +278,4 @@ test('collectContinuityQualityWarnings parity: full payload produces no warnings
   });
   const warnings = collectContinuityQualityWarnings(parsed);
   assert.equal(warnings.length, 0);
-});
-
-// ─── Reflection-compare parity tests ────────────────────────────────────────
-
-test('compareOutcomes parity: overconfident signal when high confidence + root causes', () => {
-  const model = toStateModel({
-    assumptions: ['pipeline is stable'],
-    strategy_confidence: 'high',
-    uncertainty: [],
-  });
-  const result = compareOutcomes(model, 'Session completed.', [], ['root cause one', 'root cause two']);
-  assert.equal(result.confidenceCalibration, 'overconfident');
-});
-
-test('compareOutcomes parity: underconfident signal when low confidence + decisions made', () => {
-  const model = toStateModel({
-    assumptions: [],
-    strategy_confidence: 'low',
-    uncertainty: [],
-  });
-  const result = compareOutcomes(model, 'Session completed.', ['decision one'], []);
-  assert.equal(result.confidenceCalibration, 'underconfident');
-});
-
-test('compareOutcomes parity: well-calibrated signal when medium confidence', () => {
-  const model = toStateModel({
-    assumptions: [],
-    strategy_confidence: 'medium',
-    uncertainty: [],
-  });
-  const result = compareOutcomes(model, 'Session completed.', ['one decision'], []);
-  assert.equal(result.confidenceCalibration, 'well-calibrated');
-});
-
-// ─── runReflection no-op guard ────────────────────────────────────────────────
-
-test('runReflection returns no stored memories when stateModel is absent', async () => {
-  const result = await runReflection({
-    agent: 'test-agent',
-    decisions: ['some decision'],
-    project: 'example/catalog',
-    rootCauses: [],
-    sessionId: 'test-session',
-    source: 'manual-flush',
-    stateModel: undefined,
-    summary: 'Test session without state model.',
-  });
-  assert.equal(result.reflectionResult, undefined);
-  assert.equal(result.storedMemories.length, 0);
 });

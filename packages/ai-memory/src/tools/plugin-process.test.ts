@@ -46,8 +46,8 @@ it('preserves host provenance and the existing agent-writer gate through the pro
     };
     assert.deepEqual(value.context, { agent: 'claude-code', source: 'claude-code', model: 'fixture-host-model' });
     assert.equal(value.accepted, false);
-    assert.equal(value.classify, 'fixture-only');
-    assert.equal(value.model, 'fixture-model');
+    assert.equal(value.classify, undefined, 'retired classification settings are not forwarded');
+    assert.equal(value.model, undefined);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

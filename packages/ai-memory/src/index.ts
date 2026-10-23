@@ -1,7 +1,7 @@
 /**
  * @aviaratech/ai-memory — Core engine public surface
  *
- * Exports: DB, retention, contracts, consolidation, orient, env-probe.
+ * Exports: DB, retention, contracts, orient, env-probe.
  * Ingestion, MCP, health, eval, and ops are separate modules in this package.
  */
 

@@ -101,7 +101,7 @@ async function validatedTranscript(
   return transcript;
 }
 
-/** Derived, session-only checkpoint. No reflection, durable promotion or session-end writes. */
+/** Derived, session-only checkpoint. No durable memory or session-end writes. */
 export async function runPreCompactHook(
   payload: Record<string, unknown>,
   dependencies = CHECKPOINT_DEPENDENCIES,
@@ -153,7 +153,6 @@ export async function runPreCompactHook(
     const checkpoint = buildContinuityPackFromFlush({
       fieldProvenance,
       nowIso,
-      reflectionCount: 0,
       sessionId: identity.sessionId,
       scope: { type: 'task', id: identity.sessionId },
       parsed: parseFlushInput({ ...identity, ...lists, summary, source: 'pre-compact', agent: identity.host }),

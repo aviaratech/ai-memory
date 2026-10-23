@@ -19,7 +19,7 @@ Install/update require the exact version of this released runtime package.
 Codex supports user scope; unsupported scopes are reported without mutation.
 Doctor is read-only. Installation never initializes PostgreSQL or trusts hooks.
 See the installation guide for protected configuration and required host restart/trust.
-ai-memory consolidate --help describes explicit reviewed fragment consolidation.
+ai-memory cleanup --help describes removing stored data ai-memory no longer keeps.
 ai-memory setup --help describes explicit guided local PostgreSQL setup.`;
 
 export function parsePluginArguments(args: string[]): PluginOptions {
@@ -73,9 +73,9 @@ async function main(args: string[]): Promise<void> {
     process.stdout.write(`${getPackageVersion()}\n`);
     return;
   }
-  if (args[0] === 'consolidate') {
-    const { runConsolidateCli } = await import('./consolidate.js');
-    await runConsolidateCli(args.slice(1));
+  if (args[0] === 'cleanup') {
+    const { runCleanupCli } = await import('./cleanup.js');
+    await runCleanupCli(args.slice(1));
     return;
   }
   if (args.length === 0 || args.includes('--help')) {

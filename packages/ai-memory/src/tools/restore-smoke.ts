@@ -29,7 +29,9 @@ async function main() {
     const stored = await storeMemory({
       category: 'implementation-note',
       confidence: 0.8,
-      content: `Synthetic recovery search marker ${marker}`,
+      content: `Synthetic recovery search marker ${marker} written by the restore smoke test.`,
+      evidenceRefs: ['packages/ai-memory/src/tools/restore-smoke.ts'],
+      memoryKey: `${project}:restore-smoke:${marker}`,
       project,
       source: 'recovery-smoke',
     });

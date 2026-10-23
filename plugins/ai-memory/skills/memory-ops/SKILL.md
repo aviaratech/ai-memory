@@ -1,6 +1,6 @@
 ---
 name: memory-ops
-description: Use when reviewing memory health, consolidating stale memories, debugging search quality, or resolving contested memories
+description: Use when reviewing memory health, removing data ai-memory no longer keeps, debugging search quality, or resolving contested memories
 ---
 
 # Memory Operations
@@ -28,12 +28,16 @@ Verify system health and key metrics:
 | Ingestion failure rate | Low | Recent ingestion errors |
 
 When `continuityStateModelPct` is below 25%, the launch gate issues a warning. Below 50% is on-target but worth monitoring.
-If continuity packs stay at zero while `memory_flush` usage is non-zero, inspect `memory_flush` warnings and the `continuityPack` response field before adding new reflection machinery.
+If continuity packs stay at zero while `memory_flush` usage is non-zero, inspect `memory_flush` warnings and the `continuityPack` response field before adding new machinery.
 If continuity packs are materialized but continuity-pack reads stay at zero after a fresh Codex/Claude start, inspect session-start hook telemetry before assuming packs are unused.
 If continuity adoption readiness shows missing/degraded reads, debug hooks or MCP connectivity before changing pack content.
 If actionable-field completeness is low, improve explicit `memory_flush` handoffs (`nextActions`, `openQuestions`, `decisions`, `contextNeeded`) rather than adding vector startup retrieval. Treat flush-after-pack as a lifecycle readiness signal, not semantic consumption proof.
 If read quality is below target or budget pressure is high, call `memory_continuity_debug({ project })` once to inspect the exact startup payload, payload size, budget, truncation state, and source. Do not use it as routine recall.
 Auto-derived `next_actions`, `context_needed`, and `open_questions` are tagged as derived in snapshot provenance; carry-forward values are tagged separately. Do not count either as agent-writer `memory_flush` compliance.
+
+## Removing Data ai-memory No Longer Keeps
+
+`ai-memory cleanup` (a dry run by default) counts memories written by `memory_flush`, automatically promoted or expired session summaries, superseded session snapshots and deltas, and events from removed features. `ai-memory cleanup --apply --backup-id <id>` deletes them only after a healthy backup of the same database, and keeps memories written with `memory_store` apart from expired session summaries. A person runs the apply; agents run only the dry run. See the operations guide for details.
 
 ## Contested Memory Resolution
 

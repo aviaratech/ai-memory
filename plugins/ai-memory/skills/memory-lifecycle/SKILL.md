@@ -63,15 +63,16 @@ If a healthy search finds no relevant memories, state the missing evidence and p
 
 ## Store Durable Knowledge
 
-Call `memory_store` for conventions, architecture decisions, root causes, and preferences. Every session that produces durable knowledge requires at least one deliberate `memory_store` call.
+Call `memory_store` for reusable knowledge that more than one agent needs: decisions and standing rules, conventions, hard-to-re-derive facts, "where things live" pointers, root causes and study verdicts. `memory_store` is the only way to write a durable memory; `memory_flush` keeps session state. Every session that produces durable knowledge requires at least one deliberate `memory_store` call.
 
-**Quality gates:**
+**Write gate (a write that fails any check is rejected):**
 
-- Include `category` (required, non-empty).
-- Use `confidence >= 0.5` for non-session-summary categories.
-- Include `evidenceRefs` (at least one file path, PR URL, or issue link).
-- For strict categories (`convention`, `architecture`, `preference`, `root-cause`): `memoryKey` is also required.
-- For `session-summary`: `expiresAt` is required (ISO-8601) and `confidence` must be `<= 0.5`.
+- Include `category` (required, non-empty) and `confidence >= 0.5`.
+- Include a stable `memoryKey` such as `owner/repo:topic`. A later write with the same key updates the memory.
+- Include `evidenceRefs` with at least one repository path, URL, or object with `path`, `url`, `issue` or `pr`.
+- Write plain sentences of at least four words. Runs of more than 30 letters without spaces are rejected.
+- Never include secrets, tokens, passwords, email addresses or home-folder paths (`/Users/<name>`, `/home/<name>`). Use repository-relative paths.
+- Do not store `session-summary` memories; save session state with `memory_flush`.
 
 **When to store:**
 
@@ -83,7 +84,7 @@ Call `memory_store` for conventions, architecture decisions, root causes, and pr
 | After multi-step debugging | `root-cause` | Symptoms, dead ends explored, final resolution |
 | Before handoff | `preference` | Workflow discoveries for continuity |
 
-**Do NOT store:** raw error logs, session-specific temporary state, speculative conclusions from a single file read, anything that duplicates AGENTS.md or CLAUDE.md guidance.
+**Do NOT store:** session summaries or status snapshots, raw error logs, receipts, session-specific temporary state, speculative conclusions from a single file read, anything that duplicates AGENTS.md or CLAUDE.md guidance.
 
 ## Flush at Breakpoints
 
@@ -111,9 +112,9 @@ memory_flush({
 
 **Agent-writer gate:** `memory_flush` calls from agent identities require `summary` and non-empty `nextActions`. Missing `openQuestions` or assumptions are advisory: leave them empty when none exist instead of inventing content. Compressed narrative text also returns a quality warning; preserve spaces between words. Include `contextNeeded` when outside input or operator state matters, include `decisions` when choices were made, and include `stateModel`/`envModel` whenever available; missing rich continuity fields can still generate quality warnings.
 
-`memory_flush` is also the continuity-pack write path. After the core transaction commits, the existing reflection stage runs, then ai-memory refreshes the bounded project continuity pack available for explicit background reads. Explicit `lead`, `outcome`, and `task` values additionally write their separate scoped packs. Do not add a separate long-term-memory/reflection pass unless this path proves insufficient.
+`memory_flush` writes session state only: the session snapshot (including `decisions` and `rootCauses`) and the continuity pack. It stores no durable memories, so store any decision or root cause that other agents need with `memory_store`. After the snapshot commits, ai-memory refreshes the bounded project continuity pack available for explicit background reads. Explicit `lead`, `outcome`, and `task` values additionally write their separate scoped packs.
 
-Automatic Codex/Claude session-end hooks and the supported Grok Build `SessionEnd` export adapter retain bounded source-attributed excerpts, identity, and evidence references only; do not store raw logs or secrets. This plugin does not install a Grok host hook. Derived snapshot fields are tagged with `x_*_provenance: "derived"`; values carried forward from an explicit flush are tagged `"carry-forward"`. Treat derived fields as helpful continuity hints, not a substitute for deliberate `memory_flush`.
+Automatic Codex/Claude session-end hooks and the supported Grok Build `SessionEnd` export adapter record a session snapshot with identity and evidence references only; they never write durable memories. Do not store raw logs or secrets. This plugin does not install a Grok host hook. Derived snapshot fields are tagged with `x_*_provenance: "derived"`; values carried forward from an explicit flush are tagged `"carry-forward"`. Treat derived fields as helpful continuity hints, not a substitute for deliberate `memory_flush`.
 
 ## If Tools Unavailable
 
