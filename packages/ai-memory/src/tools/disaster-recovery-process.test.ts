@@ -436,6 +436,7 @@ for (const content of ['[', 'malformed', '[1]']) {
 }
 
 async function recoverOwned(identities: ReturnType<typeof processStates>) {
+  const signaled: ReturnType<typeof processStates> = [];
   for (const current of processStates(identities.map(identity => identity.pid))) {
     if (
       identities.some(
@@ -448,6 +449,7 @@ async function recoverOwned(identities: ReturnType<typeof processStates>) {
     ) {
       try {
         process.kill(current.pid, 'SIGKILL');
+        signaled.push(current);
       } catch (error) {
         assert.ok(error instanceof Error && 'code' in error && error.code === 'ESRCH');
       }
@@ -455,13 +457,10 @@ async function recoverOwned(identities: ReturnType<typeof processStates>) {
   }
   await waitUntil(
     () =>
-      !processStates(identities.map(identity => identity.pid)).some(current =>
-        identities.some(
+      !processStates(signaled.map(identity => identity.pid)).some(current =>
+        signaled.some(
           identity =>
-            identity.pid === current.pid &&
-            identity.birth === current.birth &&
-            identity.pgid === current.pgid &&
-            identity.command === current.command,
+            identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
         ),
       ),
     1000,
