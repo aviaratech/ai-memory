@@ -361,7 +361,7 @@ test(
       const fingerprint = async (client: Client) =>
         (
           await client.query<{ count: string; digest: string }>(`SELECT count(*)::text AS count,
-        md5(string_agg(md5((to_jsonb(entries)-'search_vector'-'last_accessed_at')::text),'' ORDER BY id)) AS digest FROM ai_memory_entries AS entries`)
+        md5(string_agg(md5((to_jsonb(entries)-'search_vector'-'last_accessed_at'-'audience'-'pinned'-'last_verified_at')::text),'' ORDER BY id)) AS digest FROM ai_memory_entries AS entries`)
         ).rows;
       const priorRows = await fingerprint(recovery.client);
       const priorSchema = await snapshot(recovery.client);

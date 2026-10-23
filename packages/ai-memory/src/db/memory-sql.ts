@@ -293,8 +293,11 @@ export function buildMemoryUpdateByIdSql(hasEmbeddingColumn: boolean) {
       evidence_refs = $26,
       metadata_json = $27,
       updated_by = $28,
-      updated_at = NOW()${hasEmbeddingColumn ? ',\n      embedding = $29' : ''}
-    WHERE id = $${hasEmbeddingColumn ? '30' : '29'}
+      audience = $29,
+      pinned = $30,
+      last_verified_at = COALESCE($31, last_verified_at),
+      updated_at = NOW()${hasEmbeddingColumn ? ',\n      embedding = $32' : ''}
+    WHERE id = $${hasEmbeddingColumn ? '33' : '32'}
     RETURNING *
   `;
 }
@@ -333,6 +336,9 @@ export function buildMemoryUpsertByMemoryKeySql(hasEmbeddingColumn: boolean) {
         evidence_refs = EXCLUDED.evidence_refs,
         metadata_json = EXCLUDED.metadata_json,
         updated_by = EXCLUDED.updated_by,
+        audience = EXCLUDED.audience,
+        pinned = EXCLUDED.pinned,
+        last_verified_at = COALESCE($31, ai_memory_entries.last_verified_at),
         updated_at = NOW()${hasEmbeddingColumn ? ',\n        embedding = EXCLUDED.embedding' : ''}
     RETURNING *
   `;
@@ -369,13 +375,16 @@ function buildMemoryInsertBaseSql(hasEmbeddingColumn: boolean) {
       evidence_refs,
       metadata_json,
       updated_by,
-      updated_at${hasEmbeddingColumn ? ',\n      embedding' : ''}
+      updated_at,
+      audience,
+      pinned,
+      last_verified_at${hasEmbeddingColumn ? ',\n      embedding' : ''}
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9,
       $10, $11, $12, $13, $14, $15, $16, $17,
       $18, $19, $20, $21, $22, $23, $24, $25,
-      $26, $27, $28, NOW()${hasEmbeddingColumn ? ',\n      $29' : ''}
+      $26, $27, $28, NOW(), $29, $30, $31${hasEmbeddingColumn ? ',\n      $32' : ''}
     )
   `;
 }

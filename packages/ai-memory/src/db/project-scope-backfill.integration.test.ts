@@ -525,6 +525,7 @@ test.each(['index', 'index-shape', 'generated-column', 'generated-expression', '
 test.each([
   "CREATE OR REPLACE FUNCTION ai_memory_tags_to_search_text(tags text[]) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS $$ SELECT 'incompatible'::text $$",
   "CREATE OR REPLACE FUNCTION ai_memory_reference_search_terms(memory_content text,memory_key text,memory_evidence jsonb,memory_tags text[]) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT 'incompatible'::text $$",
+  'CREATE OR REPLACE FUNCTION ai_memory_default_verified_at() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$',
   'CREATE OR REPLACE FUNCTION prevent_event_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$',
 ])(
   'preexisting or changed stored helper refuses planning and apply: %s',

@@ -192,3 +192,21 @@ describe('protected standalone plugin configuration', () => {
     assert.throws(() => loadPluginRuntimeEnv({ home, env: {} }), /protected/iu);
   });
 });
+
+it('hydrates protected brief settings while preserving per-session role and cache overrides', () => {
+  const { home, file } = fixture();
+  writeFileSync(
+    file,
+    'AI_MEMORY_DATABASE_URL=postgresql://runtime:fixture@127.0.0.1/ai_memory\nAI_MEMORY_ROLE=worker\nAI_MEMORY_BRIEF_CACHE_DIR=/synthetic/cache\n',
+    { mode: 0o600 },
+  );
+  const protectedEnv = loadPluginRuntimeEnv({ home, env: {} }).env;
+  assert.equal(protectedEnv.AI_MEMORY_ROLE, 'worker');
+  assert.equal(protectedEnv.AI_MEMORY_BRIEF_CACHE_DIR, '/synthetic/cache');
+  const sessionEnv = loadPluginRuntimeEnv({
+    home,
+    env: { AI_MEMORY_ROLE: 'lead', AI_MEMORY_BRIEF_CACHE_DIR: '/synthetic/session-cache' },
+  }).env;
+  assert.equal(sessionEnv.AI_MEMORY_ROLE, 'lead');
+  assert.equal(sessionEnv.AI_MEMORY_BRIEF_CACHE_DIR, '/synthetic/session-cache');
+});

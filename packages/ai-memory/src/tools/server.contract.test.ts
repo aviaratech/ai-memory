@@ -586,3 +586,18 @@ function readSearchPayload(response: {
   assert.ok(Array.isArray(payload.memories) && payload.memories.every(isRecord));
   return { ...payload, memories: payload.memories };
 }
+
+test('memory_store accepts explicit pinned audience and verification metadata', () => {
+  const value = memoryStoreInputSchema.parse({
+    category: 'convention',
+    content: 'Synthetic project rule for shared work.',
+    memoryKey: 'example/catalog:rule',
+    evidenceRefs: ['docs/synthetic.md'],
+    audience: ['lead'],
+    pinned: true,
+    lastVerifiedAt: '2026-10-01T00:00:00.000Z',
+  });
+  assert.deepEqual(value.audience, ['lead']);
+  assert.equal(value.pinned, true);
+  assert.equal(value.lastVerifiedAt, '2026-10-01T00:00:00.000Z');
+});

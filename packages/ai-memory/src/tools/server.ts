@@ -199,6 +199,16 @@ const detectedAgentContext = detectAgentContext();
 const memoryStoreEvidenceRefSchema = z.union([z.string().min(1), z.record(z.string(), z.unknown())]);
 
 export const memoryStoreInputSchema = z.object({
+  audience: acceptJsonEncoded(z.array(z.string().trim().min(1)).min(1).optional()).describe(
+    'Host or role tags; any matching tag includes the memory in its brief. Defaults to [all].',
+  ),
+  pinned: acceptJsonEncoded(z.boolean().optional()).describe(
+    'Always include in the matching project/host/role brief; default false.',
+  ),
+  lastVerifiedAt: z.iso
+    .datetime({ offset: true })
+    .optional()
+    .describe('Last verification time; new memories default to their updated time.'),
   agent: z.string().min(1).optional().describe('Agent identifier writing memory.'),
   category: z
     .string()

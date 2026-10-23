@@ -131,6 +131,24 @@ export function normalizeLimit(
   return Math.max(1, Math.min(max, Math.floor(numericValue)));
 }
 
+function normalizeAudience(value: unknown): string[] {
+  if (value === undefined) return ['all'];
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some(tag => typeof tag !== 'string' || tag.trim().length === 0)
+  ) {
+    throw new Error('audience must be a non-empty array of host or role tags.');
+  }
+  return [...new Set((value as string[]).map(tag => tag.trim()))];
+}
+
+function normalizePinned(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw new Error('pinned must be a boolean.');
+  return value;
+}
+
 export function normalizeMemoryInput(input: unknown) {
   const memoryInput = isRecord(input) ? input : {};
   const content = normalizeRequiredText(memoryInput.content, 'content');
@@ -138,17 +156,20 @@ export function normalizeMemoryInput(input: unknown) {
   const explicitMemoryType = normalizeMemoryType(memoryInput.memoryType ?? memoryInput.memory_type, 'memoryType');
   const normalizedMemory = {
     agent: normalizeOptionalText(memoryInput.agent),
+    audience: normalizeAudience(memoryInput.audience),
     category: normalizeRequiredText(memoryInput.category, 'category'),
     confidence: normalizeConfidence(memoryInput.confidence),
     content,
     evidenceRefs: normalizeEvidenceRefs(memoryInput.evidenceRefs),
     expiresAt: normalizeOptionalTimestamp(memoryInput.expiresAt, 'expiresAt'),
     importance: normalizeOptionalImportance(memoryInput.importance),
+    lastVerifiedAt: normalizeOptionalTimestamp(memoryInput.lastVerifiedAt, 'lastVerifiedAt'),
     memoryKey: normalizeOptionalText(memoryInput.memoryKey),
     memoryType: explicitMemoryType,
     metadata: normalizeMetadata(memoryInput.metadata),
     model: normalizeOptionalText(memoryInput.model),
     orgId: normalizeOptionalText(memoryInput.orgId),
+    pinned: normalizePinned(memoryInput.pinned),
     project: normalizeProjectScope(memoryInput),
     repoId: normalizeOptionalText(memoryInput.repoId),
     repoSlug: normalizeOptionalText(memoryInput.repoSlug),

@@ -229,6 +229,9 @@ function buildMemoryWriteParams(memory: CalibrationAwareMemoryInput, hasEmbeddin
     JSON.stringify(memory.evidenceRefs),
     JSON.stringify(memory.metadata),
     memory.updatedBy,
+    memory.audience,
+    memory.pinned,
+    memory.lastVerifiedAt,
   ];
 
   if (hasEmbeddingColumn) {

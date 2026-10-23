@@ -21,6 +21,7 @@ import { armPromptRetrieval, type MemoryHost } from '../../db/tool-invocations.j
 import { ensurePostgresRunning, formatPostgresRecoveryHint } from '../ensure-postgres.js';
 import { resolveRepoIdFromCwd } from './auto-session-ingest.js';
 import { formatContinuityPackMarkdown } from './continuity-pack.js';
+import { matchesBriefAudience, readCachedBrief, refreshBrief, resolveBriefScope } from '../brief.js';
 
 /** Maximum decoded model-visible context, including guidance and warnings (UTF-16 characters). */
 export const SESSION_START_CONTEXT_MAX_CHARS = 8000;
@@ -30,7 +31,13 @@ const TRUNCATION_NOTICE = '\n[truncated; retrieve scoped details with memory too
 
 export function serializeSessionStartHook(outcome: SessionStartHookOutcome): string {
   const context = boundText(
-    [START_GUIDANCE, `status: ${outcome.status}`, outcome.warning, outcome.bootstrapText ?? outcome.recallText]
+    [
+      START_GUIDANCE,
+      `status: ${outcome.status}`,
+      outcome.briefText,
+      outcome.warning,
+      outcome.bootstrapText ?? outcome.recallText,
+    ]
       .filter(Boolean)
       .join('\n\n'),
     SESSION_START_CONTEXT_MAX_CHARS,
@@ -50,8 +57,20 @@ const DEFAULT_RECALL_LIMIT = 8;
 const DEFAULT_SINCE_DAYS = 90;
 const SESSION_START_ORIENT_SOURCE = 'session-start-hook';
 const SESSION_START_CONTINUITY_TIMEOUT_MS = 500;
+function postgresRecoveryHint(): string {
+  try {
+    return formatPostgresRecoveryHint();
+  } catch {
+    return 'Check the protected local PostgreSQL configuration.';
+  }
+}
 const MAX_RECALL_LIMIT = 50;
 const MAX_SINCE_DAYS = 3650;
+
+function sessionRole(): string {
+  const role = process.env.AI_MEMORY_ROLE?.trim();
+  return role === undefined || role.length === 0 ? 'default' : role;
+}
 
 export interface SessionStartHookContext {
   host?: MemoryHost | undefined;
@@ -69,6 +88,8 @@ export interface SessionStartHookContext {
 }
 
 export interface SessionStartHookDependencies {
+  refreshBrief?: typeof refreshBrief;
+  readCachedBrief?: typeof readCachedBrief;
   armPromptRetrieval: typeof armPromptRetrieval;
   closePool: () => Promise<unknown>;
   ensurePostgresRunning: (input: {
@@ -93,6 +114,7 @@ export interface SessionStartHookInput {
 }
 
 export interface SessionStartHookOutcome {
+  briefText?: string;
   /** Combined bootstrap text for SessionStart injection */
   bootstrapText?: string;
   /** Always true — hooks should not block session startup */
@@ -115,6 +137,8 @@ export interface SessionStartPostgresStatus {
 }
 
 const DEFAULT_DEPENDENCIES: SessionStartHookDependencies = {
+  refreshBrief,
+  readCachedBrief,
   armPromptRetrieval,
   closePool,
   ensurePostgresRunning,
@@ -135,21 +159,90 @@ export async function runSessionStartHook(
   const dependencies = context?.dependencies ?? DEFAULT_DEPENDENCIES;
   try {
     const outcome = await runSessionStartHookCore(input, context);
-    return { ...outcome, ...(outcome.warning === undefined ? {} : { warning: boundText(outcome.warning, 800) }) };
+    return await attachBrief(
+      { ...outcome, ...(outcome.warning === undefined ? {} : { warning: boundText(outcome.warning, 800) }) },
+      context,
+      dependencies,
+    );
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     dependencies.logAiMemoryWarn('hook.session_start_recall_failed', {
       error: errorMessage,
       message: `Session-start ai-memory recall check failed: ${errorMessage}`,
     });
-    return {
-      continue: true,
-      status: 'degraded',
-      suppressOutput: false,
-      warning: `⚠ ai-memory session-start check failed — memory tools may not work. ${formatPostgresRecoveryHint()}`,
-    };
+    return await attachBrief(
+      {
+        continue: true,
+        status: 'degraded',
+        suppressOutput: false,
+        warning: `⚠ ai-memory session-start check failed — memory tools may not work. ${postgresRecoveryHint()}`,
+      },
+      context,
+      dependencies,
+      true,
+    );
   } finally {
     await dependencies.closePool().catch(() => {});
+  }
+}
+
+async function attachBrief(
+  outcome: SessionStartHookOutcome,
+  context: SessionStartHookContext | undefined,
+  dependencies: SessionStartHookDependencies,
+  failed = false,
+): Promise<SessionStartHookOutcome> {
+  if (
+    context?.host === undefined ||
+    dependencies.refreshBrief === undefined ||
+    dependencies.readCachedBrief === undefined ||
+    !isRecallEnabled()
+  )
+    return outcome;
+  try {
+    const cwd = context.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.PWD ?? process.cwd();
+    const project = normalizeProjectScope({
+      project: context.repoId,
+      repoId: await dependencies.resolveRepoIdFromCwd(cwd),
+    });
+    if (project === undefined) return outcome;
+    const scope = resolveBriefScope({
+      project,
+      host: context.host,
+      role: sessionRole(),
+    });
+    if (!failed && outcome.status !== 'unavailable') {
+      try {
+        const briefText = await dependencies.withTimeout({
+          operation: 'memory_brief.session_start',
+          timeoutMs: 1000,
+          task: () =>
+            dependencies.refreshBrief!(scope, {
+              onCacheError: () => {
+                dependencies.logAiMemoryWarn('hook.session_start_brief_cache_failed', {
+                  message: 'Brief built; cached fallback could not be refreshed.',
+                });
+              },
+            }),
+        });
+        return { ...outcome, briefText, suppressOutput: false };
+      } catch {
+        /* A failed refresh must not replace the last successful file. */
+      }
+    }
+    const cached = await dependencies.readCachedBrief(scope);
+    return cached === undefined
+      ? outcome
+      : {
+          ...outcome,
+          briefText: `Cached brief (generated at ${cached.generatedAt}):\n${cached.text}`,
+          suppressOutput: false,
+        };
+  } catch {
+    dependencies.logAiMemoryWarn('hook.session_start_brief_failed', {
+      message: 'Scoped brief unavailable; continuing with existing context.',
+    });
+    return outcome;
   }
 }
 
@@ -168,7 +261,7 @@ async function runSessionStartHookCore(
   });
 
   if (!status.ok) {
-    const hint = status.hint ?? formatPostgresRecoveryHint();
+    const hint = status.hint ?? postgresRecoveryHint();
     dependencies.logAiMemoryWarn('postgres.session_start_unavailable', {
       database_url: status.databaseUrl,
       error: status.errorMessage,
@@ -265,6 +358,8 @@ async function runSessionStartHookCore(
     if (!isRecordLike(memory)) return false;
     return (
       memory.project === repoId &&
+      matchesBriefAudience(memory, context?.host, sessionRole()) &&
+      memory.category !== 'state' &&
       typeof memory.memoryKey === 'string' &&
       memory.memoryKey.length > 0 &&
       !['session-summary', 'session-transcript', 'session-history'].includes(String(memory.category)) &&

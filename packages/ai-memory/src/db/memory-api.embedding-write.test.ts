@@ -121,7 +121,7 @@ test('memory_store write path inserts a non-null embedding when plugin env conta
 
   const insertCall = client.calls.find(call => call.sql.includes('INSERT INTO ai_memory_entries'));
   assert.ok(insertCall !== undefined, 'expected ai_memory_entries insert');
-  assert.equal(insertCall.params[28], JSON.stringify(EMBEDDING_VECTOR));
+  assert.equal(insertCall.params[31], JSON.stringify(EMBEDDING_VECTOR));
   assert.deepEqual(memory.embedding, EMBEDDING_VECTOR);
 });
 
@@ -168,7 +168,7 @@ for (const fixture of [
     assert.equal(embeddingCalls, fixture.expectedCalls);
     const insertCall = client.calls.find(call => call.sql.includes('INSERT INTO ai_memory_entries'));
     assert.ok(insertCall);
-    assert.equal(insertCall.params[28], fixture.expectedCalls === 1 ? JSON.stringify(EMBEDDING_VECTOR) : null);
+    assert.equal(insertCall.params[31], fixture.expectedCalls === 1 ? JSON.stringify(EMBEDDING_VECTOR) : null);
   });
 }
 
