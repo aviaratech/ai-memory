@@ -78,6 +78,14 @@ Use a runtime role after the administrator initialization below. The plugin laun
 
 `plugin doctor` reads native registration and installed bytes, validates protected configuration, checks the selected plugin's migration ledger in a read-only transaction, and attempts an MCP handshake only when prerequisites are ready. Its diagnostic MCP process is constrained to read-only database transactions and has provider settings removed. Missing or pending migrations report an administrator requirement even if the configured login is an administrator; diagnosis never applies migrations. Hook trust remains an explicit native-host action after a successful handshake.
 
+## Local HTTP MCP transport
+
+Stdio remains the default. For the existing HTTP mode, set `AI_MEMORY_MCP_TRANSPORT=http`; the listener defaults to `127.0.0.1:3100` (`AI_MEMORY_MCP_HTTP_HOST` and `AI_MEMORY_MCP_HTTP_PORT`). Requests must carry exactly one Host matching `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` with the actual listener port. Other or missing Host values receive HTTP 403.
+
+Local clients without an Origin header work by default. Every request with an Origin is denied unless it exactly matches `AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS`, a comma-separated list of serialized HTTP/HTTPS origins such as `https://client.example,http://localhost:4000`. The default list is empty. Wildcards, `null`, credentials, paths, trailing slashes and duplicate Origin headers are rejected. A non-loopback bind requires explicit `AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK=1`; this permits binding only and retains the loopback Host restriction. HTTP provides no remote authentication.
+
+Each initialized client has its own session. DELETE closes only that session; unknown or expired session IDs receive HTTP 404. Sessions expire after 30 minutes of inactivity. Running tools, including their failure auditing, retain the session until completion even if the response disconnects; the idle interval starts again afterward. An otherwise idle SSE connection does not prevent expiry. Shutdown closes established and provisional sessions. These settings apply only to HTTP mode.
+
 ## Update, rollback and remove
 
 First set `AI_MEMORY_VERSION` to the exact reviewed version you intend to use, install it in this directory, then invoke `plugin update` with that same version:

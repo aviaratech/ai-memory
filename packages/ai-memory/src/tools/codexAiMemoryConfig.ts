@@ -74,6 +74,10 @@ export function buildAiMemoryHttpLaunchEnv(
   } = {},
 ): Record<string, string> {
   const env = buildAiMemoryLaunchEnv(input);
+  for (const key of ['AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS', 'AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK']) {
+    const value = firstNonEmptyString((input.baseEnv ?? process.env)[key], input.existingEnv?.[key]);
+    if (value !== undefined) env[key] = value;
+  }
   env.AI_MEMORY_MCP_HTTP_HOST = input.host ?? DEFAULT_HTTP_HOST;
   env.AI_MEMORY_MCP_HTTP_PORT = String(input.port ?? DEFAULT_HTTP_PORT);
   env.AI_MEMORY_MCP_TRANSPORT = 'http';
