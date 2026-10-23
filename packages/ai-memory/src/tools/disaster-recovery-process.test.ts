@@ -458,7 +458,10 @@ async function recoverOwned(identities: ReturnType<typeof processStates>) {
       !processStates(identities.map(identity => identity.pid)).some(current =>
         identities.some(
           identity =>
-            identity.pid === current.pid && identity.birth === current.birth && identity.pgid === current.pgid,
+            identity.pid === current.pid &&
+            identity.birth === current.birth &&
+            identity.pgid === current.pgid &&
+            identity.command === current.command,
         ),
       ),
     1000,
