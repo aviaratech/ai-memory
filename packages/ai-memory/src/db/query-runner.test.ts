@@ -290,3 +290,61 @@ test('runBoundedQuery TimeoutError attributes to checkpoint sub-phase when cance
     },
   );
 });
+
+test('a wall deadline destroys an owned stuck client and prevents later SQL', async () => {
+  const mock = createMockPool({ taskBehavior: 'resolve' });
+  let resume: (() => void) | undefined;
+  const released: (boolean | Error | undefined)[] = [];
+  mock.client.release = error => {
+    released.push(error);
+  };
+  const original = mock.client.query.bind(mock.client);
+  mock.client.query = async (sql, params) => {
+    if (sql === 'SELECT slow')
+      await new Promise<void>(resolve => {
+        resume = resolve;
+      });
+    return original(sql, params);
+  };
+  await assert.rejects(
+    runBoundedQuery({
+      phase: 'db.read.topic_recall',
+      pool: mock.pool,
+      timeoutMs: 1000,
+      deadlineMs: 15,
+      task: async client => {
+        await client.query('SELECT slow');
+        await client.query('SELECT must_not_run');
+      },
+    }),
+    TimeoutError,
+  );
+  assert.deepEqual(released, [true]);
+  resume?.();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!mock.calls.some(call => ['SELECT must_not_run', 'COMMIT', 'ROLLBACK'].includes(call.sql)));
+  assert.deepEqual(released, [true]);
+});
+
+test('a connection arriving after the deadline is released without starting SQL', async () => {
+  const mock = createMockPool({ taskBehavior: 'resolve' });
+  let acquired: ((client: DbClient) => void) | undefined;
+  mock.pool.connect = () =>
+    new Promise(resolve => {
+      acquired = resolve;
+    });
+  await assert.rejects(
+    runBoundedQuery({
+      phase: 'db.read.topic_recall',
+      pool: mock.pool,
+      timeoutMs: 1000,
+      deadlineMs: 15,
+      task: client => client.query('SELECT must_not_run'),
+    }),
+    TimeoutError,
+  );
+  acquired?.(mock.client);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(mock.released.count, 1);
+  assert.deepEqual(mock.calls, []);
+});

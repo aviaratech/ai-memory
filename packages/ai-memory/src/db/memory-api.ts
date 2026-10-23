@@ -23,7 +23,13 @@ import {
 } from './memory-sql.js';
 import { storeMemoryWithClient } from './memory-store.js';
 import { normalizeMemoryType } from './memory-types.js';
-import { normalizeBoolean, normalizeLimit, normalizeMemoryInput, normalizeOptionalText } from './normalization.js';
+import {
+  normalizeBoolean,
+  normalizeLimit,
+  normalizeMemoryInput,
+  normalizeOptionalText,
+  normalizeProjectScope,
+} from './normalization.js';
 import {
   buildSearchExactLookups,
   buildSearchQueryTokens,
@@ -174,17 +180,23 @@ export async function countContestedMemories(input: unknown = {}) {
   return typeof row?.count === 'number' ? row.count : 0;
 }
 
-export async function getMemoryEntries(input: unknown = {}) {
+export async function getMemoryEntries(input: unknown = {}): Promise<Record<string, unknown>[]> {
   const request = isRecord(input) ? input : {};
-  const includeInactive = normalizeBoolean(request.includeInactive, true);
-  const project = normalizeOptionalText(request.project);
+  const keys = normalizeMemoryLookupKeys(request);
+  const includeInactive = normalizeBoolean(request.includeInactive, keys.length === 0);
+  const project = normalizeProjectScope(request);
+  if (keys.length > 0 && project === undefined) throw new Error('project is required for key lookup.');
   const ids = normalizeMemoryLookupIds(request);
 
   const conditions: string[] = ['id = ANY($1::bigint[])'];
   const params: unknown[] = [ids];
+  if (keys.length > 0) {
+    params.push(keys);
+    conditions[0] = '(id = ANY($1::bigint[]) OR memory_key = ANY($2::text[]))';
+  }
 
   if (!includeInactive) {
-    conditions.push(`status IN ('active', 'contested')`);
+    conditions.push(keys.length > 0 ? `status = 'active'` : `status IN ('active', 'contested')`);
     conditions.push(`(expires_at IS NULL OR expires_at > NOW())`);
   }
 
@@ -197,14 +209,22 @@ export async function getMemoryEntries(input: unknown = {}) {
     SELECT *
     FROM ai_memory_entries
     WHERE ${conditions.join(' AND ')}
-    ORDER BY array_position($1::bigint[], id)
+    ORDER BY array_position($1::bigint[], id)${keys.length > 0 ? ", CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC" : ''}
   `;
 
   const result = await runDbReadQuery({
     operation: 'get_memory_entries',
     task: client => client.query(sql, params),
   });
-  return result.rows.map(row => toMemoryRecord(row));
+  const records = result.rows.map(row => toMemoryRecord(row));
+  if (keys.length === 0) return records;
+  return [
+    ...ids.flatMap(id => records.filter(row => row.id === id)),
+    ...keys.flatMap(key => {
+      const matches = records.filter(row => row.memoryKey === key);
+      return matches.length === 0 ? [{ key, found: false }] : matches.map(row => ({ ...row, key, found: true }));
+    }),
+  ];
 }
 
 export async function listContestedMemories(input: unknown = {}) {
@@ -347,6 +367,8 @@ export async function resolveContestedMemory(input: unknown) {
 }
 
 export interface HybridSearchQueryInput {
+  /** Restrict topic recall before selecting the index pool. */
+  activeKeyedOnly?: boolean;
   activeGoal?: string | undefined;
   category?: string | undefined;
   includeInactive: boolean;
@@ -375,6 +397,9 @@ export function buildHybridSearchQuery(input: HybridSearchQueryInput): { params:
   const params: unknown[] = [];
 
   if (sessionId === undefined) baseConditions.push(KNOWLEDGE_MEMORY_SQL);
+  if (input.activeKeyedOnly) {
+    baseConditions.push("status = 'active'", "memory_key IS NOT NULL AND btrim(memory_key) <> ''");
+  }
 
   params.push(queryText);
   const queryParam = `$${String(params.length)}`;
@@ -898,11 +923,27 @@ function normalizeMemoryLookupIds(request: Record<string, unknown>): number[] {
     }
   }
 
-  if (ids.size === 0) {
-    throw new Error('Provide id or ids to fetch memory records.');
+  if (ids.size === 0 && request.key === undefined && request.keys === undefined) {
+    throw new Error('Provide id, ids, key or keys to fetch memory records.');
   }
 
   return [...ids];
+}
+
+function normalizeMemoryLookupKeys(request: Record<string, unknown>): string[] {
+  const keys = new Set<string>();
+  if (request.keys !== undefined && !Array.isArray(request.keys))
+    throw new Error('keys must be an array of non-empty strings.');
+  const suppliedKeys: unknown[] = Array.isArray(request.keys) ? request.keys : [];
+  const values = [...(request.key === undefined ? [] : [request.key]), ...suppliedKeys];
+  for (const value of values) {
+    const key = normalizeOptionalText(value);
+    if (key === undefined) throw new Error('key and keys must contain non-empty strings.');
+    keys.add(key);
+    if (keys.size > 25) throw new Error('key and keys must contain at most 25 unique keys.');
+  }
+  if (request.keys !== undefined && keys.size === 0) throw new Error('keys must contain non-empty strings.');
+  return [...keys];
 }
 
 function readMemoryStatus(memory: Record<string, unknown>) {
