@@ -380,12 +380,7 @@ async function executeNative(ctx: Context, host: PluginOptions['host'], args: st
     .find(path => existsSync(path) && statSync(path).isFile());
   if (executable === undefined) throw new Error('Install the selected native host CLI first.');
   return await new Promise((done, reject) => {
-    const child = spawn(executable, args, {
-      cwd: ctx.cwd,
-      env: { ...ctx.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
-    });
+    let child: ReturnType<typeof spawn>;
     let output = '';
     let bytes = 0;
     let failure = false;
@@ -410,6 +405,23 @@ async function executeNative(ctx: Context, host: PluginOptions['host'], args: st
       ctx.cancelled = true;
       stop();
     };
+    // Admit cancellation before native code can run, including while its
+    // process-group ownership is being recorded synchronously.
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
+    try {
+      child = spawn(executable, args, {
+        cwd: ctx.cwd,
+        env: { ...ctx.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+      });
+    } catch (error) {
+      process.removeListener('SIGINT', cancel);
+      process.removeListener('SIGTERM', cancel);
+      reject(error instanceof Error ? error : new Error('Native plugin process could not be started.'));
+      return;
+    }
     if (child.pid !== undefined) {
       try {
         ctx.recordNative?.(child.pid, true);
@@ -426,8 +438,6 @@ async function executeNative(ctx: Context, host: PluginOptions['host'], args: st
     child.stdout?.on('data', (data: Buffer) => {
       if (bytes <= 1024 * 1024) output += data.toString();
     });
-    process.once('SIGINT', cancel);
-    process.once('SIGTERM', cancel);
     child.once('error', () => {
       failure = true;
     });

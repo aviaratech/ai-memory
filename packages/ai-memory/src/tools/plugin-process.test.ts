@@ -80,13 +80,14 @@ async function until(condition: () => boolean): Promise<void> {
 }
 const native = `#!/usr/bin/env node
 const { spawn } = require('node:child_process');
-const { writeFileSync } = require('node:fs');
+const { renameSync, writeFileSync } = require('node:fs');
 if (process.argv.includes('--help')) { console.log('marketplace add remove list'); }
 else {
   process.on('SIGTERM', () => {});
   const descendant = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"], {stdio:['ignore','pipe','inherit']});
   descendant.stdout.once('data', () => {
-    writeFileSync(process.env.PLUGIN_TEST_PIDS, JSON.stringify([process.pid, descendant.pid]));
+    writeFileSync(process.env.PLUGIN_TEST_PIDS + '.tmp', JSON.stringify([process.pid, descendant.pid]));
+    renameSync(process.env.PLUGIN_TEST_PIDS + '.tmp', process.env.PLUGIN_TEST_PIDS);
     if (process.env.PLUGIN_TEST_EXIT === '1') process.exit(8);
   });
   setInterval(()=>{},1000);
@@ -166,27 +167,92 @@ it('serializes two stale-lock reclaimers and preserves the new live owner', asyn
   }
 }, 15000);
 
-for (const leaderExit of [false, true]) {
-  it(`joins resistant native descendants after ${leaderExit ? 'leader failure' : 'cancellation'} and recovers the pending unit`, async () => {
+for (const scenario of [
+  { name: 'cancellation', signal: 'SIGTERM', boundary: false, listenerFailure: false, leaderExit: false },
+  { name: 'leader failure', signal: 'SIGTERM', boundary: false, listenerFailure: false, leaderExit: true },
+  { name: 'SIGTERM at native launch', signal: 'SIGTERM', boundary: true, listenerFailure: false, leaderExit: false },
+  { name: 'SIGINT at native launch', signal: 'SIGINT', boundary: true, listenerFailure: false, leaderExit: false },
+  {
+    name: 'synthetic listener-readiness failure',
+    signal: 'SIGTERM',
+    boundary: true,
+    listenerFailure: true,
+    leaderExit: false,
+  },
+] as const) {
+  it(`retains process outcomes after ${scenario.name} and recovers admitted cancellation`, async () => {
     const home = mkdtempSync(join(tmpdir(), 'ai-memory-plugin-process-'));
     const bin = join(home, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'codex'), native, { mode: 0o700 });
     const pidsPath = join(home, 'pids.json');
+    const readinessPath = join(home, 'readiness.json');
+    const preload = join(home, 'boundary.mjs');
+    // This deterministic injection widens the launch/listener boundary. It is
+    // separate from the historical CI failure, whose exit signal is unknown.
+    writeFileSync(
+      preload,
+      `
+import cp from 'node:child_process';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+const originalSpawn = cp.spawn;
+const originalOnce = process.once;
+const record = () => fs.writeFileSync(${JSON.stringify(readinessPath)}, JSON.stringify({
+  SIGINT: process.listenerCount('SIGINT'), SIGTERM: process.listenerCount('SIGTERM')
+}));
+process.once = function (event, listener) {
+  const result = originalOnce.call(this, event, listener);
+  if (event === 'SIGINT' || event === 'SIGTERM') record();
+  return result;
+};
+cp.spawn = function (command, args, options) {
+  const child = originalSpawn(command, args, options);
+  if (!args.includes('--help')) {
+    if (${scenario.listenerFailure}) process.removeAllListeners(${JSON.stringify(scenario.signal)});
+    record();
+    if (${scenario.boundary}) {
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(${JSON.stringify(pidsPath)})) {
+        if (Date.now() > deadline) throw new Error('synthetic native readiness was not reached');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+      process.kill(process.pid, ${JSON.stringify(scenario.signal)});
+    }
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`,
+    );
     const env: NodeJS.ProcessEnv = {
       HOME: home,
       CODEX_HOME: join(home, 'codex'),
       PATH: `${bin}:${dirname(process.execPath)}`,
       NODE_OPTIONS: '--max-old-space-size=512',
       PLUGIN_TEST_PIDS: pidsPath,
-      PLUGIN_TEST_EXIT: leaderExit ? '1' : '0',
+      PLUGIN_TEST_EXIT: scenario.leaderExit ? '1' : '0',
     };
     const child = spawn(
       process.execPath,
-      [cli, 'plugin', 'install', '--host', 'codex', '--scope', 'user', '--version', getPackageVersion(), '--json'],
+      [
+        '--import',
+        preload,
+        cli,
+        'plugin',
+        'install',
+        '--host',
+        'codex',
+        '--scope',
+        'user',
+        '--version',
+        getPackageVersion(),
+        '--json',
+      ],
       { cwd: home, env, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let output = '';
+    let stderr = '';
     let bytes = 0;
     for (const stream of [child.stdout, child.stderr])
       stream.on('data', (data: Buffer) => {
@@ -196,15 +262,53 @@ for (const leaderExit of [false, true]) {
     child.stdout.on('data', (data: Buffer) => {
       if (bytes <= 1024 * 1024) output += data.toString();
     });
-    const closed = new Promise<number | null>(resolve => child.once('close', resolve));
+    child.stderr.on('data', (data: Buffer) => {
+      if (bytes <= 1024 * 1024) stderr += data.toString();
+    });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+      child.once('close', (code, signal) => {
+        resolve({ code, signal });
+      }),
+    );
+    const peer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: true });
+    const peerClosed = new Promise(resolve => peer.once('close', resolve));
     let pids: number[] = [];
     try {
       await until(() => existsSync(pidsPath));
       pids = JSON.parse(readFileSync(pidsPath, 'utf8')) as number[];
-      if (!leaderExit) child.kill('SIGTERM');
-      assert.equal(await closed, 2);
+      if (!scenario.leaderExit && !scenario.boundary) child.kill(scenario.signal);
+      const close = await closed;
+      // Capture before assertions and teardown so a signaled CLI cannot hide
+      // listener state or leave descendant outcomes unobserved again.
+      const diagnostics = {
+        scenario: scenario.name,
+        close,
+        readiness: JSON.parse(readFileSync(readinessPath, 'utf8')) as { SIGINT: number; SIGTERM: number },
+        descendants: pids.map(pid => ({ pid, alive: alive(pid) })),
+        groupAlive: alive(-(pids[0] ?? 0)),
+        peerAlive: peer.pid !== undefined && alive(peer.pid),
+        stdout: output.slice(-4096),
+        stderr: stderr.slice(-4096),
+      };
+      const evidence = JSON.stringify(diagnostics);
+      if (scenario.listenerFailure) {
+        assert.deepEqual(close, { code: null, signal: 'SIGTERM' }, evidence);
+        assert.equal(diagnostics.readiness.SIGTERM, 0, evidence);
+        assert.ok(
+          diagnostics.descendants.every(descendant => descendant.alive),
+          evidence,
+        );
+        assert.equal(diagnostics.groupAlive, true, evidence);
+        assert.equal(diagnostics.peerAlive, true, evidence);
+        console.info('Synthetic listener-readiness failure before teardown:', evidence);
+        return;
+      }
+      assert.deepEqual(close, { code: 2, signal: null }, evidence);
+      assert.deepEqual(diagnostics.readiness, { SIGINT: 1, SIGTERM: 1 }, evidence);
       await until(() => pids.every(pid => !alive(pid)) && !alive(-(pids[0] ?? 0)));
-      assert.equal((JSON.parse(output) as { state: string }).state, 'pending_recovery');
+      assert.equal(diagnostics.peerAlive, true, evidence);
+      assert.ok(peer.pid !== undefined && alive(peer.pid), evidence);
+      assert.equal((JSON.parse(output) as { state: string }).state, 'pending_recovery', evidence);
       const roots = join(home, '.config/ai-memory/plugins');
       const root = join(roots, readdirSync(roots)[0] ?? 'missing');
       if (existsSync(join(root, 'operation.lock'))) {
@@ -228,9 +332,18 @@ for (const leaderExit of [false, true]) {
       assert.equal((JSON.parse(result) as { state: string }).state, 'removed');
       assert.equal(existsSync(join(root, 'operation.lock')), false);
     } finally {
-      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
-      if (child.exitCode === null) child.kill('SIGKILL');
-      await closed;
+      try {
+        if (existsSync(pidsPath)) pids = JSON.parse(readFileSync(pidsPath, 'utf8')) as number[];
+        const group = pids[0];
+        if (group !== undefined && alive(-group)) process.kill(-group, 'SIGKILL');
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await closed;
+        await until(() => pids.every(pid => !alive(pid)) && (group === undefined || !alive(-group)));
+      } finally {
+        if (peer.pid !== undefined && alive(peer.pid)) peer.kill('SIGKILL');
+        await peerClosed;
+        assert.equal(peer.pid !== undefined && alive(peer.pid), false);
+      }
       rmSync(home, { recursive: true, force: true });
     }
   }, 15_000);
