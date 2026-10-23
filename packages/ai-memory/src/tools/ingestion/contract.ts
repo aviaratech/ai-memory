@@ -25,6 +25,7 @@ export type IngestSource =
   | 'codex-launchd'
   | 'codex-wrapper'
   | 'grok-session-end'
+  | 'session-end'
   | 'manual'
   | 'manual-flush';
 

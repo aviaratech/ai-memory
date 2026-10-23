@@ -29,6 +29,7 @@ const AUTO_INGEST_SOURCES: ReadonlySet<string> = new Set<IngestSource>([
   'codex-launchd',
   'codex-wrapper',
   'grok-session-end',
+  'session-end',
 ]);
 
 /** Sources that route through the explicit flush path. */

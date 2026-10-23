@@ -401,9 +401,14 @@ function runClaudeHookSmoke() {
     transcript_path: transcriptPath,
   };
 
+  const claudeEnv: NodeJS.ProcessEnv = { ...process.env, CLAUDECODE: '1' };
+  for (const key of ['CODEX', 'PLUGIN_ROOT', 'AI_AGENT_IDENTITY', 'GROK_HOOK_EVENT']) {
+    delete claudeEnv[key];
+  }
   const run = spawnSync(process.execPath, [join(INGESTION_SCRIPT_DIR, 'ingest-claude-session-end-hook.js')], {
     cwd: process.cwd(),
     encoding: 'utf8',
+    env: claudeEnv,
     input: JSON.stringify(hookPayload),
   });
 
