@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-
 import {
   closePool,
   countContestedMemories,
@@ -39,11 +37,9 @@ import {
 } from '@aviaratech/ai-memory/internal';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'node:crypto';
 import { memoryHookHost } from './ingestion/session-task-hooks.js';
 import { realpathSync } from 'node:fs';
-import { createServer, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import * as z from 'zod/v4';
 
@@ -52,6 +48,7 @@ import { buildContinuityPackDebugPayload } from './ingestion/continuity-pack.js'
 import { runIngestPipeline } from './ingestion/pipeline.js';
 import { getAiMemoryRuntimeDiagnostics, initializeAiMemoryRuntimeEnv, loadAiMemoryMcpEnvConfig } from './runtimeEnv.js';
 import { getPackageVersion } from '../version.js';
+import { createAiMemoryHttpServer, type HttpToolActivity } from './httpServer.js';
 import { extractTimedOutSteps, summarizeToolArgs } from './telemetry-summary.js';
 import {
   appendAiMemoryWarningsToTextResult,
@@ -60,11 +57,6 @@ import {
   recordAiMemoryWarningDetail,
   runWithAiMemoryWarningCollector,
 } from './warning-channel.js';
-
-export const server = new McpServer({
-  name: 'ai-memory',
-  version: getPackageVersion(),
-});
 
 let startupInitialization: Promise<void> = Promise.resolve();
 
@@ -260,27 +252,6 @@ export const memoryStoreInputSchema = z.object({
   userId: z.string().min(1).optional().describe('Optional user scope id.'),
 });
 
-server.registerTool(
-  'memory_store',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-    description:
-      'Store durable, reusable knowledge for cross-session, cross-agent recall: decisions, standing rules, conventions, hard-to-re-derive facts, root causes and pointers. ' +
-      'Every write needs a stable memoryKey, at least one evidenceRef and plain sentences, and must not contain secrets, personal data, email addresses or home-folder paths. ' +
-      'Session state and summaries belong in memory_flush.',
-    inputSchema: memoryStoreInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const record = await storeMemory(mergeDetectedDefaults(args, detectedAgentContext));
-        return toTextResult({ memory: record, status: 'ok' });
-      },
-      toolName: 'memory_store',
-    }),
-);
-
 const strategyConfidenceSchema = z.enum(STRATEGY_CONFIDENCE_VALUES);
 
 const agentStateModelInputSchema = z
@@ -390,33 +361,6 @@ export const memoryFlushInputSchema = z.object(memoryFlushInputShape).superRefin
     });
   }
 });
-
-server.registerTool(
-  'memory_flush',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-    description:
-      'Save session state before compaction or handoff. ' +
-      'Updates the session snapshot (summary, decisions, root causes, next_actions, context_needed, open_questions, stateModel, envModel) for session resume ' +
-      'and refreshes the bounded continuity pack. It writes no durable memories; store reusable knowledge with memory_store.',
-    inputSchema: memoryFlushInputShape,
-  },
-  (args: unknown) => {
-    const merged = mergeDetectedDefaults(args, detectedAgentContext);
-    return runTool({
-      args: merged,
-      handler: async () => {
-        const parsed = memoryFlushInputSchema.parse(merged);
-        const result = await runIngestPipeline({
-          ...parsed,
-          source: 'manual-flush',
-        });
-        return toTextResult(result);
-      },
-      toolName: 'memory_flush',
-    });
-  },
-);
 
 export const memoryOrientInputSchema = z.object({
   activeGoal: z
@@ -538,101 +482,6 @@ export const memoryGetInputSchema = z.object({
   project: z.string().min(1).optional().describe('Optional project filter for scoped lookup.'),
 });
 
-server.registerTool(
-  'memory_continuity_debug',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description:
-      'Read and render the exact bounded cross-chat continuity pack that session startup would consume, including budget/truncation metadata. Debug-only; does not run vector recall.',
-    inputSchema: memoryContinuityPackInputShape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const parsed = memoryContinuityDebugInputSchema.parse(args);
-        const result = await getContinuityPack(parsed);
-        return toTextResult(buildContinuityPackDebugPayload(result));
-      },
-      toolName: 'memory_continuity_debug',
-    }),
-);
-
-server.registerTool(
-  'memory_continuity_pack',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description:
-      'Read a bounded cross-chat continuity pack. The default project scope is startup background context; pass exactly one lead, outcome, or task identity for an explicit checkpoint. Refresh happens through memory_flush.',
-    inputSchema: memoryContinuityPackInputShape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const parsed = memoryContinuityPackInputSchema.parse(args);
-        const result = await getContinuityPack(parsed);
-        return toTextResult(result);
-      },
-      toolName: 'memory_continuity_pack',
-    }),
-);
-
-server.registerTool(
-  'memory_orient',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-    description:
-      'Single-call startup orientation: combines recall, session resume, task search, contested count, and environment probing. Recall/search may update stored access importance.',
-    inputSchema: memoryOrientInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        // A shared MCP service environment identifies the server, not its requesting caller.
-        const result = await orientMemory(args);
-        return toTextResult(result);
-      },
-      toolName: 'memory_orient',
-    }),
-);
-
-server.registerTool(
-  'memory_runtime_diagnostics',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-    description:
-      'Inspect the ai-memory runtime credential resolution without revealing secrets. ' +
-      'Reports whether the database URL is present, which key won, which runtime source provided it, and the derived database host.',
-    inputSchema: memoryRuntimeDiagnosticsInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: () => Promise.resolve(toTextResult(getAiMemoryRuntimeDiagnostics())),
-      toolName: 'memory_runtime_diagnostics',
-    }),
-);
-
-server.registerTool(
-  'memory_get',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description: 'Fetch durable memory rows by id for on-demand expansion after compact orient/search previews.',
-    inputSchema: memoryGetInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const memories = await getMemoryEntries(args);
-        return toTextResult({ count: memories.length, memories });
-      },
-      toolName: 'memory_get',
-    }),
-);
-
 export const memorySearchInputSchema = z.object({
   activeGoal: z.string().min(1).optional().describe('Optional active goal text used to condition result reranking.'),
   category: z.string().min(1).optional().describe('Optional category filter.'),
@@ -652,53 +501,11 @@ export const memorySearchInputSchema = z.object({
     .describe('Exact session id for scoped history, including unkeyed session/flush records.'),
 });
 
-server.registerTool(
-  'memory_search',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-    description:
-      'Search durable knowledge by text query + filters. Default search excludes unkeyed session/flush records while preserving shared keyed facts; use sessionId for exact-session history. Returns compact source-linked previews by default; use memory_get for full detail. All detail modes share a 16384-byte serialized result cap; oversized full records become marked compact previews.',
-    inputSchema: memorySearchInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const parsed = memorySearchInputSchema.parse(args);
-        const memories = await searchMemories(parsed);
-        return toTextResult({
-          count: memories.length,
-          memories,
-        });
-      },
-      toolName: 'memory_search',
-    }),
-);
-
 export const memoryIngestContextPackInputSchema = z.object({
   contextPack: acceptJsonEncoded(z.record(z.string(), z.unknown())).describe(
     'A context_pack@0.1 object compliant with the shared contract schema.',
   ),
 });
-
-server.registerTool(
-  'memory_ingest_context_pack',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-    description:
-      'Validate and ingest a full context_pack@0.1 payload (session, snapshot, events, and context artifact).',
-    inputSchema: memoryIngestContextPackInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const result = await ingestContextPack(args);
-        return toTextResult(result);
-      },
-      toolName: 'memory_ingest_context_pack',
-    }),
-);
 
 export const memoryIngestDeltaInputSchema = z.object({
   memoryDelta: acceptJsonEncoded(z.record(z.string(), z.unknown())).describe(
@@ -706,209 +513,413 @@ export const memoryIngestDeltaInputSchema = z.object({
   ),
 });
 
-server.registerTool(
-  'memory_ingest_delta',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-    description:
-      'Validate and ingest a full memory_delta@0.1 payload with its snapshot and append events. Durable memories are written only with memory_store.',
-    inputSchema: memoryIngestDeltaInputSchema.shape,
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const result = await ingestMemoryDelta(args);
-        return toTextResult(result);
-      },
-      toolName: 'memory_ingest_delta',
-    }),
-);
+export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer {
+  const server = new McpServer({ name: 'ai-memory', version: getPackageVersion() });
+  const runTool = async (params: ToolInvocationParams): Promise<ToolResult> => {
+    activity?.onToolStart();
+    try {
+      return await invokeTool(params);
+    } finally {
+      activity?.onToolEnd();
+    }
+  };
 
-server.registerTool(
-  'memory_ingestion_failures',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description:
-      'List recent ai-memory ingestion failures (hooks/wrappers/ingesters) for operational debugging and observability.',
-    inputSchema: {
-      limit: acceptJsonEncoded(z.number().int().min(1).max(200).optional()).describe(
-        'Max records to return (default 20).',
-      ),
-      sessionId: z.string().min(1).optional().describe('Optional session id filter.'),
-      source: z.string().min(1).optional().describe('Optional source filter (claude-session-end, codex-wrapper, etc).'),
-      stage: z
-        .string()
-        .min(1)
-        .optional()
-        .describe('Optional stage filter (ingest_auto_delta, ingest_memory_delta, etc).'),
+  server.registerTool(
+    'memory_store',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      description:
+        'Store durable, reusable knowledge for cross-session, cross-agent recall: decisions, standing rules, conventions, hard-to-re-derive facts, root causes and pointers. ' +
+        'Every write needs a stable memoryKey, at least one evidenceRef and plain sentences, and must not contain secrets, personal data, email addresses or home-folder paths. ' +
+        'Session state and summaries belong in memory_flush.',
+      inputSchema: memoryStoreInputSchema.shape,
     },
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const failures = await listIngestionFailures(args);
-        return toTextResult({ count: failures.length, failures });
-      },
-      toolName: 'memory_ingestion_failures',
-    }),
-);
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const record = await storeMemory(mergeDetectedDefaults(args, detectedAgentContext));
+          return toTextResult({ memory: record, status: 'ok' });
+        },
+        toolName: 'memory_store',
+      }),
+  );
 
-server.registerTool(
-  'memory_recall',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-    description: 'Recall recent durable memories for session startup context.',
-    inputSchema: {
-      category: z.string().min(1).optional().describe('Optional category filter.'),
-      includeInactive: z.boolean().optional().describe('Include superseded/expired/archived memories when true.'),
-      limit: acceptJsonEncoded(z.number().int().min(1).max(50).optional()).describe(
-        'Max number of records (default 10).',
-      ),
-      memoryType: z.enum(MEMORY_TYPE_VALUES).optional().describe('Optional memory type filter.'),
-      project: z.string().min(1).optional().describe('Optional project filter.'),
-      sinceDays: acceptJsonEncoded(z.number().int().min(1).max(3650).optional()).describe(
-        'Lookback window in days (default 90).',
-      ),
+  server.registerTool(
+    'memory_flush',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      description:
+        'Save session state before compaction or handoff. ' +
+        'Updates the session snapshot (summary, decisions, root causes, next_actions, context_needed, open_questions, stateModel, envModel) for session resume ' +
+        'and refreshes the bounded continuity pack. It writes no durable memories; store reusable knowledge with memory_store.',
+      inputSchema: memoryFlushInputShape,
     },
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const memories = await recallMemories(args);
-        const contestedCount = await countContestedMemories(args);
-        const result: Record<string, unknown> = {
-          count: memories.length,
-          memories,
-        };
-        if (contestedCount > 5) {
-          result.notice = `Note: ${String(contestedCount)} contested memories exist. Consider running memory_resolve_contested.`;
-        }
-        return toTextResult(result);
-      },
-      toolName: 'memory_recall',
-    }),
-);
+    (args: unknown) => {
+      const merged = mergeDetectedDefaults(args, detectedAgentContext);
+      return runTool({
+        args: merged,
+        handler: async () => {
+          const parsed = memoryFlushInputSchema.parse(merged);
+          const result = await runIngestPipeline({
+            ...parsed,
+            source: 'manual-flush',
+          });
+          return toTextResult(result);
+        },
+        toolName: 'memory_flush',
+      });
+    },
+  );
 
-server.registerTool(
-  'memory_resolve_contested',
-  {
-    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-    description: 'List contested memory pairs and optionally resolve them.',
-    inputSchema: {
-      action: z
-        .enum(['list', 'keep_first', 'keep_second', 'keep_both', 'merge'])
-        .optional()
-        .describe(
-          'Resolution action. list: show contested memories (default limit: 100, max: 500). ' +
-            'keep_first: keep A, supersede B. keep_second: keep B, supersede A. ' +
-            'keep_both: set both back to active. merge: create new memory superseding both.',
-        ),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .describe('Max contested pairs to return for list action (default 100, max 500).'),
-      memoryIdA: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe('First memory id in the contested pair. Required for resolution actions.'),
-      memoryIdB: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe('Second memory id in the contested pair. Required for resolution actions.'),
-      mergedContent: z
-        .string()
-        .min(1)
-        .optional()
-        .describe('Merged content for the new memory. Required when action is merge.'),
-      project: z.string().min(1).optional().describe('Optional project filter for list action.'),
+  server.registerTool(
+    'memory_continuity_debug',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description:
+        'Read and render the exact bounded cross-chat continuity pack that session startup would consume, including budget/truncation metadata. Debug-only; does not run vector recall.',
+      inputSchema: memoryContinuityPackInputShape,
     },
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const request = isRecord(args) ? args : {};
-        const action = request.action ?? 'list';
-        if (action === 'list') {
-          const memories = await listContestedMemories(args);
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const parsed = memoryContinuityDebugInputSchema.parse(args);
+          const result = await getContinuityPack(parsed);
+          return toTextResult(buildContinuityPackDebugPayload(result));
+        },
+        toolName: 'memory_continuity_debug',
+      }),
+  );
+
+  server.registerTool(
+    'memory_continuity_pack',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description:
+        'Read a bounded cross-chat continuity pack. The default project scope is startup background context; pass exactly one lead, outcome, or task identity for an explicit checkpoint. Refresh happens through memory_flush.',
+      inputSchema: memoryContinuityPackInputShape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const parsed = memoryContinuityPackInputSchema.parse(args);
+          const result = await getContinuityPack(parsed);
+          return toTextResult(result);
+        },
+        toolName: 'memory_continuity_pack',
+      }),
+  );
+
+  server.registerTool(
+    'memory_orient',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      description:
+        'Single-call startup orientation: combines recall, session resume, task search, contested count, and environment probing. Recall/search may update stored access importance.',
+      inputSchema: memoryOrientInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          // A shared MCP service environment identifies the server, not its requesting caller.
+          const result = await orientMemory(args);
+          return toTextResult(result);
+        },
+        toolName: 'memory_orient',
+      }),
+  );
+
+  server.registerTool(
+    'memory_runtime_diagnostics',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      description:
+        'Inspect the ai-memory runtime credential resolution without revealing secrets. ' +
+        'Reports whether the database URL is present, which key won, which runtime source provided it, and the derived database host.',
+      inputSchema: memoryRuntimeDiagnosticsInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: () => Promise.resolve(toTextResult(getAiMemoryRuntimeDiagnostics())),
+        toolName: 'memory_runtime_diagnostics',
+      }),
+  );
+
+  server.registerTool(
+    'memory_get',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description: 'Fetch durable memory rows by id for on-demand expansion after compact orient/search previews.',
+      inputSchema: memoryGetInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const memories = await getMemoryEntries(args);
           return toTextResult({ count: memories.length, memories });
-        }
-        const result = await resolveContestedMemory(args);
-        return toTextResult({ status: 'ok', ...result });
-      },
-      toolName: 'memory_resolve_contested',
-    }),
-);
+        },
+        toolName: 'memory_get',
+      }),
+  );
 
-server.registerTool(
-  'memory_session_resume',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description:
-      'Fetch short-term session context for reliable resume: session metadata, latest snapshot, and recent events. ' +
-      'Pass a known host sessionId for exact scoped lookup; a missing or foreign session never falls back. ' +
-      'For a logical task spanning sessions, use memory_continuity_pack with task instead. Without sessionId, agent/project/repoId select the most recent matching session as background. ' +
-      'At least one of sessionId, agent, project, or repoId must be provided.',
-    inputSchema: {
-      agent: z.string().min(1).optional().describe('Agent identifier for fallback session resolution.'),
-      eventLimit: acceptJsonEncoded(z.number().int().min(1).max(500).optional()).describe(
-        'Max recent events to include (default 25).',
-      ),
-      project: z.string().min(1).optional().describe('Project identifier for fallback session resolution.'),
-      repoId: z.string().min(1).optional().describe('Repository identifier for fallback session resolution.'),
-      sessionId: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'Exact host session id to resume. Missing or foreign scoped sessions return not_found without fallback.',
+  server.registerTool(
+    'memory_search',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      description:
+        'Search durable knowledge by text query + filters. Default search excludes unkeyed session/flush records while preserving shared keyed facts; use sessionId for exact-session history. Returns compact source-linked previews by default; use memory_get for full detail. All detail modes share a 16384-byte serialized result cap; oversized full records become marked compact previews.',
+      inputSchema: memorySearchInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const parsed = memorySearchInputSchema.parse(args);
+          const memories = await searchMemories(parsed);
+          return toTextResult({
+            count: memories.length,
+            memories,
+          });
+        },
+        toolName: 'memory_search',
+      }),
+  );
+
+  server.registerTool(
+    'memory_ingest_context_pack',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      description:
+        'Validate and ingest a full context_pack@0.1 payload (session, snapshot, events, and context artifact).',
+      inputSchema: memoryIngestContextPackInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const result = await ingestContextPack(args);
+          return toTextResult(result);
+        },
+        toolName: 'memory_ingest_context_pack',
+      }),
+  );
+
+  server.registerTool(
+    'memory_ingest_delta',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      description:
+        'Validate and ingest a full memory_delta@0.1 payload with its snapshot and append events. Durable memories are written only with memory_store.',
+      inputSchema: memoryIngestDeltaInputSchema.shape,
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const result = await ingestMemoryDelta(args);
+          return toTextResult(result);
+        },
+        toolName: 'memory_ingest_delta',
+      }),
+  );
+
+  server.registerTool(
+    'memory_ingestion_failures',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description:
+        'List recent ai-memory ingestion failures (hooks/wrappers/ingesters) for operational debugging and observability.',
+      inputSchema: {
+        limit: acceptJsonEncoded(z.number().int().min(1).max(200).optional()).describe(
+          'Max records to return (default 20).',
         ),
-    },
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const session = await getSessionResume(args);
-        return toTextResult(session);
+        sessionId: z.string().min(1).optional().describe('Optional session id filter.'),
+        source: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Optional source filter (claude-session-end, codex-wrapper, etc).'),
+        stage: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Optional stage filter (ingest_auto_delta, ingest_memory_delta, etc).'),
       },
-      toolName: 'memory_session_resume',
-    }),
-);
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const failures = await listIngestionFailures(args);
+          return toTextResult({ count: failures.length, failures });
+        },
+        toolName: 'memory_ingestion_failures',
+      }),
+  );
 
-server.registerTool(
-  'memory_session_tail',
-  {
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-    description: 'Read recent short-term session events for a session, optionally since an ISO timestamp.',
-    inputSchema: {
-      limit: acceptJsonEncoded(z.number().int().min(1).max(500).optional()).describe(
-        'Max number of events to return (default 50).',
-      ),
-      sessionId: z.string().min(1).describe('Session id to read.'),
-      since: z.string().min(1).optional().describe('Optional ISO timestamp lower bound for event created_at.'),
-    },
-  },
-  (args: unknown) =>
-    runTool({
-      args,
-      handler: async () => {
-        const events = await listSessionEvents(args);
-        return toTextResult(events);
+  server.registerTool(
+    'memory_recall',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      description: 'Recall recent durable memories for session startup context.',
+      inputSchema: {
+        category: z.string().min(1).optional().describe('Optional category filter.'),
+        includeInactive: z.boolean().optional().describe('Include superseded/expired/archived memories when true.'),
+        limit: acceptJsonEncoded(z.number().int().min(1).max(50).optional()).describe(
+          'Max number of records (default 10).',
+        ),
+        memoryType: z.enum(MEMORY_TYPE_VALUES).optional().describe('Optional memory type filter.'),
+        project: z.string().min(1).optional().describe('Optional project filter.'),
+        sinceDays: acceptJsonEncoded(z.number().int().min(1).max(3650).optional()).describe(
+          'Lookback window in days (default 90).',
+        ),
       },
-      toolName: 'memory_session_tail',
-    }),
-);
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const memories = await recallMemories(args);
+          const contestedCount = await countContestedMemories(args);
+          const result: Record<string, unknown> = {
+            count: memories.length,
+            memories,
+          };
+          if (contestedCount > 5) {
+            result.notice = `Note: ${String(contestedCount)} contested memories exist. Consider running memory_resolve_contested.`;
+          }
+          return toTextResult(result);
+        },
+        toolName: 'memory_recall',
+      }),
+  );
+
+  server.registerTool(
+    'memory_resolve_contested',
+    {
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      description: 'List contested memory pairs and optionally resolve them.',
+      inputSchema: {
+        action: z
+          .enum(['list', 'keep_first', 'keep_second', 'keep_both', 'merge'])
+          .optional()
+          .describe(
+            'Resolution action. list: show contested memories (default limit: 100, max: 500). ' +
+              'keep_first: keep A, supersede B. keep_second: keep B, supersede A. ' +
+              'keep_both: set both back to active. merge: create new memory superseding both.',
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe('Max contested pairs to return for list action (default 100, max 500).'),
+        memoryIdA: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('First memory id in the contested pair. Required for resolution actions.'),
+        memoryIdB: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Second memory id in the contested pair. Required for resolution actions.'),
+        mergedContent: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Merged content for the new memory. Required when action is merge.'),
+        project: z.string().min(1).optional().describe('Optional project filter for list action.'),
+      },
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const request = isRecord(args) ? args : {};
+          const action = request.action ?? 'list';
+          if (action === 'list') {
+            const memories = await listContestedMemories(args);
+            return toTextResult({ count: memories.length, memories });
+          }
+          const result = await resolveContestedMemory(args);
+          return toTextResult({ status: 'ok', ...result });
+        },
+        toolName: 'memory_resolve_contested',
+      }),
+  );
+
+  server.registerTool(
+    'memory_session_resume',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description:
+        'Fetch short-term session context for reliable resume: session metadata, latest snapshot, and recent events. ' +
+        'Pass a known host sessionId for exact scoped lookup; a missing or foreign session never falls back. ' +
+        'For a logical task spanning sessions, use memory_continuity_pack with task instead. Without sessionId, agent/project/repoId select the most recent matching session as background. ' +
+        'At least one of sessionId, agent, project, or repoId must be provided.',
+      inputSchema: {
+        agent: z.string().min(1).optional().describe('Agent identifier for fallback session resolution.'),
+        eventLimit: acceptJsonEncoded(z.number().int().min(1).max(500).optional()).describe(
+          'Max recent events to include (default 25).',
+        ),
+        project: z.string().min(1).optional().describe('Project identifier for fallback session resolution.'),
+        repoId: z.string().min(1).optional().describe('Repository identifier for fallback session resolution.'),
+        sessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Exact host session id to resume. Missing or foreign scoped sessions return not_found without fallback.',
+          ),
+      },
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const session = await getSessionResume(args);
+          return toTextResult(session);
+        },
+        toolName: 'memory_session_resume',
+      }),
+  );
+
+  server.registerTool(
+    'memory_session_tail',
+    {
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
+      description: 'Read recent short-term session events for a session, optionally since an ISO timestamp.',
+      inputSchema: {
+        limit: acceptJsonEncoded(z.number().int().min(1).max(500).optional()).describe(
+          'Max number of events to return (default 50).',
+        ),
+        sessionId: z.string().min(1).describe('Session id to read.'),
+        since: z.string().min(1).optional().describe('Optional ISO timestamp lower bound for event created_at.'),
+      },
+    },
+    (args: unknown) =>
+      runTool({
+        args,
+        handler: async () => {
+          const events = await listSessionEvents(args);
+          return toTextResult(events);
+        },
+        toolName: 'memory_session_tail',
+      }),
+  );
+  return server;
+}
+
+export const server = createAiMemoryMcpServer();
 
 async function main() {
   logAiMemoryInfo('mcp.agent_context_detected', {
@@ -984,44 +995,12 @@ async function main() {
   if (transportMode === 'http') {
     const httpPort = envConfig.httpPort;
     const httpHost = envConfig.httpHost;
-    const httpTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+    activeHttpServer = createAiMemoryHttpServer({
+      allowedOrigins: envConfig.httpAllowedOrigins,
+      createMcpServer: createAiMemoryMcpServer,
     });
 
-    activeHttpServer = createServer((req, res) => {
-      const url = req.url ?? '/';
-      if (url === '/mcp' || url.startsWith('/mcp?') || url.startsWith('/mcp/')) {
-        void httpTransport.handleRequest(req, res).catch((error: unknown) => {
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'Internal server error processing MCP request.',
-              }),
-            );
-          }
-          logAiMemoryError('mcp.http_transport_error', {
-            error: formatError(error),
-            message: `Failed to handle MCP request on ${url}`,
-            transport: 'http',
-          });
-        });
-      } else if (url === '/' || url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            name: 'ai-memory',
-            status: 'ok',
-            transport: 'http',
-          }),
-        );
-      } else {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Not found. MCP endpoint is at /mcp' }));
-      }
-    });
-
-    activeHttpServer.on('error', (error: NodeJS.ErrnoException) => {
+    activeHttpServer.httpServer.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code === 'EADDRINUSE') {
         logAiMemoryError('mcp.http_port_in_use', {
           host: httpHost,
@@ -1033,18 +1012,13 @@ async function main() {
       throw error;
     });
 
-    activeHttpServer.listen(httpPort, httpHost, () => {
+    activeHttpServer.httpServer.listen(httpPort, httpHost, () => {
       logAiMemoryInfo('mcp.http_listening', {
         host: httpHost,
         message: `ai-memory MCP HTTP server listening on ${httpHost}:${String(httpPort)}`,
         port: httpPort,
       });
     });
-
-    // SDK type incompatibility: StreamableHTTPServerTransport defines onclose as
-    // (() => void) | undefined, but Transport requires optional-without-undefined
-    // under our exactOptionalPropertyTypes tsconfig
-    await server.connect(httpTransport as Transport);
   } else {
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -1060,7 +1034,7 @@ async function main() {
   });
 }
 
-let activeHttpServer: HttpServer | undefined;
+let activeHttpServer: ReturnType<typeof createAiMemoryHttpServer> | undefined;
 let shuttingDown = false;
 
 export function summarizeToolPayload(response: ToolResult, toolName: ToolName): SummaryMap {
@@ -1537,7 +1511,7 @@ function resolveWriteDisposition(payloadRecord: Record<string, unknown>): string
   return trimmedDisposition.length > 0 ? trimmedDisposition : undefined;
 }
 
-async function runTool(params: ToolInvocationParams): Promise<ToolResult> {
+async function invokeTool(params: ToolInvocationParams): Promise<ToolResult> {
   const startedAt = Date.now();
   const invocationId = randomUUID();
   const warningCollector = createAiMemoryWarningCollector();
@@ -1706,15 +1680,7 @@ async function shutdown(signal: 'SIGINT' | 'SIGTERM') {
     signal,
   });
 
-  const httpServer = activeHttpServer;
-  const closeHttpServer = httpServer
-    ? new Promise<void>(resolve => {
-        httpServer.close(() => {
-          resolve();
-        });
-      })
-    : Promise.resolve();
-  await Promise.allSettled([server.close(), closeHttpServer, closePool()]);
+  await Promise.allSettled([server.close(), activeHttpServer?.close(), closePool()]);
   process.exit(0);
 }
 

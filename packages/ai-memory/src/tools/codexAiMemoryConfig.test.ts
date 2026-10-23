@@ -6,6 +6,7 @@ import { afterEach, test } from 'vitest';
 import { parse, type TomlTable } from 'smol-toml';
 
 import {
+  buildAiMemoryHttpLaunchEnv,
   buildAiMemoryLaunchEnv,
   buildDesiredCodexAiMemoryConfig,
   type CodexMcpRegistration,
@@ -16,6 +17,21 @@ import {
 } from './codexAiMemoryConfig.js';
 
 const temporaryDirectories: string[] = [];
+
+test('HTTP launch environment forwards only the explicit HTTP security settings', () => {
+  const env = buildAiMemoryHttpLaunchEnv({
+    baseEnv: {
+      AI_MEMORY_DATABASE_URL: 'postgresql://localhost:5432/synthetic_http',
+      AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: 'https://client.example',
+      AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK: '1',
+      UNRELATED_SETTING: 'excluded',
+    },
+    existingEnv: { AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: 'https://old.example' },
+  });
+  assert.equal(env.AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS, 'https://client.example');
+  assert.equal(env.AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK, '1');
+  assert.equal(env.UNRELATED_SETTING, undefined);
+});
 afterEach(() => {
   for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
 });

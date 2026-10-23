@@ -21,6 +21,7 @@ export interface AiMemoryDatabaseTarget {
 
 export interface AiMemoryMcpEnvConfig {
   autoStartPostgres: boolean;
+  httpAllowedOrigins: string[];
   httpHost: string;
   httpPort: number;
   requirePostgresOnStartup: boolean;
@@ -94,6 +95,8 @@ const AiMemoryServiceEnvSchema = z.looseObject({
   AI_MEMORY_LOG_STDERR: OptionalEnvText,
   AI_MEMORY_MCP_AUTO_START_POSTGRES: OptionalEnvText,
   AI_MEMORY_MCP_HTTP_HOST: OptionalEnvText,
+  AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: OptionalEnvText,
+  AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK: OptionalEnvText,
   AI_MEMORY_MCP_HTTP_PORT: OptionalEnvText,
   AI_MEMORY_MCP_REQUIRE_POSTGRES: OptionalEnvText,
   AI_MEMORY_MCP_TRANSPORT: OptionalEnvText,
@@ -152,13 +155,43 @@ export function initializeAiMemoryRuntimeEnv(
 
 export function loadAiMemoryMcpEnvConfig(input: { env?: NodeJS.ProcessEnv } = {}): AiMemoryMcpEnvConfig {
   const env = parseAiMemoryServiceEnv(input.env ?? process.env);
+  const transportMode = parseMcpTransportMode(env.AI_MEMORY_MCP_TRANSPORT);
+  const httpHost = env.AI_MEMORY_MCP_HTTP_HOST ?? DEFAULT_MCP_HTTP_HOST;
+  let httpAllowedOrigins: string[] = [];
+  if (transportMode === 'http') {
+    const allowNonLoopback = parseBooleanEnv({
+      defaultValue: false,
+      name: 'AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK',
+      value: env.AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK,
+    });
+    if (!['127.0.0.1', 'localhost', '::1'].includes(httpHost) && !allowNonLoopback) {
+      throw new Error(
+        'Non-loopback AI_MEMORY_MCP_HTTP_HOST requires explicit AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK=1. HTTP has no remote authentication.',
+      );
+    }
+    httpAllowedOrigins = (env.AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS?.split(',') ?? []).map(value => value.trim());
+    for (const origin of httpAllowedOrigins) {
+      let parsed: URL;
+      try {
+        parsed = new URL(origin);
+      } catch {
+        throw new Error('AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS must contain comma-separated exact http/https origins.');
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin || origin.includes('*')) {
+        throw new Error(
+          'AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS must contain comma-separated exact http/https origins without wildcards, credentials or paths.',
+        );
+      }
+    }
+  }
   return {
     autoStartPostgres: parseBooleanEnv({
       defaultValue: false,
       name: 'AI_MEMORY_MCP_AUTO_START_POSTGRES',
       value: env.AI_MEMORY_MCP_AUTO_START_POSTGRES,
     }),
-    httpHost: env.AI_MEMORY_MCP_HTTP_HOST ?? DEFAULT_MCP_HTTP_HOST,
+    httpAllowedOrigins,
+    httpHost,
     httpPort: parsePortEnv({
       defaultValue: DEFAULT_MCP_HTTP_PORT,
       name: 'AI_MEMORY_MCP_HTTP_PORT',
@@ -169,7 +202,7 @@ export function loadAiMemoryMcpEnvConfig(input: { env?: NodeJS.ProcessEnv } = {}
       name: 'AI_MEMORY_MCP_REQUIRE_POSTGRES',
       value: env.AI_MEMORY_MCP_REQUIRE_POSTGRES,
     }),
-    transportMode: parseMcpTransportMode(env.AI_MEMORY_MCP_TRANSPORT),
+    transportMode,
   };
 }
 

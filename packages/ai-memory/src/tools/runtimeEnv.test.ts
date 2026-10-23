@@ -8,6 +8,79 @@ test('MCP startup does not start a local database unless requested', () => {
   assert.equal(loadAiMemoryMcpEnvConfig({ env: { AI_MEMORY_MCP_AUTO_START_POSTGRES: '1' } }).autoStartPostgres, true);
 });
 
+test('HTTP refuses non-loopback binds unless explicitly opted in', () => {
+  for (const host of ['0.0.0.0', '::', '192.0.2.1', 'remote.example']) {
+    assert.throws(
+      () => loadAiMemoryMcpEnvConfig({ env: { AI_MEMORY_MCP_TRANSPORT: 'http', AI_MEMORY_MCP_HTTP_HOST: host } }),
+      /AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK/u,
+    );
+    assert.equal(
+      loadAiMemoryMcpEnvConfig({
+        env: {
+          AI_MEMORY_MCP_TRANSPORT: 'http',
+          AI_MEMORY_MCP_HTTP_HOST: host,
+          AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK: '1',
+        },
+      }).httpHost,
+      host,
+    );
+  }
+  for (const host of ['127.0.0.1', 'localhost', '::1']) {
+    assert.equal(
+      loadAiMemoryMcpEnvConfig({ env: { AI_MEMORY_MCP_TRANSPORT: 'http', AI_MEMORY_MCP_HTTP_HOST: host } }).httpHost,
+      host,
+    );
+  }
+});
+
+test('HTTP origins default empty and accept only exact serialized origins', () => {
+  assert.deepEqual(loadAiMemoryMcpEnvConfig({ env: { AI_MEMORY_MCP_TRANSPORT: 'http' } }).httpAllowedOrigins, []);
+  assert.deepEqual(
+    loadAiMemoryMcpEnvConfig({
+      env: {
+        AI_MEMORY_MCP_TRANSPORT: 'http',
+        AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: 'http://localhost:4000, https://client.example',
+      },
+    }).httpAllowedOrigins,
+    ['http://localhost:4000', 'https://client.example'],
+  );
+  for (const origin of [
+    '*',
+    'https://*.example.com',
+    'http://*',
+    'https://exa*mple.com',
+    'null',
+    'https://client.example/',
+    'https://user@client.example',
+    'https://client.example?q=x',
+    'file://client',
+  ]) {
+    assert.throws(
+      () =>
+        loadAiMemoryMcpEnvConfig({
+          env: {
+            AI_MEMORY_MCP_TRANSPORT: 'http',
+            AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: origin,
+          },
+        }),
+      /AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS/u,
+    );
+  }
+});
+
+test('stdio ignores unused HTTP security configuration', () => {
+  assert.equal(
+    loadAiMemoryMcpEnvConfig({
+      env: {
+        AI_MEMORY_MCP_HTTP_HOST: '0.0.0.0',
+        AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS: '*',
+        AI_MEMORY_MCP_HTTP_ALLOW_NON_LOOPBACK: 'invalid',
+      },
+    }).transportMode,
+    'stdio',
+  );
+});
+
 test('canonical local AI_MEMORY_DATABASE_URL is the only accepted database source', () => {
   const env: NodeJS.ProcessEnv = {
     AI_MEMORY_DATABASE_URL: 'postgresql://localhost:5432/ai_memory',
