@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
 import {
+  buildSearchExactLookups,
   buildSearchQueryTokens,
   buildSearchReferencePattern,
+  extractSearchReferenceNumbers,
   normalizeSearchReferenceText,
   rerankHybridSearchRows,
 } from './query-helpers.js';
@@ -807,4 +809,24 @@ test('reference ranking separates issue recovery from an explicit measurement qu
     })[0]?.id,
     8102,
   );
+});
+
+test('exact lookups use the whole query for keys and its positive tokens for tags', () => {
+  assert.deepEqual(buildSearchExactLookups('  Retry Budget '), {
+    keys: ['Retry Budget', 'retry budget'],
+    tags: ['retry budget', 'retry', 'budget'],
+  });
+});
+
+test('exact tag lookups never use a negated term', () => {
+  const { keys, tags } = buildSearchExactLookups('retry -budget -"flush batch" lane');
+  assert.deepEqual(tags, ['retry -budget -"flush batch" lane', 'retry', 'lane']);
+  assert.deepEqual(keys, ['retry -budget -"flush batch" lane']);
+});
+
+test('reference numbers come from the query alone unless the goal is passed', () => {
+  assert.deepEqual(extractSearchReferenceNumbers('fix issue #12 and PR 34'), ['12', '34']);
+  assert.deepEqual(extractSearchReferenceNumbers('bounded output', 'finish issue #947'), ['947']);
+  assert.deepEqual(extractSearchReferenceNumbers('bounded output'), []);
+  assert.equal(buildSearchReferencePattern('bounded output'), undefined);
 });

@@ -1134,13 +1134,10 @@ async function verifyReferenceIndex(core: Core, request: RecoveryRequest) {
     );
     assert.equal(result.rows[0]?.terms, scenario.expected);
   }
-  const { SEARCH_VECTOR_SQL } = (await import(
-    pathToFileURL(resolve(request.root, 'packages/ai-memory/dist/db/runtime.js')).href
-  )) as { SEARCH_VECTOR_SQL: string };
   const indexes = await core.pool.query<{ indexdef: string; indexname: string }>(
-    "SELECT indexname,indexdef FROM pg_indexes WHERE tablename='ai_memory_entries' AND indexname IN ('ai_memory_entries_search_idx','ai_memory_entries_reference_search_idx') ORDER BY indexname",
+    "SELECT indexname,indexdef FROM pg_indexes WHERE tablename='ai_memory_entries' AND indexname = 'ai_memory_entries_search_vector_idx' ORDER BY indexname",
   );
-  assert.equal(indexes.rows.length, 2);
+  assert.equal(indexes.rows.length, 1);
   const project = `${PROJECT}:index-proof`;
   await core.pool.query(
     "INSERT INTO ai_memory_entries(content,project,category,memory_type) SELECT 'Unrelated planning record ' || n,$1,'decision','semantic' FROM generate_series(1,1000) AS n",
@@ -1149,13 +1146,13 @@ async function verifyReferenceIndex(core: Core, request: RecoveryRequest) {
   let plan: unknown;
   let indexBuildMs = 0;
   try {
-    const definition = indexes.rows.find(row => row.indexname === 'ai_memory_entries_reference_search_idx')?.indexdef;
+    const definition = indexes.rows.find(row => row.indexname === 'ai_memory_entries_search_vector_idx')?.indexdef;
     assert.ok(definition);
     const started = performance.now();
     const client = await core.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('DROP INDEX ai_memory_entries_reference_search_idx');
+      await client.query('DROP INDEX ai_memory_entries_search_vector_idx');
       await client.query(definition);
       await client.query('COMMIT');
     } catch (error) {
@@ -1167,13 +1164,13 @@ async function verifyReferenceIndex(core: Core, request: RecoveryRequest) {
     indexBuildMs = performance.now() - started;
     await core.pool.query('ANALYZE ai_memory_entries');
     const result = await core.pool.query(
-      `EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id FROM ai_memory_entries WHERE ${SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('english',$1)`,
+      "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id FROM ai_memory_entries WHERE search_vector @@ websearch_to_tsquery('english',$1)",
       ['4821'],
     );
     plan = result.rows;
     assert.ok(
-      JSON.stringify(plan).includes('ai_memory_entries_reference_search_idx'),
-      'Planner must use the reference index.',
+      JSON.stringify(plan).includes('ai_memory_entries_search_vector_idx'),
+      'Planner must use the stored search-vector index.',
     );
   } finally {
     await core.pool.query('DELETE FROM ai_memory_entries WHERE project=$1', [project]);
@@ -1196,7 +1193,7 @@ async function verifyReferenceIndex(core: Core, request: RecoveryRequest) {
   const after = await core.pool.query('SELECT id,content,memory_key FROM ai_memory_entries ORDER BY id');
   assert.deepEqual(after.rows, before.rows);
   const sizes = await core.pool.query(
-    "SELECT relname,pg_relation_size(oid)::text AS bytes FROM pg_class WHERE relname IN ('ai_memory_entries_search_idx','ai_memory_entries_reference_search_idx')",
+    "SELECT relname,pg_relation_size(oid)::text AS bytes FROM pg_class WHERE relname = 'ai_memory_entries_search_vector_idx'",
   );
   return {
     cases: cases.length,

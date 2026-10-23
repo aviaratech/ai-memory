@@ -22,16 +22,189 @@ export function buildMemorySearchKeywordHintSql(queryParam: string) {
   )`;
 }
 
-export function buildMemorySearchMatchQuerySql(queryParam: string) {
-  const tokenizedOrQuerySql = buildTokenizedOrQuerySql(queryParam);
+/**
+ * Index-first candidate retrieval. Each channel reads its index and is capped;
+ * ranks are computed afterwards, only on the union of the channels.
+ */
+export const SEARCH_CHANNEL_ROW_CAP = 100;
+/** A query term that matches more rows than this is too common to enumerate. */
+export const SEARCH_COMMON_TERM_ROW_LIMIT = 2_000;
+/** Query terms probed in the stored-vector index; the longest terms are probed first (longer terms are rarer). */
+export const SEARCH_PROBE_LEXEME_LIMIT = 32;
+/** Below this many full-text candidates, the newest rows matching any query term fill the pool. */
+export const SEARCH_MIN_POOL_ROWS = 50;
 
-  return `
-    (websearch_to_tsquery('english', ${queryParam}) || CASE
-      WHEN ${tokenizedOrQuerySql} IS NOT NULL
-      THEN websearch_to_tsquery('english', ${tokenizedOrQuerySql})
-      ELSE ''::tsquery
-    END)
-  `;
+export interface MemorySearchPoolInput {
+  /** Conditions every channel applies, written against `ai_memory_entries` columns. */
+  baseConditions: string[];
+  /** Parameter holding the exact memory keys to look up. */
+  exactKeysParam: string;
+  /** Parameter holding the exact tags to look up. */
+  exactTagsParam: string;
+  /** Text parameters that carry the query: the original and, when it differs, the normalized form. */
+  queryParams: string[];
+  /**
+   * Reference lookup: a text[] parameter of issue numbers and the regex pattern parameter. Both must come from
+   * the query text alone; references in the active goal may re-rank candidates but never select them.
+   */
+  reference?: { numbersParam: string; patternParam: string } | undefined;
+  /**
+   * Rows that match the query (any term) and also hold an issue number from the active goal. The goal only
+   * re-ranks rows the query text selects; this channel keeps such rows from falling outside the caps.
+   */
+  goalReference?: { numbersParam: string; patternParam: string } | undefined;
+}
+
+/**
+ * Builds the candidate-pool CTEs for search: `text_pool` holds the ids of every
+ * row that any channel returned. Channels:
+ * - `phrase_candidates`: rows matching the websearch query, newest first;
+ * - `term_candidates`: rows matching the rarest query terms, ordered by how
+ *   much of the query they cover (a rarity-weighted count);
+ * - `exact_candidates`: exact memory-key and tag lookups (two indexes);
+ * - `reference_candidates`: issue and pull-request references, through the
+ *   number terms the stored vector already holds;
+ * - `goal_candidates`: rows that match any query term and hold an issue number
+ *   from the active goal;
+ * - `fill_candidates`: when the whole-query and rare-term channels found few rows,
+ *   the newest rows matching any query term.
+ * Every channel reads `search_vector`, `memory_key` or `tags` through its index.
+ * Query terms the websearch syntax negates never select candidates.
+ */
+export function buildMemorySearchPoolCtes(input: MemorySearchPoolInput) {
+  const base = input.baseConditions.length > 0 ? `AND ${input.baseConditions.join(' AND ')}` : '';
+  const webQuerySql = input.queryParams.map(param => `websearch_to_tsquery('english', ${param})`).join(' || ');
+  const positiveTokensSql = input.queryParams.map(param => buildTokenizedOrQuerySql(stripNegatedTermsSql(param)));
+  const anyTermQuerySql = positiveTokensSql
+    .map(
+      tokens => `CASE WHEN ${tokens} IS NOT NULL THEN websearch_to_tsquery('english', ${tokens}) ELSE ''::tsquery END`,
+    )
+    .join(' || ');
+  const channels = ['phrase_candidates', 'term_candidates', 'exact_candidates'];
+
+  // The tsqueries are computed once and read as parameters, so the planner reads
+  // the full-text index instead of guessing that a common-looking query is cheap
+  // to find by walking rows in recency order.
+  const ctes = [
+    `search_query AS MATERIALIZED (
+      SELECT (${webQuerySql}) AS web_query, (${anyTermQuerySql}) AS any_term_query${
+        input.goalReference === undefined
+          ? ''
+          : `,
+        -- An empty any-term query would vanish from the AND and leave the goal numbers alone.
+        CASE WHEN numnode(${anyTermQuerySql}) > 0
+          THEN (SELECT string_agg(quote_literal(number), ' | ')::tsquery FROM unnest(${input.goalReference.numbersParam}::text[]) AS number) && (${anyTermQuerySql})
+        END AS goal_query`
+      }
+    )`,
+    `phrase_candidates AS (
+      SELECT id
+      FROM ai_memory_entries
+      WHERE search_vector @@ (SELECT web_query FROM search_query)
+        ${base}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+    )`,
+    `term_probes AS MATERIALIZED (
+      SELECT lexeme
+      FROM unnest(to_tsvector('english', concat_ws(' ', ${positiveTokensSql.join(', ')}))) AS probe(lexeme, positions, weights)
+      ORDER BY length(lexeme) DESC, positions[1], lexeme
+      LIMIT ${String(SEARCH_PROBE_LEXEME_LIMIT)}
+    )`,
+    `term_hits AS MATERIALIZED (
+      SELECT probes.lexeme, hit.id, hit.created_at
+      FROM term_probes AS probes
+      CROSS JOIN LATERAL (
+        SELECT id, created_at
+        FROM ai_memory_entries
+        WHERE search_vector @@ quote_literal(probes.lexeme)::tsquery
+          ${base}
+        LIMIT ${String(SEARCH_COMMON_TERM_ROW_LIMIT + 1)}
+      ) AS hit
+    )`,
+    `term_weights AS MATERIALIZED (
+      SELECT lexeme, ln(1 + ${String(SEARCH_COMMON_TERM_ROW_LIMIT)}::float8 / count(*)) AS weight
+      FROM term_hits
+      GROUP BY lexeme
+      HAVING count(*) <= ${String(SEARCH_COMMON_TERM_ROW_LIMIT)}
+    )`,
+    `term_candidates AS (
+      SELECT hits.id
+      FROM term_hits AS hits
+      JOIN term_weights AS weights ON weights.lexeme = hits.lexeme
+      GROUP BY hits.id, hits.created_at
+      ORDER BY sum(weights.weight) DESC, hits.created_at DESC, hits.id DESC
+      LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+    )`,
+    `exact_candidates AS (
+      (
+        SELECT id
+        FROM ai_memory_entries
+        WHERE memory_key = ANY(${input.exactKeysParam}::text[])
+          ${base}
+        LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+      )
+      UNION ALL
+      (
+        SELECT id
+        FROM ai_memory_entries
+        WHERE tags && ${input.exactTagsParam}::text[]
+          ${base}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+      )
+    )`,
+  ];
+
+  if (input.reference !== undefined) {
+    // The stored vector indexes every reference number, so the regex only
+    // confirms rows that the index already returned.
+    ctes.push(`reference_candidates AS (
+      SELECT id
+      FROM ai_memory_entries
+      WHERE search_vector @@ (
+          SELECT string_agg(quote_literal(number), ' | ')::tsquery
+          FROM unnest(${input.reference.numbersParam}::text[]) AS number
+        )
+        AND ${buildMemorySearchReferenceMatchSql(input.reference.patternParam)}
+        ${base}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+    )`);
+    channels.push('reference_candidates');
+  }
+
+  if (input.goalReference !== undefined) {
+    ctes.push(`goal_candidates AS (
+      SELECT id
+      FROM ai_memory_entries
+      WHERE search_vector @@ (SELECT goal_query FROM search_query)
+        AND ${buildMemorySearchReferenceMatchSql(input.goalReference.patternParam)}
+        ${base}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+    )`);
+    channels.push('goal_candidates');
+  }
+
+  ctes.push(`fill_candidates AS (
+      SELECT id
+      FROM ai_memory_entries
+      WHERE (
+          SELECT count(*)
+          FROM (SELECT id FROM phrase_candidates UNION SELECT id FROM term_candidates) AS found
+        ) < ${String(SEARCH_MIN_POOL_ROWS)}
+        AND search_vector @@ (SELECT any_term_query FROM search_query)
+        ${base}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}
+    )`);
+  channels.push('fill_candidates');
+
+  ctes.push(`text_pool AS MATERIALIZED (
+      ${channels.map(channel => `SELECT id FROM ${channel}`).join('\n      UNION\n      ')}
+    )`);
+  return ctes.join(',\n    ');
 }
 
 /**
@@ -218,4 +391,9 @@ function buildTokenizedOrQuerySql(queryParam: string) {
     ),
     ''
   )`;
+}
+
+/** Removes terms that websearch syntax negates (`-term`, `-"phrase"`), so they cannot select candidates. */
+function stripNegatedTermsSql(queryParam: string) {
+  return `regexp_replace(${queryParam}, '(^|[[:space:]])-("[^"]*"|[^[:space:]]+)', ' ', 'g')`;
 }

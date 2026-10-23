@@ -3,13 +3,15 @@
  *
  * Proves three things about the default `searchMemories` path:
  *
- *   1. The actual generated default-search SQL is the hybrid CTE pipeline
- *      (`filtered_candidates` -> `semantic_candidates` / `keyword_candidates` /
+ *   1. The actual generated default-search SQL is the index-first hybrid CTE
+ *      pipeline (capped `phrase_candidates` / `term_candidates` /
+ *      `exact_candidates` channels -> `text_pool` -> `candidate_features` ->
+ *      `filtered_candidates` -> `semantic_candidates` / `keyword_candidates` /
  *      `vector_candidates` -> `combined_candidates` -> `deduped_candidates`),
- *      and it uses index-compatible predicates (`websearch_to_tsquery`,
- *      `ts_rank_cd`, `embedding <=> $::vector`). The captured-SQL fixture pins
- *      this shape so a refactor that silently drops a CTE or rewrites a
- *      predicate into a non-index-using form fails this test instead of
+ *      and it uses index-compatible predicates (`search_vector @@`,
+ *      `embedding <=> $::vector`) with ranks computed only for the pool. The
+ *      captured-SQL fixture pins this shape so a refactor that silently drops a
+ *      channel or ranks every matching row fails this test instead of
  *      degrading production search latency.
  *
  *   2. The deterministic token-fallback SQL is still index-compatible
@@ -46,7 +48,7 @@ import { afterEach, describe, it } from 'vitest';
 
 import { resolveTimeoutPolicy } from '../timeout-policy.js';
 import { buildTokenFallbackQuery, searchMemories } from './memory-api.js';
-import { buildMemorySearchSemanticRankSql } from './memory-sql.js';
+import { buildMemorySearchSemanticRankSql, SEARCH_CHANNEL_ROW_CAP } from './memory-sql.js';
 import { mockPoolConnect } from './test-pool-mock.js';
 
 const HIGH_CARDINALITY_ROW_COUNT = 1_000;
@@ -122,8 +124,14 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     // up explicitly, since the CTE is only emitted when the embedding column
     // and a query embedding are both available.
     for (const cte of [
-      'WITH filtered_candidates AS',
+      'WITH search_query AS',
+      'phrase_candidates AS',
+      'term_candidates AS',
+      'exact_candidates AS',
+      'fill_candidates AS',
+      'text_pool AS MATERIALIZED',
       'candidate_features AS MATERIALIZED',
+      'filtered_candidates AS',
       'semantic_candidates AS',
       'keyword_candidates AS',
       'combined_candidates AS',
@@ -149,32 +157,44 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     // Index-compatible predicates — these are the predicates Postgres can
     // execute against the GIN/tsvector indexes. Vector ops are asserted in
     // the vector-CTE test where the embedding path is enabled.
-    for (const predicate of ["websearch_to_tsquery('english',", 'ts_rank_cd(', 'ROW_NUMBER() OVER (PARTITION BY id']) {
+    for (const predicate of [
+      'search_vector @@',
+      "websearch_to_tsquery('english',",
+      'ts_rank_cd(',
+      'ROW_NUMBER() OVER (PARTITION BY id',
+    ]) {
       assert.ok(
         defaultSearchSql.includes(predicate),
         `default SQL must include index-compatible predicate: ${predicate}`,
       );
     }
 
-    const filteredMemoriesWhere = defaultSearchSql.slice(
-      defaultSearchSql.indexOf('FROM ai_memory_entries'),
-      defaultSearchSql.indexOf('semantic_candidates AS'),
-    );
+    // Every channel returns ids from one index and is capped; ranks and hints
+    // exist only after the pool is formed.
+    const poolStart = defaultSearchSql.indexOf('WITH search_query AS');
+    const featuresStart = defaultSearchSql.indexOf('candidate_features AS MATERIALIZED');
+    const channels = defaultSearchSql.slice(poolStart, featuresStart);
     assert.ok(
-      !filteredMemoriesWhere.includes('lower(content) LIKE'),
-      'default SQL prefilter must not use lower(content) LIKE; it forces sequential scans despite trigram/full-text indexes',
+      (channels.match(new RegExp(`LIMIT ${String(SEARCH_CHANNEL_ROW_CAP)}\\b`, 'gu')) ?? []).length >= 4,
+      'phrase, term, and exact channels (two reads) must each be capped',
     );
+    for (const expensive of ['ts_rank_cd(', 'lower(content) LIKE', 'unnest(tags)', 'jsonb_array_elements']) {
+      assert.ok(
+        !channels.includes(expensive),
+        `candidate channels must not compute ${expensive}; it belongs after the pool is formed`,
+      );
+    }
     assert.ok(
-      !filteredMemoriesWhere.includes('unnest(tags)'),
-      'default SQL prefilter must not unnest tags; it forces row-by-row tag scans',
+      defaultSearchSql.slice(featuresStart).includes('WHERE id IN (SELECT id FROM text_pool)'),
+      'features and ranks must be computed only for rows in the candidate pool',
     );
   });
 
-  it('joined issue references receive priority before bounded candidate selection without widening the prefilter', async () => {
+  it('joined issue references reach the pool through the stored-vector index before bounded candidate selection', async () => {
     let referenceSql = '';
     let referenceParams: readonly unknown[] = [];
     mockPoolConnect((sql, params) => {
-      if (sql.includes('filtered_candidates')) {
+      if (sql.includes('candidate_features AS MATERIALIZED')) {
         referenceSql = sql;
         referenceParams = params ?? [];
       }
@@ -191,30 +211,41 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
     assert.equal(referenceParams[0], 'issue4821 bounded output');
     assert.equal(referenceParams[1], 'issue 4821 bounded output');
     assert.equal(typeof referenceParams[2], 'string');
-    assert.equal(referenceParams[3], 'fixture/recovery');
-    const prefilter = referenceSql.slice(
-      referenceSql.indexOf('FROM ai_memory_entries'),
-      referenceSql.indexOf(buildMemorySearchSemanticRankSql('$1')),
+    assert.deepEqual(referenceParams[3], ['4821'], 'reference numbers are looked up as indexed terms');
+    assert.deepEqual(referenceParams[4], ['issue4821 bounded output'], 'exact memory-key lookups');
+    assert.deepEqual(
+      referenceParams[5],
+      ['issue4821 bounded output', 'issue4821', 'bounded', 'output'],
+      'exact tag lookups use the query and its tokens',
     );
+    assert.equal(referenceParams[6], 'fixture/recovery');
+    const referenceChannel = referenceSql.slice(
+      referenceSql.indexOf('reference_candidates AS'),
+      referenceSql.indexOf('text_pool AS MATERIALIZED'),
+    );
+    assert.ok(
+      referenceChannel.includes('search_vector @@ ('),
+      'the reference channel must read the stored-vector index before applying the regex',
+    );
+    assert.ok(
+      referenceChannel.indexOf('search_vector @@') < referenceChannel.indexOf('~ $3'),
+      'the reference regex only confirms rows the index already returned',
+    );
+    assert.ok(referenceChannel.includes('project = $7'));
     const queryInput = referenceSql.slice(
-      referenceSql.indexOf('WITH search_query'),
-      referenceSql.indexOf('candidate_features AS'),
+      referenceSql.indexOf('search_query AS'),
+      referenceSql.indexOf('phrase_candidates AS'),
     );
     assert.ok(queryInput.includes("websearch_to_tsquery('english', $1)"));
     assert.ok(
       queryInput.includes("websearch_to_tsquery('english', $2)"),
       'normalized membership is additive to original joined-term membership',
     );
-    assert.ok(prefilter.includes("status IN ('active', 'contested')"));
-    assert.ok(prefilter.includes('project = $4'));
-    assert.ok(!prefilter.includes('~ $3'), 'reference ranking must not add an unindexed alternative predicate');
-    assert.equal(
-      prefilter.match(/@@/gu)?.length,
-      1,
-      'original, token-OR, and normalized membership must share one index-compatible vector match',
+    assert.ok(referenceSql.includes("status IN ('active', 'contested')"));
+    assert.ok(
+      !referenceSql.includes("concat_ws(' ', content"),
+      'reference ranking must not synthesize references across fields',
     );
-    assert.ok(queryInput.includes("ELSE ''::tsquery"), 'empty token queries must keep their nonmatching behavior');
-    assert.ok(!referenceSql.includes('concat_ws'), 'reference ranking must not synthesize references across fields');
     assert.ok(referenceSql.includes('AS reference_fields'));
     assert.ok(referenceSql.includes('jsonb_array_elements(evidence_refs)'));
     for (const [start, end] of [
@@ -226,24 +257,72 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
       const selection = referenceSql.slice(referenceSql.indexOf(start), referenceSql.indexOf(end));
       assert.match(selection, /ORDER BY reference_hint DESC[\s\S]*LIMIT \$\d+/u);
     }
-    assert.deepEqual(referenceParams.slice(4), [10, 10, 10], 'existing candidate caps remain bounded');
+    assert.deepEqual(referenceParams.slice(7), [10, 10, 10], 'existing candidate caps remain bounded');
   });
 
-  it('uses the stored vector and one query input for original and normalized reference ranking', async () => {
+  it('lets references in the active goal select only rows that also match the query', async () => {
+    const captured: { params: readonly unknown[]; sql: string }[] = [];
+    mockPoolConnect((sql, params) => {
+      if (sql.includes('candidate_features AS MATERIALIZED')) captured.push({ params: params ?? [], sql });
+      return Promise.resolve(toQueryResult([buildHighCardinalityRow(0)]));
+    });
+
+    await searchMemories({
+      activeGoal: 'finish issue #947 and issue #2260',
+      includeEmbedding: false,
+      project: 'fixture/recovery',
+      query: 'bounded output',
+    });
+    await searchMemories({
+      activeGoal: 'finish issue #947 and issue #2260',
+      includeEmbedding: false,
+      project: 'fixture/recovery',
+      query: 'bounded output for issue #4821',
+    });
+
+    const [goalOnly, queryAndGoal] = captured;
+    assert.ok(goalOnly && queryAndGoal);
+    assert.ok(!goalOnly.sql.includes('reference_candidates AS'), 'a goal-only reference must not select candidates');
+    assert.ok(goalOnly.sql.includes('AS reference_hint'), 'the goal reference still feeds the reference hint');
+    assert.ok(goalOnly.sql.includes('goal_candidates AS'));
+    const goalChannel = goalOnly.sql.slice(
+      goalOnly.sql.indexOf('goal_candidates AS'),
+      goalOnly.sql.indexOf('fill_candidates AS'),
+    );
+    assert.ok(goalChannel.includes('SELECT goal_query FROM search_query'));
+    assert.ok(
+      /&& \(CASE WHEN[\s\S]*AS goal_query/u.test(goalOnly.sql.slice(0, goalOnly.sql.indexOf('phrase_candidates AS'))),
+      'goal rows must also match a query term',
+    );
+    assert.ok(goalOnly.params.some(value => Array.isArray(value) && value.join() === '947,2260'));
+    assert.ok(goalOnly.params.some(value => typeof value === 'string' && value.includes('947|2260')));
+
+    assert.ok(queryAndGoal.sql.includes('reference_candidates AS'));
+    const numberLists = queryAndGoal.params.filter(
+      (value): value is string[] => Array.isArray(value) && value.every(item => /^\d+$/u.test(String(item))),
+    );
+    assert.deepEqual(numberLists[0], ['4821'], 'only the query text selects candidates by reference number alone');
+    assert.deepEqual(numberLists[1], ['4821', '947', '2260'], 'the goal channel looks up the goal numbers too');
+    const patterns = queryAndGoal.params.filter(
+      value => typeof value === 'string' && value.includes('issues?|prs?|pulls?'),
+    );
+    assert.equal(patterns.length, 2, 'the hint pattern includes the goal; the pool pattern does not');
+    assert.ok(patterns.some(value => String(value).includes('947')));
+    assert.ok(patterns.some(value => !String(value).includes('947') && String(value).includes('4821')));
+  });
+
+  it('uses the stored vector for the ranks of pooled rows, including original and normalized reference text', async () => {
     let sql = '';
     mockPoolConnect(statement => {
-      if (statement.includes('filtered_candidates')) sql = statement;
+      if (statement.includes('candidate_features AS MATERIALIZED')) sql = statement;
       return Promise.resolve(toQueryResult([buildHighCardinalityRow(0)]));
     });
 
     await searchMemories({ includeEmbedding: false, project: 'fixture/recovery', query: 'issue4821 scoped reference' });
 
-    assert.ok(sql.includes('candidate_features AS MATERIALIZED'));
-    assert.ok(sql.includes('search_query AS MATERIALIZED'));
-    const projection = sql.slice(
-      sql.indexOf('candidate_features AS MATERIALIZED'),
-      sql.indexOf('FROM ai_memory_entries'),
-    );
+    const featuresAt = sql.indexOf('candidate_features AS MATERIALIZED');
+    assert.ok(featuresAt > 0);
+    const projection = sql.slice(featuresAt, sql.indexOf('FROM ai_memory_entries', featuresAt));
     assert.ok(
       projection.includes("(search_vector || ''::tsvector) AS search_vector,"),
       'candidate projection must read each stored vector from TOAST once, not once per ranked lexeme',
@@ -252,7 +331,14 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
       !projection.includes('to_tsvector'),
       'candidate projection must use the database-maintained stored vector',
     );
-    assert.ok(sql.includes('@@ (SELECT text_query FROM search_query)'));
+    const featuresFrom = sql.slice(
+      sql.indexOf('FROM ai_memory_entries', featuresAt),
+      sql.indexOf('filtered_candidates AS', featuresAt),
+    );
+    assert.ok(
+      featuresFrom.includes('WHERE id IN (SELECT id FROM text_pool)') && !featuresFrom.includes('@@'),
+      'membership is decided by the index channels, not by a query evaluated on every candidate row',
+    );
     const ranking = sql.slice(sql.indexOf('ts_rank_cd(search_vector'), sql.indexOf('semantic_candidates AS'));
     assert.ok(ranking.includes("ts_rank_cd(search_vector, websearch_to_tsquery('english', $1))"));
     assert.ok(
@@ -267,7 +353,7 @@ describe('searchMemories default-SQL shape + high-cardinality JS bound', () => {
   it('measurement queries cannot give same-number issue rows priority before candidate caps', async () => {
     const captured: string[] = [];
     mockPoolConnect(sql => {
-      if (sql.includes('filtered_candidates')) captured.push(sql);
+      if (sql.includes('candidate_features AS MATERIALIZED')) captured.push(sql);
       return Promise.resolve(toQueryResult([buildHighCardinalityRow(0)]));
     });
     for (const number of [4821, 7042]) {

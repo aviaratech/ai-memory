@@ -63,7 +63,7 @@ describe('retrieval reversal penalties', () => {
       if (sql.includes('read_reversal_prior_tag')) {
         return Promise.resolve(toQueryResult([]));
       }
-      if (sql.includes('WITH filtered_candidates')) {
+      if (sql.includes('candidate_features AS MATERIALIZED')) {
         return Promise.resolve(
           toQueryResult([
             buildComparableRow({
