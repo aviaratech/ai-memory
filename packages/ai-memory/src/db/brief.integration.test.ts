@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,68 +90,94 @@ test(
   },
 );
 
-test(
-  '011 preserves existing rows and defaults verification to their updated time, including subsequent raw inserts',
-  { skip: adminUrl === undefined, timeout: 0 },
-  async () => {
-    assert.ok(adminUrl);
-    assertLocalDatabaseUrl(adminUrl);
-    const admin = new Client({ connectionString: adminUrl });
-    await admin.connect();
-    const name = `brief_migration_${randomUUID().replaceAll('-', '')}`;
-    let created = false;
-    let database: ReturnType<typeof createPool> | undefined;
-    try {
-      await admin.query(`CREATE DATABASE "${name}"`);
-      created = true;
-      const url = new URL(adminUrl);
-      url.pathname = `/${name}`;
-      database = createPool({ connectionString: url.toString(), max: 1 });
-      const client = new Client({ connectionString: url.toString() });
-      await client.connect();
+for (const baseline of [
+  { version: '0.2.8', count: 9 },
+  { version: '0.3.0', count: 10 },
+])
+  test(
+    `${baseline.version} upgrades directly to 0.3.1 in order, preserving rows and defaulting verification to updated time`,
+    { skip: adminUrl === undefined, timeout: 0 },
+    async () => {
+      assert.ok(adminUrl);
+      assertLocalDatabaseUrl(adminUrl);
+      const admin = new Client({ connectionString: adminUrl });
+      await admin.connect();
+      const name = `brief_migration_${randomUUID().replaceAll('-', '')}`;
+      let created = false;
+      let database: ReturnType<typeof createPool> | undefined;
       try {
-        await runner({
-          dbClient: client,
-          dir: fileURLToPath(new URL('../../migrations/', import.meta.url)),
-          direction: 'up',
-          count: 10,
-          migrationsTable: 'ai_memory_pgmigrations',
-          logger: { info: () => {}, warn: () => {}, error: () => {} },
-        });
-        const before = (
-          await client.query<Record<string, unknown>>(`INSERT INTO ai_memory_entries
+        await admin.query(`CREATE DATABASE "${name}"`);
+        created = true;
+        const url = new URL(adminUrl);
+        url.pathname = `/${name}`;
+        database = createPool({ connectionString: url.toString(), max: 1 });
+        const client = new Client({ connectionString: url.toString() });
+        await client.connect();
+        try {
+          const migrations = fileURLToPath(new URL('../../migrations/', import.meta.url));
+          const expected = (await readdir(migrations))
+            .filter(name => name.endsWith('.sql'))
+            .sort()
+            .map(name => name.slice(0, -4));
+          const ledger = async () =>
+            (await client.query<{ name: string }>('SELECT name FROM ai_memory_pgmigrations ORDER BY id')).rows.map(
+              row => row.name,
+            );
+          await runner({
+            dbClient: client,
+            dir: migrations,
+            direction: 'up',
+            count: baseline.count,
+            migrationsTable: 'ai_memory_pgmigrations',
+            logger: { info: () => {}, warn: () => {}, error: () => {} },
+          });
+          assert.deepEqual(await ledger(), expected.slice(0, baseline.count));
+          assert.equal(
+            (await ledger()).at(-1),
+            baseline.version === '0.2.8' ? '009_workflow_telemetry' : '010_index_first_search',
+          );
+          const before = (
+            await client.query<Record<string, unknown>>(`INSERT INTO ai_memory_entries
           (content, project, category, memory_type, updated_at) VALUES ('Synthetic preserved decision.', 'example/brief', 'decision', 'semantic', '2026-01-01') RETURNING *`)
-        ).rows[0]!;
+          ).rows[0]!;
 
-        await runAiMemoryMigrations(database);
-        const after = (
-          await database.query<Record<string, unknown>>('SELECT * FROM ai_memory_entries WHERE id=$1', [before.id])
-        ).rows[0]!;
-        const { audience, pinned, last_verified_at: lastVerified, ...original } = after;
-        assert.deepEqual(original, before);
-        assert.deepEqual(audience, ['all']);
-        assert.equal(pinned, false);
-        assert.deepEqual(lastVerified, before.updated_at);
-        const inserted = (
-          await database.query<Record<string, unknown>>(`INSERT INTO ai_memory_entries
+          await runAiMemoryMigrations(database);
+          assert.deepEqual(await ledger(), expected);
+          assert.deepEqual(expected.slice(9), ['010_index_first_search', '011_pinned_brief']);
+          const after = (
+            await database.query<Record<string, unknown>>('SELECT * FROM ai_memory_entries WHERE id=$1', [before.id])
+          ).rows[0]!;
+          const { audience, pinned, last_verified_at: lastVerified, ...original } = after;
+          assert.deepEqual(original, before);
+          assert.deepEqual(audience, ['all']);
+          assert.equal(pinned, false);
+          assert.deepEqual(lastVerified, before.updated_at);
+          const inserted = (
+            await database.query<Record<string, unknown>>(`INSERT INTO ai_memory_entries
           (content, project, category, memory_type, updated_at) VALUES ('Synthetic historical decision.', 'example/brief', 'decision', 'semantic', '2026-02-01') RETURNING *`)
-        ).rows[0]!;
-        assert.deepEqual(inserted.last_verified_at, inserted.updated_at);
-        await runAiMemoryMigrations(database);
-        assert.deepEqual(
-          (await database.query('SELECT * FROM ai_memory_entries WHERE id=$1', [before.id])).rows[0],
-          after,
-        );
+          ).rows[0]!;
+          assert.deepEqual(inserted.last_verified_at, inserted.updated_at);
+          await runAiMemoryMigrations(database);
+          assert.deepEqual(await ledger(), expected, 'replay does not duplicate migration history');
+          assert.deepEqual(
+            (await database.query('SELECT * FROM ai_memory_entries WHERE id=$1', [before.id])).rows[0],
+            after,
+          );
+        } finally {
+          await client.end();
+        }
       } finally {
-        await client.end();
+        try {
+          await database?.end();
+          // Pool.end can resolve before its sockets close. Do not terminate
+          // those closing clients or conceal a connection leaked by this test.
+          if (created) await admin.query(`DROP DATABASE "${name}"`);
+        } finally {
+          await admin.end();
+        }
       }
-    } finally {
-      await database?.end();
-      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-      await admin.end();
-    }
-  },
-);
+    },
+  );
 
 test(
   'memory_store round-trips metadata and SQL selects only matching pinned memories and role state',

@@ -407,6 +407,21 @@ test('historical releases retain exact generic notes without repair', () => {
   assert.notEqual(releaseState(`Reviewed ai-memory release from ${head}.`, 'v0.2.8').status, 0);
 });
 
+test('0.3.1 release notes cover the direct 0.2.8 upgrade and every intervening change', () => {
+  const notes = spawnSync(process.execPath, [
+    new URL('./verify-release-state.mjs', import.meta.url).pathname, '--notes', 'v0.3.1', source,
+  ], { encoding: 'utf8' });
+  assert.equal(notes.status, 0, notes.stderr);
+  for (const topic of [
+    '0.2.8', '010_index_first_search', '011_pinned_brief', 'AI_MEMORY_ROLE',
+    'AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS', '#75', '#76', '#77', '#79', '#80', '#81', '#84',
+    'checkpoint', 'tag', 'secret-scan', 'cleanup', '0.3.0 can be skipped',
+  ]) assert.ok(notes.stdout.toLowerCase().includes(topic.toLowerCase()), `missing release topic: ${topic}`);
+  assert.equal(releaseState(notes.stdout, 'v0.3.1').status, 0);
+  assert.notEqual(releaseState(`Reviewed ai-memory release from ${source}.`, 'v0.3.1').status, 0);
+  assert.notEqual(releaseState(`${notes.stdout}Unreviewed addition.`, 'v0.3.1').status, 0);
+});
+
 test('workflow creates a draft from the same notes that its verifier accepts', () => {
   const reserve = releaseSteps(['Reserve reviewed tag and draft release']);
   assert.match(reserve, /node scripts\/verify-release-state\.mjs --notes "\$tag" "\$SOURCE_SHA"/);

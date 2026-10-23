@@ -6,8 +6,8 @@ function releaseNotes() {
   assert.match(tag ?? '', /^v[0-9]+\.[0-9]+\.[0-9]+$/, 'invalid release tag');
   assert.match(sourceSha ?? '', /^[0-9a-f]{40}$/, 'invalid source SHA');
   const summary = `Reviewed ai-memory release from ${sourceSha}.`;
-  const details = tag === 'v0.3.0'
-    ? readFileSync(new URL('../docs/releases/0.3.0.md', import.meta.url), 'utf8').trim()
+  const details = ['v0.3.0', 'v0.3.1'].includes(tag)
+    ? readFileSync(new URL(`../docs/releases/${tag.slice(1)}.md`, import.meta.url), 'utf8').trim()
     : '';
   return details ? `${summary}\n\n${details}` : summary;
 }
