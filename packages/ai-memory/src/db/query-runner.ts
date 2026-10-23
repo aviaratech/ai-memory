@@ -24,7 +24,7 @@
  */
 import type { DbClient, DbPool } from './pool.js';
 
-import { TimeoutError } from '../timeout-policy.js';
+import { TimeoutError, withTimeout } from '../timeout-policy.js';
 
 /** Postgres SQLSTATE for `canceling statement due to statement timeout`. */
 const PG_SQLSTATE_QUERY_CANCELED = '57014';
@@ -46,6 +46,8 @@ export interface BoundedQueryInput<T> {
    * (`db.read.<phase>` or `db.write.<phase>` are the conventional shapes).
    */
   phase: string;
+  /** Optional wall deadline, including acquisition and cleanup; destroys only this call's client. */
+  deadlineMs?: number;
   /** Pool used to acquire the per-call client. */
   pool: DbPool;
   /** Task executed inside the per-call transaction; receives the bounded client. */
@@ -57,40 +59,77 @@ export interface BoundedQueryInput<T> {
 export async function runBoundedQuery<T>(input: BoundedQueryInput<T>): Promise<T> {
   const { phase, pool, task } = input;
   const timeoutMs = Math.max(1, Math.floor(input.timeoutMs));
-  const client = await pool.connect();
-  let inTransaction = false;
-  // Wrapper object avoids closure-narrowing where TS infers `activeSubPhase`
-  // as always `null` because the only assignment lives in the `ctx.setPhase`
-  // callback (which TS treats as out-of-band for narrowing).
-  const subPhaseState: { value: string } = { value: '' };
-  const ctx: BoundedQueryContext = {
-    setPhase: (subPhase: string) => {
-      subPhaseState.value = subPhase.trim();
-    },
+  let client: DbClient | undefined;
+  let released = false;
+  let expired = false;
+  const assertLive = () => {
+    if (expired) throw new TimeoutError(phase, input.deadlineMs ?? timeoutMs);
   };
-  try {
-    await client.query('BEGIN');
-    inTransaction = true;
-    await client.query(`SET LOCAL statement_timeout = ${String(timeoutMs)}`);
-    const result: T = await task(client, ctx);
-    await client.query('COMMIT');
-    inTransaction = false;
-    return result;
-  } catch (err) {
-    if (inTransaction) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // Rollback can fail when the connection is already broken; swallow so we still release.
+  const work = async (): Promise<T> => {
+    client = await pool.connect();
+    if (expired) {
+      released = true;
+      client.release(true);
+      assertLive();
+    }
+    const ownedClient = client;
+    const boundedClient: DbClient = {
+      query: (sql, params) => {
+        assertLive();
+        return ownedClient.query(sql, params);
+      },
+      release: error => {
+        if (!released) {
+          released = true;
+          ownedClient.release(error);
+        }
+      },
+    };
+    let inTransaction = false;
+    // Wrapper object avoids closure-narrowing where TS infers `activeSubPhase`
+    // as always `null` because the only assignment lives in the `ctx.setPhase`
+    // callback (which TS treats as out-of-band for narrowing).
+    const subPhaseState: { value: string } = { value: '' };
+    const ctx: BoundedQueryContext = {
+      setPhase: (subPhase: string) => {
+        subPhaseState.value = subPhase.trim();
+      },
+    };
+    try {
+      await boundedClient.query('BEGIN');
+      inTransaction = true;
+      await boundedClient.query(`SET LOCAL statement_timeout = ${String(timeoutMs)}`);
+      const result: T = await task(boundedClient, ctx);
+      await boundedClient.query('COMMIT');
+      inTransaction = false;
+      return result;
+    } catch (err) {
+      if (inTransaction && !released) {
+        try {
+          await boundedClient.query('ROLLBACK');
+        } catch {
+          // Rollback can fail when the connection is already broken; swallow so we still release.
+        }
       }
+      if (isPgQueryCanceledError(err)) {
+        const resolvedPhase = subPhaseState.value.length === 0 ? phase : `${phase}.${subPhaseState.value}`;
+        throw new TimeoutError(resolvedPhase, timeoutMs);
+      }
+      throw err;
+    } finally {
+      boundedClient.release();
     }
-    if (isPgQueryCanceledError(err)) {
-      const resolvedPhase = subPhaseState.value.length === 0 ? phase : `${phase}.${subPhaseState.value}`;
-      throw new TimeoutError(resolvedPhase, timeoutMs);
+  };
+  if (input.deadlineMs === undefined) return work();
+  try {
+    return await withTimeout({ operation: phase, task: work, timeoutMs: input.deadlineMs });
+  } catch (error) {
+    expired = true;
+    if (client !== undefined && !released) {
+      released = true;
+      client.release(true);
     }
-    throw err;
-  } finally {
-    client.release();
+    throw error;
   }
 }
 

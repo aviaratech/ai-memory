@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { assertDurableContent, assertDurableWriteGate, findCompressedWord } from './durable-write-gate.js';
+import {
+  assertDurableContent,
+  assertDurableWriteGate,
+  DurableWriteGateError,
+  findCompressedWord,
+} from './durable-write-gate.js';
 
 // Wraps a gate call so assert.throws/doesNotThrow receive a block statement.
 const gate = (input: Parameters<typeof assertDurableWriteGate>[0]) => () => {
@@ -20,6 +25,49 @@ const VALID = {
   memoryKey: 'example/catalog:integration-test-database',
   tags: ['testing'],
 };
+
+test('a fixture agent applies all field-specific fixes and passes on its second call', () => {
+  const input: Record<string, unknown> = {
+    category: 'convention',
+    content: 'Short note.',
+    confidence: 0.2,
+    evidenceRefs: [],
+  };
+  let calls = 0;
+  const attempt = () => {
+    calls += 1;
+    assertDurableWriteGate(input);
+  };
+  try {
+    attempt();
+    assert.fail('fixture must be rejected');
+  } catch (error) {
+    assert.ok(error instanceof DurableWriteGateError);
+    assert.deepEqual(
+      new Set(error.problems.map(problem => problem.field)),
+      new Set(['memoryKey', 'evidenceRefs', 'content', 'confidence']),
+    );
+    const repairs: Record<string, unknown> = { ...VALID, confidence: 0.8 };
+    for (const problem of error.problems) {
+      assert.ok(problem.reason.length > 0 && problem.fix.length > 15);
+      input[problem.field] = repairs[problem.field];
+    }
+  }
+  attempt();
+  assert.equal(calls, 2);
+});
+
+test('structured fixes never echo rejected sensitive values', () => {
+  try {
+    assertDurableWriteGate({ ...VALID, metadata: { owner: 'someone@example.com' } });
+    assert.fail('fixture must be rejected');
+  } catch (error) {
+    assert.ok(error instanceof DurableWriteGateError);
+    assert.equal(error.problems[0]?.field, 'metadata');
+    assert.ok(!JSON.stringify(error.problems).includes('someone'));
+    assert.match(error.problems[0]?.fix ?? '', /Remove/u);
+  }
+});
 
 test('a keyed, evidenced, plain-language memory passes the gate', () => {
   assert.doesNotThrow(gate(VALID));

@@ -5,6 +5,20 @@ description: Use when needing to retrieve scoped continuity, store, search, or f
 
 # Memory Lifecycle
 
+## Everyday tools
+
+Start with these four tools:
+
+1. `memory_store` saves reusable knowledge with a stable key and real evidence. If rejected, apply each `problems[]` field's `fix` before retrying; never invent evidence or retain sensitive data.
+2. `memory_get` fetches a full record by id, or by `key` / `keys` (up to 25) with an explicit project. Keys return active rows by default and `found: false` when missing; set `includeInactive` for superseded history.
+3. `memory_recall` with `project` and `topic` returns at most five ranked active keyed items with excerpts, verification dates and evidence. Database errors or a one-second timeout return `status: degraded` and the matching project/host/role cached brief when available; an absent cache is explicit. Omit `topic` for the existing recent-memory recall.
+4. `memory_search` finds source-linked previews by query and filters; expand selected records with `memory_get`.
+
+```jsonc
+memory_get({ project: "example/catalog", key: "rule/merge-slot" })
+memory_recall({ project: "example/catalog", topic: "release rules" })
+```
+
 ## Orient During Session Work
 
 The session-start hook probes the task pack named by the host-supplied session identity. Automatic checkpoints require the same recognized host, project and producing session; explicit logical-task packs preserve their original source session. A matching pack wins. Otherwise startup supplies bounded, keyed durable project facts as background, excluding another session's latest project flush. Missing project identity reads no unscoped memories. Pack reads retain `memory_continuity_pack` telemetry. The complete decoded startup context is capped at 8,000 UTF-16 characters, including guidance, scope, provenance, warnings and truncation notices. Load this skill on demand; a truncation notice means details must be retrieved explicitly.

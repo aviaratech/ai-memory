@@ -7,6 +7,7 @@ import {
   assertLocalDatabaseUrl,
   buildHybridSearchQuery,
   closePool,
+  getMemoryEntries,
   initializeDatabase,
   pool,
   resolveTimeoutPolicy,
@@ -20,6 +21,7 @@ import {
   extractSearchReferenceNumbers,
 } from '../../db/query-helpers.js';
 import { applyReadReversalPenalties } from '../../db/retrieval-penalty.js';
+import { recallTopic } from '../topic-recall.js';
 import {
   buildBenchmarkQueries,
   buildBenchmarkVocabulary,
@@ -423,5 +425,82 @@ describe('index-first search', { skip: databaseUrl === undefined }, () => {
     const categoryNodes = await planWithoutSeqScan(categoryBatch.sql, categoryBatch.params);
     assertNoTableScan(categoryNodes, 'category prior lookup');
     assert.ok(categoryNodes.some(node => node['Index Name'] === 'ai_memory_entries_author_category_created_idx'));
+  });
+
+  test('topic recall p95 stays within 200 ms over 200 queries on the synthetic corpus', { timeout: 0 }, async () => {
+    await pool.query(
+      "UPDATE ai_memory_entries SET memory_key = 'benchmark/' || id WHERE project = $1 AND source = 'synthetic-benchmark'",
+      [project],
+    );
+    await pool.query('ANALYZE ai_memory_entries');
+    const queries = buildBenchmarkQueries();
+    const timings: number[] = [];
+    let matched = 0;
+    for (let i = 0; i < 200; i += 1) {
+      const topic = queries[i % queries.length]?.text ?? '';
+      const started = performance.now();
+      const result = await recallTopic({ project, topic }, { database: pool });
+      timings.push(performance.now() - started);
+      assert.equal(result.status, 'ok', `topic ${String(i)} must not degrade`);
+      assert.ok(result.memories.length <= 5);
+      assert.ok(result.memories.every(memory => memory.project === project && memory.key.startsWith('benchmark/')));
+      matched += result.memories.length;
+      if ((i + 1) % 50 === 0)
+        process.stdout.write(
+          JSON.stringify({
+            stage: 'topic-recall-benchmark',
+            completed: i + 1,
+            remaining: 199 - i,
+            elapsedMs: Math.round(timings.reduce((sum, value) => sum + value, 0)),
+          }) + '\n',
+        );
+    }
+    assert.ok(matched > 0, 'benchmark must retrieve keyed memories');
+    timings.sort((a, b) => a - b);
+    const p95 = timings[189] ?? Infinity;
+    process.stdout.write(
+      JSON.stringify({ stage: 'topic-recall-benchmark', queries: 200, p95Ms: p95, maxMs: timings.at(-1), matched }) +
+        '\n',
+    );
+    assert.ok(p95 <= 200, `topic recall p95 ${String(p95)} ms exceeds 200 ms`);
+  });
+
+  test('the same requested key cannot cross projects and inactive keys need includeInactive', async () => {
+    const otherProject = `${project}-foreign`;
+    const key = 'rule/scoped-fixture';
+    try {
+      await pool.query(
+        `INSERT INTO ai_memory_entries (project, memory_key, category, content, status, source, memory_type)
+        VALUES ($1, $3, 'convention', 'The primary project uses verified release rules.', 'active', 'topic-fixture', 'semantic'),
+          ($2, 'rule/foreign-fixture', 'convention', 'Foreign project private release rules must never appear.', 'active', 'topic-fixture', 'semantic'),
+          ($1, 'rule/stale-fixture', 'convention', 'The old primary release rule is superseded.', 'superseded', 'topic-fixture', 'semantic')`,
+        [project, otherProject, key],
+      );
+      const rows = await getMemoryEntries({ project, key });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.project, project);
+      assert.equal(rows[0]?.status, 'active');
+      const history = await getMemoryEntries({ project, key: 'rule/stale-fixture', includeInactive: true });
+      assert.equal(history.length, 1);
+      assert.equal(history[0]?.status, 'superseded');
+      assert.deepEqual(await getMemoryEntries({ project, key: 'rule/stale-fixture' }), [
+        { key: 'rule/stale-fixture', found: false },
+      ]);
+      assert.deepEqual(await getMemoryEntries({ project: otherProject, key }), [{ key, found: false }]);
+      assert.deepEqual(await getMemoryEntries({ project, key: 'rule/foreign-fixture' }), [
+        { key: 'rule/foreign-fixture', found: false },
+      ]);
+      assert.ok(history.every(row => row.project === project));
+      assert.deepEqual(await getMemoryEntries({ project, key: 'rule/missing' }), [
+        { key: 'rule/missing', found: false },
+      ]);
+      const recalled = await recallTopic({ project, topic: key }, { database: pool });
+      assert.equal(recalled.status, 'ok');
+      assert.ok(recalled.memories.some(memory => memory.key === key));
+      assert.ok(!JSON.stringify(recalled).includes('Foreign project'));
+      assert.ok(!JSON.stringify(recalled).includes('superseded.'));
+    } finally {
+      await removeSyntheticSearchCorpus(pool, otherProject);
+    }
   });
 });

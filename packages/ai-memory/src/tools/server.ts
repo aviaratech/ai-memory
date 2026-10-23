@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 import {
+  assertDurableWriteGate,
   closePool,
   countContestedMemories,
+  DurableWriteGateError,
+  type DurableWriteProblem,
   formatError,
   formatMemoryPayload,
   formatTimeoutMessage,
@@ -23,6 +26,8 @@ import {
   logAiMemoryInfo,
   logAiMemoryWarn,
   MEMORY_TYPE_VALUES,
+  normalizeOptionalTimestamp,
+  normalizeProjectScope,
   orientMemory,
   readOptionalText,
   recallMemories,
@@ -44,6 +49,7 @@ import { pathToFileURL } from 'node:url';
 import * as z from 'zod/v4';
 
 import { ensurePostgresRunning, formatPostgresRecoveryHint } from './ensure-postgres.js';
+import { recallTopic } from './topic-recall.js';
 import { buildContinuityPackDebugPayload } from './ingestion/continuity-pack.js';
 import { runIngestPipeline } from './ingestion/pipeline.js';
 import { getAiMemoryRuntimeDiagnostics, initializeAiMemoryRuntimeEnv, loadAiMemoryMcpEnvConfig } from './runtimeEnv.js';
@@ -251,6 +257,62 @@ export const memoryStoreInputSchema = z.object({
   updatedBy: z.string().min(1).optional().describe('Optional actor/user that updated this memory.'),
   userId: z.string().min(1).optional().describe('Optional user scope id.'),
 });
+
+// Advertise the unchanged contract, but let the handler return field-level
+// repairs instead of the SDK's plain-text validation error. Every write still
+// passes the original strict schema and durable gate before persistence.
+const memoryStoreTransportInputSchema = z.looseObject({}).meta({
+  ...z.toJSONSchema(memoryStoreInputSchema, { io: 'input', target: 'draft-7' }),
+  additionalProperties: undefined,
+});
+
+function parseMemoryStoreInput(args: unknown) {
+  const problems: DurableWriteProblem[] = [];
+  const request = isRecord(args)
+    ? Object.fromEntries(Object.entries(args).filter(([field]) => Object.hasOwn(memoryStoreInputSchema.shape, field)))
+    : {};
+  const parsed = memoryStoreInputSchema.safeParse(request);
+  try {
+    assertDurableWriteGate(parsed.success ? parsed.data : request);
+  } catch (error) {
+    if (!(error instanceof DurableWriteGateError)) throw error;
+    problems.push(...error.problems);
+  }
+  for (const field of ['expiresAt', 'lastVerifiedAt']) {
+    try {
+      normalizeOptionalTimestamp(request[field], field);
+    } catch (error) {
+      problems.push({
+        field,
+        reason: formatError(error),
+        fix: `Set ${field} to the intended valid ISO timestamp, for example "2026-12-01T00:00:00.000Z", or omit it.`,
+      });
+    }
+  }
+  if (
+    [request.project, request.repoId, request.repoSlug].every(value => value === undefined || typeof value === 'string')
+  ) {
+    try {
+      normalizeProjectScope(request);
+    } catch (error) {
+      problems.push({
+        field: 'repoId',
+        reason: formatError(error),
+        fix: 'Set repoId and repoSlug to the same verified owner/repository, or omit the conflicting optional claim.',
+      });
+    }
+  }
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      const field = issue.path.map(String).join('.') || 'input';
+      if (problems.some(problem => problem.field === field)) continue;
+      problems.push({ field, reason: issue.message, fix: `Correct ${field}: ${issue.message}.` });
+    }
+    throw new DurableWriteGateError(problems);
+  }
+  if (problems.length > 0) throw new DurableWriteGateError(problems);
+  return parsed.data;
+}
 
 const strategyConfidenceSchema = z.enum(STRATEGY_CONFIDENCE_VALUES);
 
@@ -471,14 +533,15 @@ export const memoryContinuityPackInputSchema = z.object(memoryContinuityPackInpu
 export const memoryContinuityDebugInputSchema = memoryContinuityPackInputSchema;
 
 export const memoryGetInputSchema = z.object({
+  key: z.string().trim().min(1).optional().describe('Single stable memory key; requires project.'),
+  keys: acceptJsonEncoded(z.array(z.string().trim().min(1)).min(1).max(25).optional()).describe(
+    'Up to 25 stable keys; requires project.',
+  ),
   id: acceptJsonEncoded(z.number().int().positive().optional()).describe('Single memory id to fetch.'),
   ids: acceptJsonEncoded(z.array(z.number().int().positive()).max(100).optional()).describe(
     'Multiple memory ids to fetch (max 100).',
   ),
-  includeInactive: z
-    .boolean()
-    .optional()
-    .describe('Include superseded/expired/archived memories when true (default: true).'),
+  includeInactive: z.boolean().optional().describe('Include inactive rows; default false for keys, true for ids.'),
   project: z.string().min(1).optional().describe('Optional project filter for scoped lookup.'),
 });
 
@@ -529,20 +592,24 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
     {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       description:
-        'Store durable, reusable knowledge for cross-session, cross-agent recall: decisions, standing rules, conventions, hard-to-re-derive facts, root causes and pointers. ' +
-        'Every write needs a stable memoryKey, at least one evidenceRef and plain sentences, and must not contain secrets, personal data, email addresses or home-folder paths. ' +
-        'Session state and summaries belong in memory_flush.',
-      inputSchema: memoryStoreInputSchema.shape,
+        'Store reusable knowledge with a stable memoryKey, auditable evidenceRefs and plain sentences free of secrets or personal data. ' +
+        'Rejections return field, reason and fix in problems; session state belongs in memory_flush. ' +
+        'Example: {"category":"convention","memoryKey":"rule/tests","content":"Run integration tests on disposable databases.","evidenceRefs":["CONTRIBUTING.md"]}',
+      inputSchema: memoryStoreTransportInputSchema,
     },
-    (args: unknown) =>
-      runTool({
-        args,
+    (args: unknown) => {
+      const telemetryArgs: Record<string, unknown> = {};
+      return runTool({
+        args: telemetryArgs,
         handler: async () => {
-          const record = await storeMemory(mergeDetectedDefaults(args, detectedAgentContext));
+          const writeArgs = mergeDetectedDefaults(parseMemoryStoreInput(args), detectedAgentContext);
+          const record = await storeMemory(writeArgs);
+          Object.assign(telemetryArgs, writeArgs);
           return toTextResult({ memory: record, status: 'ok' });
         },
         toolName: 'memory_store',
-      }),
+      });
+    },
   );
 
   server.registerTool(
@@ -653,7 +720,8 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
     'memory_get',
     {
       annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: true },
-      description: 'Fetch durable memory rows by id for on-demand expansion after compact orient/search previews.',
+      description:
+        'Fetch full memories by id or by project-scoped key (up to 25 keys). Key lookups default to active rows and return found:false for missing keys. Example: {"project":"example/catalog","key":"rule/merge-slot"}',
       inputSchema: memoryGetInputSchema.shape,
     },
     (args: unknown) =>
@@ -672,7 +740,7 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
     {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       description:
-        'Search durable knowledge by text query + filters. Default search excludes unkeyed session/flush records while preserving shared keyed facts; use sessionId for exact-session history. Returns compact source-linked previews by default; use memory_get for full detail. All detail modes share a 16384-byte serialized result cap; oversized full records become marked compact previews.',
+        'Search durable knowledge by text and filters, returning source-linked previews within a 16384-byte result budget. Use memory_get for full records or sessionId for exact session history. Example: {"project":"example/catalog","query":"release rules"}',
       inputSchema: memorySearchInputSchema.shape,
     },
     (args: unknown) =>
@@ -766,8 +834,15 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
     'memory_recall',
     {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
-      description: 'Recall recent durable memories for session startup context.',
+      description:
+        'Recall up to five active keyed memories about a project topic, with the scoped brief as a degraded fallback. Omit topic for recent-memory recall. Example: {"project":"example/catalog","topic":"release rules"}',
       inputSchema: {
+        topic: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe('Topic to rank within project; returns at most five active keyed memories.'),
         category: z.string().min(1).optional().describe('Optional category filter.'),
         includeInactive: z.boolean().optional().describe('Include superseded/expired/archived memories when true.'),
         limit: acceptJsonEncoded(z.number().int().min(1).max(50).optional()).describe(
@@ -784,6 +859,11 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
       runTool({
         args,
         handler: async () => {
+          if (isRecord(args) && args.topic !== undefined) {
+            return toTextResult(
+              await recallTopic(args, { host: memoryHookHost(process.env), role: process.env.AI_MEMORY_ROLE }),
+            );
+          }
           const memories = await recallMemories(args);
           const contestedCount = await countContestedMemories(args);
           const result: Record<string, unknown> = {
@@ -1709,6 +1789,12 @@ function summarizeWarnings(value: unknown):
 }
 
 function toErrorResult(error: unknown, toolName: ToolName): ToolErrorResult {
+  if (toolName === 'memory_store' && error instanceof DurableWriteGateError) {
+    return {
+      ...toTextResult({ status: 'error', error: 'memory_store_rejected', problems: error.problems }),
+      isError: true,
+    };
+  }
   const message = formatError(error);
   return {
     content: [

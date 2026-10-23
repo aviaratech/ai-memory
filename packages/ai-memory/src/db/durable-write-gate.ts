@@ -6,7 +6,12 @@
  * evidence reference and plain sentences, and must not contain secrets or
  * personal data. Session state belongs in memory_flush, not here.
  */
-import { DERIVED_MEMORY_KEY_PREFIX, SESSION_SUMMARY_CATEGORY } from './runtime.js';
+import {
+  DERIVED_MEMORY_KEY_PREFIX,
+  MIN_DURABLE_CONTENT_CHARS,
+  MIN_HIGH_CONFIDENCE_DURABLE,
+  SESSION_SUMMARY_CATEGORY,
+} from './runtime.js';
 import { isRecord } from './type-guards.js';
 
 const MAX_WORD_LETTERS = 30;
@@ -68,46 +73,100 @@ export interface DurableWriteGateInput extends Record<string, unknown> {
   source?: unknown;
 }
 
-/**
- * Throws one error that lists every problem, so a caller can fix the write in
- * a single retry. Every text field of the input is scanned for secrets and
- * personal data.
- */
+export interface DurableWriteProblem {
+  field: string;
+  reason: string;
+  fix: string;
+}
+
+export class DurableWriteGateError extends Error {
+  constructor(readonly problems: DurableWriteProblem[]) {
+    super(`memory_store rejected this durable memory: ${problems.map(problem => problem.reason).join(' ')}`);
+    this.name = 'DurableWriteGateError';
+  }
+}
+
+/** Collect every durable-write problem without echoing rejected sensitive values. */
 export function assertDurableWriteGate(input: DurableWriteGateInput): void {
-  const problems: string[] = [];
+  const problems: DurableWriteProblem[] = [];
+  const add = (field: string, reason: string, fix: string) => {
+    problems.push({ field, reason, fix });
+  };
   const category = typeof input.category === 'string' ? input.category.trim().toLowerCase() : '';
   const memoryKey = typeof input.memoryKey === 'string' ? input.memoryKey.trim() : '';
   const source = typeof input.source === 'string' ? input.source.trim().toLowerCase() : '';
 
+  if (category.length === 0)
+    add('category', 'category is required.', 'Choose the knowledge category, for example convention or decision.');
   if (category === SESSION_SUMMARY_CATEGORY) {
-    problems.push('Session summaries are session state; save them with memory_flush instead of memory_store.');
-  }
-  if (RESERVED_SOURCES.has(source)) {
-    problems.push(`source "${source}" is reserved for memory_flush records.`);
-  }
-  if (memoryKey.length === 0) {
-    problems.push('memoryKey is required. Use a stable key such as "owner/repo:topic" so later writes update it.');
-  } else if (memoryKey.startsWith(`${DERIVED_MEMORY_KEY_PREFIX}:`)) {
-    problems.push(`memoryKey must not use the reserved "${DERIVED_MEMORY_KEY_PREFIX}:" prefix.`);
-  }
-  if (!hasAuditableEvidence(input.evidenceRefs)) {
-    problems.push(
-      'evidenceRefs needs at least one auditable reference: a repository path, a URL, or an object with path, url, issue or pr.',
+    add(
+      'category',
+      'Session summaries are session state; save them with memory_flush instead of memory_store.',
+      'Save this session state with memory_flush; use memory_store only for reusable knowledge.',
     );
   }
-  problems.push(...findPlainLanguageProblems(typeof input.content === 'string' ? input.content : ''));
+  if (RESERVED_SOURCES.has(source)) {
+    add(
+      'source',
+      `source "${source}" is reserved for memory_flush records.`,
+      'Omit source or use the actual writing tool, for example codex.',
+    );
+  }
+  if (memoryKey.length === 0) {
+    add(
+      'memoryKey',
+      'memoryKey is required. Use a stable key such as "owner/repo:topic" so later writes update it.',
+      'Set memoryKey to a stable caller-chosen key such as "owner/repo:topic".',
+    );
+  } else if (memoryKey.startsWith(`${DERIVED_MEMORY_KEY_PREFIX}:`)) {
+    add(
+      'memoryKey',
+      `memoryKey must not use the reserved "${DERIVED_MEMORY_KEY_PREFIX}:" prefix.`,
+      'Replace memoryKey with a stable caller-chosen key such as "owner/repo:topic".',
+    );
+  }
+  if (!hasAuditableEvidence(input.evidenceRefs)) {
+    add(
+      'evidenceRefs',
+      'evidenceRefs needs at least one auditable reference: a repository path, a URL, or an object with path, url, issue or pr.',
+      'Add a real supporting repository path, issue or PR URL to evidenceRefs.',
+    );
+  }
+  const content = typeof input.content === 'string' ? input.content : '';
+  const contentProblems = findPlainLanguageProblems(content);
+  if (content.trim().length < MIN_DURABLE_CONTENT_CHARS)
+    contentProblems.push(`content must be at least ${String(MIN_DURABLE_CONTENT_CHARS)} characters.`);
+  for (const reason of contentProblems)
+    add(
+      'content',
+      reason,
+      `Write plain sentences with spaces, at least ${String(MIN_CONTENT_WORDS)} words and ${String(MIN_DURABLE_CONTENT_CHARS)} characters.`,
+    );
+  if (
+    input.confidence !== undefined &&
+    (!Number.isFinite(Number(input.confidence)) ||
+      Number(input.confidence) < MIN_HIGH_CONFIDENCE_DURABLE ||
+      Number(input.confidence) > 1)
+  ) {
+    add(
+      'confidence',
+      `durable memories must use confidence >= ${String(MIN_HIGH_CONFIDENCE_DURABLE)} and <= 1.`,
+      'Verify the supporting evidence, then set confidence between 0.5 and 1.',
+    );
+  }
 
   for (const [field, value] of Object.entries(input)) {
     if (UNSCANNED_FIELDS.has(field)) continue;
     const found = findSensitiveContent(readStrings(value));
     if (found !== undefined) {
-      problems.push(`${field} appears to contain ${found}. Remove secrets and personal data before storing.`);
+      add(
+        field,
+        `${field} appears to contain ${found}. Remove secrets and personal data before storing.`,
+        `Remove secrets and personal data from ${field}; replace private paths with repository-relative paths.`,
+      );
     }
   }
-
-  if (problems.length > 0) {
-    throw new Error(`memory_store rejected this durable memory: ${problems.join(' ')}`);
-  }
+  if (problems.length > 0) throw new DurableWriteGateError(problems);
 }
 
 /** The content checks alone, for text that becomes a memory by another path (a contested merge). */
