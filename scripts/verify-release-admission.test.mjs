@@ -369,3 +369,46 @@ test('workflow retains protected main, exact source acceptance and both archive 
   assert.match(pack, /"\$PLUGIN_SHA256" "\$release_dir\/aviaratech-ai-memory-plugin-\$RELEASE_VERSION\.tgz"/);
   assert.match(pack, /sha256sum --check --status/);
 });
+
+function releaseState(body, tag = 'v0.3.0') {
+  const file = join(directory, 'release-state.json');
+  const archive = `aviaratech-ai-memory-plugin-${tag.slice(1)}.tgz`;
+  writeFileSync(file, JSON.stringify({
+    tagName: tag, name: `ai-memory ${tag}`, body,
+    isDraft: false, isPrerelease: false,
+    assets: [{ name: archive, state: 'uploaded' }],
+  }));
+  return spawnSync(process.execPath, [
+    new URL('./verify-release-state.mjs', import.meta.url).pathname,
+    file, tag, source, archive, 'final',
+  ], { encoding: 'utf8' });
+}
+
+test('0.3.0 release notes include cleanup, migration 010 and index-first search', () => {
+  const notes = spawnSync(process.execPath, [
+    new URL('./verify-release-state.mjs', import.meta.url).pathname, '--notes', 'v0.3.0', source,
+  ], { encoding: 'utf8' });
+  assert.equal(notes.status, 0, notes.stderr);
+  assert.match(notes.stdout, new RegExp(`^Reviewed ai-memory release from ${source}\\.`));
+  assert.match(notes.stdout, /cleanup/);
+  assert.match(notes.stdout, /010/);
+  assert.match(notes.stdout, /[Ii]ndex-first search/);
+  assert.equal(releaseState(notes.stdout).status, 0);
+  for (const body of [
+    `Reviewed ai-memory release from ${source}.`,
+    notes.stdout.replace('cleanup', 'removed-topic'),
+    notes.stdout.replace(source, head),
+    `${notes.stdout}Unreviewed addition.`,
+  ]) assert.notEqual(releaseState(body).status, 0);
+});
+
+test('historical releases retain exact generic notes without repair', () => {
+  assert.equal(releaseState(`Reviewed ai-memory release from ${source}.`, 'v0.2.8').status, 0);
+  assert.notEqual(releaseState(`Reviewed ai-memory release from ${head}.`, 'v0.2.8').status, 0);
+});
+
+test('workflow creates a draft from the same notes that its verifier accepts', () => {
+  const reserve = releaseSteps(['Reserve reviewed tag and draft release']);
+  assert.match(reserve, /node scripts\/verify-release-state\.mjs --notes "\$tag" "\$SOURCE_SHA"/);
+  assert.match(reserve, /--notes-file "\$release_dir\/release-notes\.md"/);
+});
