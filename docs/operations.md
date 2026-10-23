@@ -1,5 +1,50 @@
 # Operations
 
+## Weekly stale-memory review
+
+For a build containing migration 011 and the stale command, run `ai-memory stale [--project <p>] [--json]` against the configured loopback database. It lists active, unexpired keyed memories with `unverified_30d` when verification is at least 30 days old, and `evidence_closed` when a cited GitHub issue or PR closed strictly after `last_verified_at`. JSON contains `project`, `memoryKey`, `lastVerifiedAt` and `reasons`; it omits memory bodies. The global report preserves unscoped items as `project: null`; a project filter selects only that exact project. Re-storing the same key and unchanged content refreshes verification in place, preserving its ID and creation time.
+
+`GH_TOKEN` or `GITHUB_TOKEN` enables read-only GitHub GET requests. Only `https://github.com/<owner>/<repo>/issues/<number>` and `/pull/<number>` references (strings or `url`/`issue`/`pr` object fields) are checked. Results, including open items, are cached for 24 hours in owner-only `evidence-*.json` files alongside the existing brief cache, qualified by project and reference. Without a token, age flags and valid cached results still work; the command prints one warning and exits 0. Failed GitHub lookups retain age checks and print one advisory; they are not recorded as an open/closed result.
+
+The brief marks old verification and valid cached closures with `(check: unverified_30d)` and `(check: evidence_closed)`. Hooks never contact GitHub; running `stale` refreshes evidence for subsequent brief generation. Non-GitHub references are ignored. Flags do not expire, delete or otherwise change a memory. Review flags and the health report's [per-item use and prune candidates](telemetry.md#per-item-memory-use) before deciding whether to verify or prune a pin.
+
+The following macOS example is documentation only. The operator chooses paths, protects credentials, installs and enables the job. Use absolute paths to the selected Node executable and installed package tools (the same `AI_MEMORY_TOOLS` directory used below). Save an owner-only wrapper such as `/absolute/private/weekly-memory-review.sh`:
+
+```sh
+#!/bin/sh
+set -eu
+umask 077
+# This operator-owned, mode-0600 shell environment file supplies
+# AI_MEMORY_DATABASE_URL and optionally GH_TOKEN or GITHUB_TOKEN.
+set -a
+. /absolute/private/memory-review.env
+set +a
+NODE=/absolute/path/to/node
+AI_MEMORY_TOOLS=/absolute/path/to/installed/core/dist/tools
+REPORTS=/absolute/private/memory-reports
+mkdir -p "$REPORTS"
+"$NODE" "$AI_MEMORY_TOOLS/pluginCli.js" stale --project example/catalog --json > "$REPORTS/stale.json.tmp"
+mv "$REPORTS/stale.json.tmp" "$REPORTS/stale.json"
+"$NODE" "$AI_MEMORY_TOOLS/health-report.js" --days 30 --json > "$REPORTS/health.json.tmp"
+mv "$REPORTS/health.json.tmp" "$REPORTS/health.json"
+```
+
+Save this plist as `~/Library/LaunchAgents/com.aviaratech.ai-memory.weekly-review.plist`, replacing all placeholder paths. It runs Sundays at 09:00 local time. Keep tokens and database URLs out of the plist and captured output.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.aviaratech.ai-memory.weekly-review</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>/absolute/private/weekly-memory-review.sh</string></array>
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/absolute/private/memory-review.stdout</string>
+  <key>StandardErrorPath</key><string>/absolute/private/memory-review.stderr</string>
+</dict></plist>
+```
+
+After reviewing the wrapper/plist and selecting a compatible installed build, the operator can enable it with `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.aviaratech.ai-memory.weekly-review.plist"` and inspect it with `launchctl print "gui/$(id -u)/com.aviaratech.ai-memory.weekly-review"`. Disable only this job with `launchctl bootout "gui/$(id -u)/com.aviaratech.ai-memory.weekly-review"`. These examples do not install, activate, migrate or initialize anything automatically.
+
 With `AI_MEMORY_DATABASE_URL` set to the dedicated loopback database, these commands check connectivity, apply migrations, and report health:
 
 ```sh

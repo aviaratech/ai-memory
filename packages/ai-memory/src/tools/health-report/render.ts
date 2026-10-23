@@ -55,6 +55,19 @@ export function renderReport(report: HealthReport): string {
       );
     }
   lines.push('');
+  if (report.memoryConsumption?.status !== 'unavailable') {
+    lines.push('Per-key observed use (7 and 30 days; project-qualified injection/session/ID cohorts)');
+    for (const item of report.memoryConsumption?.items ?? []) {
+      for (const window of item.windows)
+        lines.push(
+          `- ${item.project} / ${item.memoryKey} (${String(window.days)}d): injected=${String(window.injectedCount)} used=${String(window.usedCount)} last-used=${window.lastUsedAt ?? 'unobserved'}`,
+        );
+    }
+    lines.push('Pinned prune candidates (zero observed uses in 30 days; review coverage before pruning):');
+    for (const item of report.memoryConsumption?.pruneCandidates ?? [])
+      lines.push(`- ${item.project} / ${item.memoryKey}`);
+    lines.push('');
+  }
   renderWriteCalibrationSection(lines, report.database.writeCalibration);
   renderReflectSection(lines, report.database.reflect);
   renderOrchestrationSection(lines, report.orchestration);

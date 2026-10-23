@@ -338,7 +338,8 @@ export function buildMemoryUpsertByMemoryKeySql(hasEmbeddingColumn: boolean) {
         updated_by = EXCLUDED.updated_by,
         audience = EXCLUDED.audience,
         pinned = EXCLUDED.pinned,
-        last_verified_at = COALESCE($31, ai_memory_entries.last_verified_at),
+        last_verified_at = CASE WHEN ai_memory_entries.content = EXCLUDED.content
+          THEN NOW() ELSE EXCLUDED.last_verified_at END,
         updated_at = NOW()${hasEmbeddingColumn ? ',\n        embedding = EXCLUDED.embedding' : ''}
     RETURNING *
   `;

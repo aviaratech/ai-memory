@@ -21,6 +21,7 @@ Doctor is read-only. Installation never initializes PostgreSQL or trusts hooks.
 See the installation guide for protected configuration and required host restart/trust.
 ai-memory cleanup --help describes removing stored data ai-memory no longer keeps.
 ai-memory brief --project <p> --host claude-code|codex --role <r> [--out <file>] generates the pinned project brief.
+ai-memory stale [--project <p>] [--json] reports verification-age and GitHub evidence flags.
 ai-memory setup --help describes explicit guided local PostgreSQL setup.`;
 
 export function parsePluginArguments(args: string[]): PluginOptions {
@@ -65,6 +66,11 @@ export function parsePluginArguments(args: string[]): PluginOptions {
 }
 
 async function main(args: string[]): Promise<void> {
+  if (args[0] === 'stale') {
+    const { runStaleCli } = await import('./stale.js');
+    await runStaleCli(args.slice(1));
+    return;
+  }
   if (args[0] === 'brief') {
     const { runBriefCli } = await import('./brief.js');
     await runBriefCli(args.slice(1));

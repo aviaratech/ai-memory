@@ -12,6 +12,7 @@ import {
   parseBriefArguments,
   runBriefCli,
 } from './brief.js';
+import { createGithubEvidenceLookup } from './stale.js';
 
 const scope = { project: 'example/catalog', host: 'claude-code', role: 'lead' };
 const verified = '2026-10-01T12:00:00.000Z';
@@ -28,6 +29,57 @@ const fixture = (index: number, audience = ['all']) => ({
   lastVerifiedAt: verified,
   updatedAt: verified,
   evidenceRefs: [`https://example.com/rules/${String(index)}`],
+});
+
+test('brief flags old verification and cached evidence closure without flagging fresh or foreign items', () => {
+  const now = new Date('2026-10-22T12:00:00.000Z');
+  const text = buildBrief(
+    scope,
+    [
+      { ...fixture(1), lastVerifiedAt: '2026-09-21T12:00:00.000Z' },
+      { ...fixture(2), staleReasons: ['evidence_closed'] },
+      fixture(3),
+      { ...fixture(4), project: 'other/catalog', staleReasons: ['evidence_closed'] },
+    ],
+    { now },
+  );
+  assert.match(text, /rule\/01.*\(check: unverified_30d\)/u);
+  assert.match(text, /rule\/02.*\(check: evidence_closed\)/u);
+  assert.doesNotMatch(
+    text.split('\n').find(line => line.includes('rule/03'))!,
+    /\(check:/u,
+  );
+  assert.doesNotMatch(text, /rule\/04/u);
+});
+
+test('refresh reads project-qualified closure cache without contacting GitHub and preserves selected IDs in the brief cache', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'brief-stale-'));
+  const now = () => new Date('2026-10-22T12:00:00.000Z');
+  const evidence = 'https://github.com/example/catalog/issues/12';
+  try {
+    await createGithubEvidenceLookup({
+      token: 'synthetic',
+      cacheDir: directory,
+      now,
+      fetch: () => Promise.resolve(new Response(JSON.stringify({ closed_at: '2026-10-15T00:00:00Z' }))),
+    })(scope.project, evidence);
+    const text = await refreshBrief(scope, {
+      cacheDir: directory,
+      now,
+      load: () => Promise.resolve([{ ...fixture(1), evidenceRefs: [evidence] }]),
+    });
+    assert.match(text, /\(check: evidence_closed\)/u);
+    assert.deepEqual((await readCachedBrief(scope, directory))?.memoryIds, [1]);
+    const other = { ...scope, project: 'other/catalog' };
+    const foreign = await refreshBrief(other, {
+      cacheDir: directory,
+      now,
+      load: () => Promise.resolve([{ ...fixture(1), project: other.project, evidenceRefs: [evidence] }]),
+    });
+    assert.doesNotMatch(foreign, /evidence_closed/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('40 pinned fixtures select exact project and matching audiences in stable priority order with role state first', () => {

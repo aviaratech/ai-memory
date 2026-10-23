@@ -1,5 +1,13 @@
 # Task workflow telemetry
 
+## Per-item memory use
+
+The ordinary health report (`node "$AI_MEMORY_TOOLS/health-report.js" --json`) includes `memoryConsumption.items`, qualified by exact `project` and `memoryKey`. Each item has 7-day and 30-day windows with `injectedCount`, `usedCount` and nullable `lastUsedAt`. Counts deduplicate each host/session/project/memory-ID pair within that window; a use must follow an injection in the same window and identity. Repeated delivery of the same observation does not increase a count. The existing per-host summary keeps its seven-day window independently of `--days`.
+
+Session-start briefs record the numeric IDs of complete items emitted after audience/project selection and the brief budget. The same IDs travel in the existing scoped private brief cache, so a cached brief can record an injection when telemetry is available. Older cache files without IDs, absent host/session identity, database outages, and uninstrumented clients leave gaps. The first-prompt hook, successful gets and timestamped citations use the existing `memory_injected`/`memory_used` telemetry; no memory text or keys are added to the telemetry allowlist. The report resolves IDs against current active keyed entries and requires the same project before associating use.
+
+`memoryConsumption.pruneCandidates` lists active pinned keys with zero observed uses in 30 days, including pins never injected. These are review candidates: zero observed uses is not proof of disuse, and no item is deleted, expired or unpinned. Unavailable telemetry produces an explicit unavailable report and no prune candidates. Short retention or missing collection reduces coverage; `lastUsedAt: null` means unobserved in that window, not never used.
+
 Workflow telemetry records content-free observations supplied by a supported lifecycle hook or a cooperating producer. It answers which reported token subsets occur in a task and where reported retries, failures, blockers or corrections recur. It does not establish the cause of a failure, prove that a workflow change saved tokens, or independently accept an outcome.
 
 These commands require a build containing migration `009_workflow_telemetry.sql`. Importing the existing `/ingestion` entry point does not provision or start a database. Applying migrations, installing or enabling hooks, and granting access to an operator database are separate deployment actions; ingestion never performs them automatically.

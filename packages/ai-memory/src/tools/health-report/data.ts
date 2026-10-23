@@ -119,6 +119,7 @@ export interface ReflectCycleRow extends JsonRecord {
 export function buildMemoryConsumptionMetrics(
   rows: MemoryConsumptionRow[] | undefined,
   windowEndIso: string,
+  keyedMemories: { id: number; project: string | null; memoryKey: string; pinned: boolean }[] = [],
 ): MemoryConsumptionMetrics {
   const end = Date.parse(windowEndIso);
   const start = end - 7 * 24 * 60 * 60 * 1000;
@@ -126,6 +127,8 @@ export function buildMemoryConsumptionMetrics(
     status: rows === undefined ? 'unavailable' : 'partial',
     window: { days: 7, start: new Date(start).toISOString(), end: new Date(end).toISOString() },
     hosts: [],
+    items: [],
+    pruneCandidates: [],
   };
   if (rows === undefined) return report;
   const injections = new Map<string, { host: 'claude-code' | 'codex'; observed: number; identity: string }>();
@@ -180,6 +183,67 @@ export function buildMemoryConsumptionMetrics(
       coverage: observed ? 'partial' : 'unobserved',
     });
   }
+  const inventory = new Map(keyedMemories.map(memory => [JSON.stringify([memory.project, memory.id]), memory]));
+  const byWindow = ([7, 30] as const).map(days => {
+    const keyedInjections = new Map<string, { memory: string; observed: number }>();
+    const keyedUses = new Map<string, number>();
+    const since = end - days * DAY_MS;
+    for (const row of rows) {
+      const observed = Date.parse(row.memory_observed_at);
+      const recorded = Date.parse(row.created_at);
+      if (
+        !['codex', 'claude-code'].includes(row.memory_host) ||
+        !row.project ||
+        !row.session_id ||
+        !Number.isFinite(observed) ||
+        !Number.isFinite(recorded) ||
+        observed < since ||
+        observed > end ||
+        recorded < since ||
+        recorded > end ||
+        observed > recorded
+      )
+        continue;
+      const injected = row.tool_name === 'memory_injected' && row.memory_observation === 'prompt';
+      const used = row.tool_name === 'memory_used' && ['get', 'citation'].includes(row.memory_observation);
+      if (!injected && !used) continue;
+      for (const id of parseConsumptionMemoryIds(injected ? row.injected_memory_ids : row.used_memory_ids) ?? []) {
+        const memory = JSON.stringify([row.project, id]);
+        if (!inventory.has(memory)) continue;
+        const key = JSON.stringify([row.memory_host, row.session_id, row.project, id]);
+        if (injected) {
+          const prior = keyedInjections.get(key);
+          if (prior === undefined || observed < prior.observed) keyedInjections.set(key, { memory, observed });
+        } else keyedUses.set(key, Math.max(keyedUses.get(key) ?? 0, observed));
+      }
+    }
+    const perMemory = new Map<string, { injectedCount: number; usedCount: number; lastUsed: number | null }>();
+    for (const [key, injection] of keyedInjections) {
+      const usedAt = keyedUses.get(key);
+      const metrics = perMemory.get(injection.memory) ?? { injectedCount: 0, usedCount: 0, lastUsed: null };
+      metrics.injectedCount++;
+      if (usedAt !== undefined && usedAt > injection.observed) {
+        metrics.usedCount++;
+        metrics.lastUsed = Math.max(metrics.lastUsed ?? 0, usedAt);
+      }
+      perMemory.set(injection.memory, metrics);
+    }
+    return { days, perMemory };
+  });
+  for (const [identity, memory] of inventory) {
+    const windows = byWindow.map(({ days, perMemory }) => {
+      const metrics = perMemory.get(identity);
+      return {
+        days,
+        injectedCount: metrics?.injectedCount ?? 0,
+        usedCount: metrics?.usedCount ?? 0,
+        lastUsedAt: metrics?.lastUsed == null ? null : new Date(metrics.lastUsed).toISOString(),
+      };
+    });
+    report.items.push({ project: memory.project, memoryKey: memory.memoryKey, pinned: memory.pinned, windows });
+    if (memory.pinned && windows[1]?.usedCount === 0)
+      report.pruneCandidates.push({ project: memory.project, memoryKey: memory.memoryKey });
+  }
   return report;
 }
 
@@ -187,14 +251,36 @@ export async function collectMemoryConsumptionMetrics(input: {
   pool: DbPool;
   windowEndIso: string;
 }): Promise<MemoryConsumptionMetrics> {
-  const windowStartIso = new Date(Date.parse(input.windowEndIso) - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const windowStartIso = new Date(Date.parse(input.windowEndIso) - 30 * DAY_MS).toISOString();
   try {
     const rows = await queryMemoryConsumption({
       dbPool: input.pool as unknown as PgPool,
       windowStartIso,
       windowEndIso: input.windowEndIso,
     });
-    return buildMemoryConsumptionMetrics(rows, input.windowEndIso);
+    const memories = await input.pool.query<{
+      id: number | string;
+      project: string | null;
+      memory_key: string;
+      pinned: boolean;
+    }>(
+      `
+      SELECT id, project, memory_key, pinned FROM ai_memory_entries
+      WHERE status='active' AND memory_key IS NOT NULL
+        AND (expires_at IS NULL OR expires_at > $1::timestamptz)
+      ORDER BY project, memory_key, id`,
+      [input.windowEndIso],
+    );
+    return buildMemoryConsumptionMetrics(
+      rows,
+      input.windowEndIso,
+      memories.rows.map(memory => ({
+        id: Number(memory.id),
+        project: memory.project,
+        memoryKey: memory.memory_key,
+        pinned: memory.pinned,
+      })),
+    );
   } catch {
     return buildMemoryConsumptionMetrics(undefined, input.windowEndIso);
   }
