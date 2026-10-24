@@ -219,7 +219,7 @@ test('aggregate rejects missing, failed, cancelled and inconsistent required pro
 
 const sourceSha = 'a'.repeat(40);
 const baseSha = 'b'.repeat(40);
-const metadataName = 'PR metadata (no source validation)';
+const metadataMarker = 'Record metadata proof branch';
 const eventFixture = () => ({
   action: 'edited',
   number: 82,
@@ -255,6 +255,14 @@ const jobsFixture = (id = 90) =>
     status: 'completed',
     conclusion: 'success',
   }));
+const metadataJobs = (id = 95, status = 'completed', conclusion = 'success') =>
+  jobsFixture(id).map(job =>
+    job.name === 'selection'
+      ? { ...job, steps: [{ name: metadataMarker, status: 'completed', conclusion: 'success' }] }
+      : job.name === 'checks'
+        ? { ...job, status, conclusion }
+        : { ...job, conclusion: 'skipped' },
+  );
 const runnerEnv = {
   GITHUB_REPOSITORY: 'fixture/memory',
   GITHUB_RUN_ID: '100',
@@ -265,10 +273,11 @@ const runnerEnv = {
 // Only the external HTTP boundary is substituted. The selector parses the real
 // Response objects, native run identities, attempts, ordering and job results.
 async function preserve(options = {}) {
-  const { preserveValidation } = await impact();
+  const { preserveValidation, waitForValidation } = await impact();
   assert.equal(typeof preserveValidation, 'function', 'native validation preservation is implemented');
   const event = options.event ?? eventFixture();
-  const runs = options.runs ?? [runFixture()];
+  let active = options;
+  let iteration = -1;
   const current = runFixture(100, event.action);
   current.display_title = `am-ci-v1 82 30 20 ${event.pull_request?.base?.ref} ${event.pull_request?.head?.sha} ${event.pull_request?.base?.sha} ${event.action}`;
   const fetchImpl =
@@ -277,33 +286,54 @@ async function preserve(options = {}) {
       assert.equal(init.method, 'GET');
       const parsed = new URL(url);
       assert.equal(parsed.origin, 'https://api.github.com');
-      if (parsed.pathname.endsWith('/runs/100')) return Response.json(current);
+      if (parsed.pathname.endsWith('/runs/100')) {
+        active = { ...options, ...options.states?.[Math.min(++iteration, options.states.length - 1)] };
+        return Response.json(current);
+      }
+      const runs = active.runs ?? [runFixture()];
       if (parsed.pathname.endsWith('/workflows/7/runs')) {
         assert.equal(parsed.searchParams.get('head_sha'), event.pull_request.head.sha);
-        return Response.json({ total_count: options.totalCount ?? runs.length, workflow_runs: runs });
+        return Response.json({ total_count: active.totalCount ?? runs.length, workflow_runs: runs });
       }
       const jobs = /\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/.exec(parsed.pathname);
       if (jobs)
         return Response.json({
-          total_count: (options.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1]))).length,
-          jobs: options.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1])),
+          total_count: (active.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1]))).length,
+          jobs: active.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1])),
         });
       const attempt = /\/runs\/(\d+)\/attempts\/(\d+)$/.exec(parsed.pathname);
       if (attempt)
-        return Response.json(options.attempts?.[attempt[1]] ?? runs.find(item => item.id === Number(attempt[1])));
+        return Response.json(active.attempts?.[attempt[1]] ?? runs.find(item => item.id === Number(attempt[1])));
       const run = /\/runs\/(\d+)$/.exec(parsed.pathname);
       if (run)
         return Response.json(
-          options.readbacks?.[run[1]] ?? options.readback ?? runs.find(item => item.id === Number(run[1])),
+          active.readbacks?.[run[1]] ?? active.readback ?? runs.find(item => item.id === Number(run[1])),
         );
       throw new Error(`Unexpected fixture request: ${parsed.pathname}`);
     });
-  return preserveValidation({
+  const args = {
     eventName: options.eventName ?? 'pull_request',
     event,
-    env: options.env ?? runnerEnv,
+    env: {
+      ...runnerEnv,
+      VALIDATION_MODE: 'metadata',
+      SELECTION_RESULT: 'success',
+      LINUX_RESULT: 'skipped',
+      MACOS_RESULT: 'skipped',
+      PACKAGE_RESULT: 'skipped',
+      POSTGRES_RESULT: 'skipped',
+      ...options.env,
+    },
     postgres: options.postgres ?? { run: 'true', reason: 'impact-or-unknown' },
     fetchImpl,
+  };
+  if (!options.wait) return preserveValidation(args);
+  assert.equal(typeof waitForValidation, 'function', 'required aggregate independently verifies source proof');
+  let pauses = 0;
+  return waitForValidation({
+    ...args,
+    report: options.report ?? (() => {}),
+    pause: options.pause ?? (async () => assert.ok(++pauses < (options.states?.length ?? 1), 'wait makes progress')),
   });
 }
 
@@ -386,7 +416,7 @@ test('source/base/reopen/ready and malformed metadata evidence always retain ful
     );
   }
   assert.equal((await preserve({ eventName: 'push' })).validation, 'full');
-  assert.equal((await preserve({ env: {} })).validation, 'full');
+  assert.equal((await preserve({ env: { GH_TOKEN: '' } })).validation, 'full');
 });
 
 test('positively identified queued/running source work stays responsible for its own result', async () => {
@@ -415,10 +445,7 @@ test('unfinished edited candidates cannot certify one another without full-branc
 
 test('completed metadata-only runs do not hide the actual full validation', async () => {
   const metadata = runFixture(95, 'edited');
-  const jobs = jobsFixture(95)
-    .filter(job => job.name !== 'checks')
-    .map(job => (job.name === 'selection' ? job : { ...job, conclusion: 'skipped' }));
-  jobs.push({ ...jobsFixture(95)[0], id: 999, name: metadataName });
+  const jobs = metadataJobs();
   assert.deepEqual(await preserve({ runs: [metadata, runFixture()], jobs: { 95: jobs } }), {
     validation: 'metadata',
     validationRun: 90,
@@ -460,10 +487,7 @@ test('latest attempt creation outranks immutable run number and ambiguous attemp
 
 test('metadata excluded from lookup is revalidated before preserving an older source run', async () => {
   const metadata = runFixture(95, 'edited');
-  const jobs = jobsFixture(95)
-    .filter(job => job.name !== 'checks')
-    .map(job => (job.name === 'selection' ? job : { ...job, conclusion: 'skipped' }));
-  jobs.push({ ...jobsFixture(95)[0], id: 999, name: metadataName });
+  const jobs = metadataJobs();
   assert.equal(
     (
       await preserve({
@@ -525,10 +549,7 @@ test('unknown run ordering and inconsistent pending or metadata job states canno
   ])
     assert.equal((await preserve({ runs: [pending], jobs: { 90: [job] } })).validation, 'full');
   const metadata = runFixture(95, 'edited');
-  const jobs = jobsFixture(95)
-    .filter(job => job.name !== 'checks')
-    .map(job => (job.name === 'selection' ? job : { ...job, conclusion: 'skipped' }));
-  jobs.push({ ...jobsFixture(95)[0], id: 999, name: metadataName, status: 'in_progress' });
+  const jobs = metadataJobs(95, 'in_progress', 'success');
   assert.equal((await preserve({ runs: [metadata, runFixture()], jobs: { 95: jobs } })).validation, 'full');
 });
 
@@ -546,6 +567,117 @@ test('API refusal/malformed/oversized evidence recovers idempotently without cha
   assert.deepEqual(await preserve(), { validation: 'metadata', validationRun: 90 });
 });
 
+test('required metadata aggregate waits for actual source success instead of trusting the selected run hint', async () => {
+  const reports = [];
+  const delays = [];
+  const pending = { ...runFixture(), status: 'in_progress', conclusion: null };
+  const result = await preserve({
+    wait: true,
+    env: { VALIDATION_RUN: '999' },
+    states: [{ runs: [pending] }, { runs: [pending] }, { runs: [runFixture()] }],
+    pause: async milliseconds => {
+      delays.push(milliseconds);
+    },
+    report: value => reports.push(value),
+  });
+  assert.deepEqual(result, { validationRun: 90 });
+  assert.equal(delays.length, 2, 'pending proof never finishes early');
+  assert.ok(delays[0] >= 30000 && delays[1] >= delays[0]);
+  assert.equal(reports.filter(item => item.stage === 'pending').length, 2);
+  assert.equal(reports.at(-1).stage, 'verified');
+  assert.ok(reports.every(item => item.validationAttempt === 1));
+});
+
+test('admitted metadata cannot pass when pending source later fails, cancels, reruns unsuccessfully or vanishes', async () => {
+  const pending = { ...runFixture(), status: 'in_progress', conclusion: null };
+  for (const state of [
+    { runs: [{ ...runFixture(), conclusion: 'failure' }] },
+    { runs: [{ ...runFixture(), conclusion: 'cancelled' }] },
+    { runs: [] },
+    { runs: [runFixture()], readback: { ...runFixture(), run_attempt: 2 } },
+    { runs: [{ ...runFixture(), run_attempt: 2, conclusion: 'failure' }] },
+  ])
+    await assert.rejects(preserve({ wait: true, states: [{ runs: [pending] }, state] }), /source validation/i);
+  await assert.rejects(
+    preserve({ wait: true, fetchImpl: async () => new Response('', { status: 403 }) }),
+    /source validation/i,
+  );
+});
+
+test('required aggregate refuses partial own-lane admission and observes cancellation during waiting', async () => {
+  for (const env of [{ VALIDATION_MODE: 'full' }, { SELECTION_RESULT: 'failure' }, { LINUX_RESULT: 'success' }])
+    await assert.rejects(preserve({ wait: true, env }), /metadata/i);
+  await assert.rejects(
+    preserve({
+      wait: true,
+      runs: [{ ...runFixture(), status: 'queued', conclusion: null }],
+      pause: async () => {
+        throw new Error('cancelled waiter');
+      },
+    }),
+    /cancelled waiter/,
+  );
+});
+
+test('positive native metadata admission excludes queued, running, successful and cancelled waiters without cycles', async () => {
+  for (const [status, conclusion] of [
+    ['queued', null],
+    ['in_progress', null],
+    ['completed', 'success'],
+    ['completed', 'cancelled'],
+  ]) {
+    const metadata = { ...runFixture(95, 'edited'), status, conclusion };
+    const jobs = { 95: metadataJobs(95, status, conclusion) };
+    assert.deepEqual(await preserve({ runs: [metadata, runFixture()], jobs }), {
+      validation: 'metadata',
+      validationRun: 90,
+    });
+    assert.deepEqual(await preserve({ wait: true, runs: [metadata, runFixture()], jobs }), { validationRun: 90 });
+    assert.equal((await preserve({ runs: [metadata], jobs })).validation, 'full');
+    await assert.rejects(preserve({ wait: true, runs: [metadata], jobs }), /source validation/i);
+    delete jobs[95][0].steps;
+    assert.equal((await preserve({ runs: [metadata, runFixture()], jobs })).validation, 'full');
+  }
+});
+
+test('metadata polling honors low remaining API capacity and refreshes native history before success', async () => {
+  const pending = { ...runFixture(), status: 'in_progress', conclusion: null };
+  const delays = [];
+  let cycle = 0;
+  const reset = Math.floor(Date.now() / 1000) + 180;
+  const fetchImpl = async url => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/runs/100')) {
+      cycle++;
+      return Response.json(runFixture(100, 'edited'));
+    }
+    const run = cycle === 1 ? pending : runFixture();
+    const headers = { 'x-ratelimit-remaining': '2', 'x-ratelimit-reset': String(reset) };
+    if (path.endsWith('/workflows/7/runs')) return Response.json({ total_count: 1, workflow_runs: [run] }, { headers });
+    if (path.endsWith('/jobs')) return Response.json({ total_count: 6, jobs: jobsFixture() }, { headers });
+    if (path.endsWith('/runs/90')) return Response.json(run, { headers });
+    throw new Error(`Unexpected path ${path}`);
+  };
+  assert.deepEqual(await preserve({ wait: true, fetchImpl, pause: async ms => delays.push(ms) }), {
+    validationRun: 90,
+  });
+  assert.equal(delays.length, 1);
+  assert.ok(delays[0] >= 170000, 'polling leaves room for the reported reset');
+  let lists = 0;
+  const raced = async url => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/runs/100')) return Response.json(runFixture(100, 'edited'));
+    if (path.endsWith('/workflows/7/runs'))
+      return Response.json({
+        total_count: 1,
+        workflow_runs: [++lists === 1 ? runFixture() : { ...runFixture(), run_attempt: 2 }],
+      });
+    if (path.endsWith('/jobs')) return Response.json({ total_count: 6, jobs: jobsFixture() });
+    return Response.json(runFixture());
+  };
+  await assert.rejects(preserve({ wait: true, fetchImpl: raced }), /source validation/i);
+});
+
 // Evaluate the scalar expressions actually emitted at this workflow's boundary.
 // This is deliberately not an Actions engine: native PR-event checks below the
 // synthetic layer remain required to establish GitHub's check-suite behavior.
@@ -554,11 +686,18 @@ function workflowScalar(block, field, github, needs = {}) {
   let scope = lines;
   let indent = 0;
   if (block) {
-    const start = lines.findIndex(line => line.trim() === `${block}:`);
+    if (block.includes('.')) {
+      const [parent, child] = block.split('.');
+      const parentStart = lines.findIndex(line => line === `  ${parent}:`);
+      const parentEnd = lines.findIndex((line, index) => index > parentStart && /^  \S/.test(line));
+      scope = lines.slice(parentStart + 1, parentEnd < 0 ? undefined : parentEnd);
+      block = child;
+    }
+    const start = scope.findIndex(line => line.trim() === `${block}:`);
     assert.ok(start >= 0, `workflow block ${block}`);
-    const parentIndent = lines[start].search(/\S/);
-    const end = lines.findIndex((line, index) => index > start && line.trim() && line.search(/\S/) <= parentIndent);
-    scope = lines.slice(start + 1, end < 0 ? undefined : end);
+    const parentIndent = scope[start].search(/\S/);
+    const end = scope.findIndex((line, index) => index > start && line.trim() && line.search(/\S/) <= parentIndent);
+    scope = scope.slice(start + 1, end < 0 ? undefined : end);
     indent = parentIndent + 2;
   }
   const line = scope.find(item => item.startsWith(`${' '.repeat(indent)}${field}: `));
@@ -593,16 +732,33 @@ test('workflow isolates every edited run while source/reopen/ready retain source
 });
 const sourceActionsForTest = () => ['opened', 'synchronize', 'reopened', 'ready_for_review'];
 
-test('workflow never emits the required checks name for positively selected metadata', () => {
+test('workflow always emits literal required checks, with bounded metadata queue and independent full aggregation', () => {
   for (const result of ['success', 'failure', 'cancelled', 'skipped', '']) {
     for (const validation of ['metadata', 'full', 'unknown', '']) {
       const needs = { selection: { result, outputs: { validation, run: 'true' } } };
       const metadata = result === 'success' && validation === 'metadata';
-      assert.equal(workflowScalar('checks', 'name', {}, needs), metadata ? metadataName : 'checks');
+      const github = { workflow: 'Quality checks', run_id: 100, run_attempt: 1 };
+      assert.equal(workflowScalar('checks', 'name', github, needs), 'checks');
+      assert.equal(workflowScalar('checks', 'timeout-minutes', github, needs), String(metadata ? 360 : 5));
+      const group = workflowScalar('checks.concurrency', 'group', github, needs);
+      assert.equal(workflowScalar('checks.concurrency', 'cancel-in-progress', github, needs), 'false');
+      assert.equal(workflowScalar('checks.concurrency', 'queue', github, needs), 'max');
+      const later = workflowScalar('checks.concurrency', 'group', { ...github, run_id: 101, run_attempt: 2 }, needs);
+      assert.equal(
+        group === later,
+        metadata,
+        'only metadata shares a job queue; event admission order cannot cancel a waiter',
+      );
       if (result === 'success') {
         for (const lane of ['linux', 'macos', 'package', 'postgres'])
           assert.equal(workflowScalar(lane, 'if', {}, needs), String(!metadata), `${lane}:${validation}`);
       }
     }
   }
+  const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.equal(workflowScalar('checks.permissions', 'contents', {}), 'read');
+  assert.equal(workflowScalar('checks.permissions', 'actions', {}), 'read');
+  assert.match(workflow, /name: Record metadata proof branch/);
+  assert.match(workflow, /run: node scripts\/ci-postgres-impact.mjs metadata/);
+  assert.doesNotMatch(workflow, /PR metadata \(no source validation\)/);
 });

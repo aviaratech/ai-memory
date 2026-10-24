@@ -44,6 +44,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Record metadata proof branch
+        if: ${{ steps.impact.outputs.validation == 'metadata' }}
+        run: echo "Required checks will independently verify actual full source coverage."
 
   linux:
     needs: selection
@@ -206,25 +209,41 @@ jobs:
           done
 
   checks:
-    name: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' && 'PR metadata (no source validation)' || 'checks' }}
+    name: checks
     if: ${{ always() }}
     needs: [linux, macos, package, selection, postgres]
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' && 360 || 5 }}
+    concurrency:
+      group: ${{ github.workflow }}-metadata-proof-${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' && 'metadata' || github.run_id }}-${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' && 'shared' || github.run_attempt }}
+      cancel-in-progress: false
+      queue: max
     steps:
-      - name: Preserve actual source validation
-        if: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' }}
-        run: echo "Metadata processing emits no source validation result."
       - name: Check out aggregation owner
-        if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Set up pinned Node
-        if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24.21.0'
+      - name: Verify actual full source coverage
+        if: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VALIDATION_MODE: ${{ needs.selection.outputs.validation }}
+          SELECTION_RESULT: ${{ needs.selection.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+        run: node scripts/ci-postgres-impact.mjs metadata
       - name: Require every coverage lane
         if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         env:
