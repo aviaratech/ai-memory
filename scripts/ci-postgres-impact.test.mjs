@@ -242,6 +242,7 @@ const runFixture = (id = 90, action = 'synchronize') => ({
   head_sha: sourceSha,
   display_title: `am-ci-v1 82 30 20 main ${sourceSha} ${baseSha} ${action}`,
   run_attempt: 1,
+  created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, id)).toISOString(),
   status: 'completed',
   conclusion: 'success',
 });
@@ -287,8 +288,14 @@ async function preserve(options = {}) {
           total_count: (options.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1]))).length,
           jobs: options.jobs?.[jobs[1]] ?? jobsFixture(Number(jobs[1])),
         });
+      const attempt = /\/runs\/(\d+)\/attempts\/(\d+)$/.exec(parsed.pathname);
+      if (attempt)
+        return Response.json(options.attempts?.[attempt[1]] ?? runs.find(item => item.id === Number(attempt[1])));
       const run = /\/runs\/(\d+)$/.exec(parsed.pathname);
-      if (run) return Response.json(options.readback ?? runs.find(item => item.id === Number(run[1])));
+      if (run)
+        return Response.json(
+          options.readbacks?.[run[1]] ?? options.readback ?? runs.find(item => item.id === Number(run[1])),
+        );
       throw new Error(`Unexpected fixture request: ${parsed.pathname}`);
     });
   return preserveValidation({
@@ -426,6 +433,47 @@ test('newer failure or uncertainty never selects an older green run', async () =
   const latest = runFixture(95);
   delete latest.display_title;
   assert.equal((await preserve({ runs: [latest, runFixture()] })).validation, 'full');
+});
+
+test('latest attempt creation outranks immutable run number and ambiguous attempt times fail closed', async () => {
+  const rerun = { ...runFixture(80), run_attempt: 2 };
+  const latestAttempt = { ...rerun, created_at: '2026-01-01T00:02:00.000Z' };
+  assert.equal(
+    (
+      await preserve({
+        runs: [runFixture(), { ...rerun, conclusion: 'failure' }],
+        attempts: { 80: { ...latestAttempt, conclusion: 'failure' } },
+      })
+    ).validation,
+    'full',
+  );
+  assert.deepEqual(await preserve({ runs: [runFixture(), rerun], attempts: { 80: latestAttempt } }), {
+    validation: 'metadata',
+    validationRun: 80,
+  });
+  for (const delta of [{ created_at: undefined }, { created_at: runFixture().created_at }, { run_attempt: 1 }])
+    assert.equal(
+      (await preserve({ runs: [runFixture(), rerun], attempts: { 80: { ...latestAttempt, ...delta } } })).validation,
+      'full',
+    );
+});
+
+test('metadata excluded from lookup is revalidated before preserving an older source run', async () => {
+  const metadata = runFixture(95, 'edited');
+  const jobs = jobsFixture(95)
+    .filter(job => job.name !== 'checks')
+    .map(job => (job.name === 'selection' ? job : { ...job, conclusion: 'skipped' }));
+  jobs.push({ ...jobsFixture(95)[0], id: 999, name: metadataName });
+  assert.equal(
+    (
+      await preserve({
+        runs: [metadata, runFixture()],
+        jobs: { 95: jobs },
+        readbacks: { 95: { ...metadata, run_attempt: 2, conclusion: 'failure' } },
+      })
+    ).validation,
+    'full',
+  );
 });
 
 test('native identities and actual complete lane results are required', async () => {

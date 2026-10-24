@@ -203,12 +203,41 @@ export async function preserveValidation({ eventName, event, env, postgres, fetc
     );
     if (runs.some(run => !positiveId(run.run_number)) || new Set(runs.map(run => run.run_number)).size !== runs.length)
       return ordinary;
-    runs.sort((a, b) => b.run_number - a.run_number);
+    const candidates = [];
     for (const run of runs) {
       if (run.id === current.id) continue;
       const identity = runIdentity(run, current.workflow_id);
       if (run.repository.id !== event.repository.id) return ordinary;
       if (identity.tuple !== tuple) continue;
+      // A rerun keeps its immutable run_number and original run.created_at.
+      // The attempt endpoint records the new attempt's own creation/queue time.
+      const attempt = run.run_attempt === 1 ? run : await read(`${root}/runs/${run.id}/attempts/${run.run_attempt}`);
+      if (
+        runIdentity(attempt, current.workflow_id).tuple !== tuple ||
+        attempt.id !== run.id ||
+        attempt.run_attempt !== run.run_attempt ||
+        attempt.run_number !== run.run_number ||
+        attempt.display_title !== run.display_title ||
+        attempt.status !== run.status ||
+        attempt.conclusion !== run.conclusion
+      )
+        return ordinary;
+      const created = Date.parse(attempt.created_at);
+      if (!Number.isFinite(created) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(attempt.created_at))
+        return ordinary;
+      candidates.push({ run, identity, created });
+    }
+    candidates.sort((a, b) => b.created - a.created || b.run.run_number - a.run.run_number);
+    if (
+      candidates.some(
+        (item, index) =>
+          index &&
+          item.created === candidates[index - 1].created &&
+          (item.run.run_attempt !== 1 || candidates[index - 1].run.run_attempt !== 1),
+      )
+    )
+      return ordinary;
+    for (const { run, identity } of candidates) {
       const jobs = await pages(`${root}/runs/${run.id}/attempts/${run.run_attempt}/jobs`, 'jobs');
       if (
         jobs.some(
@@ -280,17 +309,22 @@ export async function preserveValidation({ eventName, event, env, postgres, fetc
         )
           return ordinary;
       }
-      const fresh = await read(`${root}/runs/${run.id}`);
-      if (
-        runIdentity(fresh, current.workflow_id).tuple !== tuple ||
-        fresh.id !== run.id ||
-        fresh.run_number !== run.run_number ||
-        fresh.display_title !== run.display_title ||
-        fresh.run_attempt !== run.run_attempt ||
-        fresh.status !== run.status ||
-        fresh.conclusion !== run.conclusion
-      )
-        return ordinary;
+      // Every matching snapshot affected ordering or excluded evidence. Refresh
+      // all of them, including metadata we skipped and older runs that can rerun.
+      for (const { run: observed } of candidates) {
+        const fresh = await read(`${root}/runs/${observed.id}`);
+        if (
+          runIdentity(fresh, current.workflow_id).tuple !== tuple ||
+          fresh.id !== observed.id ||
+          fresh.run_number !== observed.run_number ||
+          fresh.display_title !== observed.display_title ||
+          fresh.run_attempt !== observed.run_attempt ||
+          fresh.status !== observed.status ||
+          fresh.conclusion !== observed.conclusion ||
+          fresh.created_at !== observed.created_at
+        )
+          return ordinary;
+      }
       return { validation: 'metadata', validationRun: run.id };
     }
     return ordinary;
