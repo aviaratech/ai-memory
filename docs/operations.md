@@ -55,7 +55,9 @@ npm run health -w @aviaratech/ai-memory -- --json
 
 `npm run smoke -w @aviaratech/ai-memory` uses bundled fictional fixtures and writes to the selected database. Run it only against an isolated disposable database. `npm run pg:ensure -w @aviaratech/ai-memory` can start a local service when `AI_MEMORY_POSTGRES_START_COMMAND` is configured; it does not choose a remote database or Docker fallback.
 
-## Adopting 0.3.0
+## Adopting 0.3.1
+
+Upgrade directly from **0.2.8 to 0.3.1**; **0.3.0 can be skipped**. The existing 001–009 migration prefix is preserved, then administrator initialization applies `010_index_first_search` followed by `011_pinned_brief`. Migration 011 adds audience/pin/verification metadata, backfills verification from each unchanged update timestamp and adds the brief index/insert trigger. Keep the pre-upgrade backup and its matching 0.2.8 package for rollback.
 
 This checklist is for the operator of **one existing macOS install with manual stdio registrations**. Source/release verification does not execute it on your host. Use Node 24/npm 11 and PostgreSQL 18 with matching `pg_dump`/`pg_restore`. Keep the old package, migration files, configuration preimages and recovery key. Export absolute path variables `AI_MEMORY_INSTALL` (a new versioned install directory), `AI_MEMORY_PREVIOUS_INSTALL` (the old npm install), `AI_MEMORY_ADOPTION_STATE` (an owner-only directory outside either install), and `AI_MEMORY_EDITOR` (your editor executable). Supply the database-owner URL and the [protected backup variables](#encrypted-local-backup) through your existing credential workflow; leave optional S3/provider settings unset unless separately configured. Do not put credentials in the commands or registrations below.
 
@@ -65,7 +67,7 @@ This checklist is for the operator of **one existing macOS install with manual s
    umask 077
    mkdir -p "$AI_MEMORY_ADOPTION_STATE"
    chmod 700 "$AI_MEMORY_ADOPTION_STATE"
-   npm install --prefix "$AI_MEMORY_INSTALL" --save-exact --ignore-scripts @aviaratech/ai-memory@0.3.0
+   npm install --prefix "$AI_MEMORY_INSTALL" --save-exact --ignore-scripts @aviaratech/ai-memory@0.3.1
    export AI_MEMORY_TOOLS="$AI_MEMORY_INSTALL/node_modules/@aviaratech/ai-memory/dist/tools"
    export AI_MEMORY_PREVIOUS_TOOLS="$AI_MEMORY_PREVIOUS_INSTALL/node_modules/@aviaratech/ai-memory/dist/tools"
    node -p 'require(process.env.AI_MEMORY_INSTALL + "/node_modules/@aviaratech/ai-memory/package.json").version'
@@ -75,7 +77,7 @@ This checklist is for the operator of **one existing macOS install with manual s
    "$AI_MEMORY_EDITOR" "$HOME/.codex/config.toml" "$HOME/.claude.json" "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
    ```
 
-   Expected: version `0.3.0`; three private preimages; each saved ai-memory `command`/`args` selects the exact Node executable and the new absolute `dist/tools/server.js`. For a protected wrapper, update only its selected package target through its existing owner/loader procedure instead of removing that loader. Preserve every other field, especially Codex `[mcp_servers.ai-memory.tools.memory_flush]`, and unrelated registrations. Claude Code USER uses `mcpServers.ai-memory` in `.claude.json`; Desktop uses that key in its own file. A native plugin update does not repoint manual entries. Compare the saved files locally; do not publish their contents. **Rollback before migration:** restore the three preimages and the previous wrapper target. Registration changes alone do not prove a running client loaded 0.3.0.
+   Expected: version `0.3.1`; three private preimages; each saved ai-memory `command`/`args` selects the exact Node executable and the new absolute `dist/tools/server.js`. For a protected wrapper, update only its selected package target through its existing owner/loader procedure instead of removing that loader. Preserve every other field, especially Codex `[mcp_servers.ai-memory.tools.memory_flush]`, and unrelated registrations. Claude Code USER uses `mcpServers.ai-memory` in `.claude.json`; Desktop uses that key in its own file. A native plugin update does not repoint manual entries. Compare the saved files locally; do not publish their contents. **Rollback before migration:** restore the three preimages and the previous wrapper target. Registration changes alone do not prove a running client loaded 0.3.1.
 
 2. **Pause ingestion and all old database clients.** Close Codex, Claude Code and Claude Desktop normally, allow their final session-end hooks to finish, and keep them closed. If the existing Codex ingestion job is installed, unload its exact plist:
 
@@ -86,7 +88,7 @@ This checklist is for the operator of **one existing macOS install with manual s
 
    Expected: the job is absent (`print` exits nonzero); an already absent job needs no removal. Confirm no manual ingestion, session-end hooks, MCP clients or scheduled backups remain in flight through your existing process/DB monitoring. Do not proceed on an uncertain writer. Keep ingestion paused through step 6. **Rollback:** restore the saved registration/hook selections; reload only a previously installed job after choosing a compatible database/package pair.
 
-3. **Preserve a pre-010 recovery point, initialize, then take the cleanup backup.** Use a separate protected backup directory for the previous package's backup so the two releases never share pending backup state. With `AI_MEMORY_BACKUP_DIR` selecting that old-version recovery directory:
+3. **Preserve a pre-upgrade recovery point, initialize, then take the cleanup backup.** Use a separate protected backup directory for the previous package's backup so the two releases never share pending backup state. With `AI_MEMORY_BACKUP_DIR` selecting that old-version recovery directory:
 
    ```sh
    node "$AI_MEMORY_PREVIOUS_TOOLS/backup-launchd-agent.js" run-once
@@ -95,7 +97,7 @@ This checklist is for the operator of **one existing macOS install with manual s
 
    Expected: `{"stage":"complete",...}` and then `{"stage":"status","state":"healthy",...}`, both exit 0. Retain that archive, manifest, key and **executing previous package** together through separate protected channels. Record its backup id. If no compatible previous backup command is available, establish and verify the equivalent pre-upgrade recovery point before continuing.
 
-   Switch `AI_MEMORY_BACKUP_DIR` to a different owner-only 0.3.0 backup directory; keep the same source identity and database target. Then:
+   Switch `AI_MEMORY_BACKUP_DIR` to a different owner-only 0.3.1 backup directory; keep the same source identity and database target. Then:
 
    ```sh
    node "$AI_MEMORY_TOOLS/init-db.js"
@@ -103,7 +105,7 @@ This checklist is for the operator of **one existing macOS install with manual s
    node "$AI_MEMORY_TOOLS/disaster-recovery.js" status
    ```
 
-   Expected: `[ai-memory] schema is ready (...)` after migrations through `010_index_first_search`, backup stage `complete`, and status `healthy`, all exit 0. These are the packaged equivalents of `init`, `backup:run-once` and `backup:check`. **Stop on any failed check.** A pre-010 backup is for rollback; cleanup needs this fresh 0.3.0 backup of the migrated database. **Rollback after migration:** restore the previous backup with its matching previous package into a new database, verify it, then switch clients to that verified target. An older initializer rejects the 010 ledger; changing registrations alone cannot undo it.
+   Expected: `[ai-memory] schema is ready (...)` after migrations through `011_pinned_brief`, backup stage `complete`, and status `healthy`, all exit 0. These are the packaged equivalents of `init`, `backup:run-once` and `backup:check`. **Stop on any failed check.** A pre-upgrade backup is for rollback; cleanup needs this fresh 0.3.1 backup of the migrated database. **Rollback after migration:** restore the previous backup with its matching previous package into a new database, verify it, then switch clients to that verified target. An older initializer rejects the 011 ledger; changing registrations alone cannot undo it.
 
 4. **Inspect and install the optional daily backup job.** Set `AI_MEMORY_BACKUP_DATABASE_URL_FILE` to the owner-only URL file for this database, outside the backup directory/install; keep the key in its separate owner-only file. Retain a pre-existing job's plist/schedule before replacement. On macOS:
 
@@ -133,9 +135,20 @@ This checklist is for the operator of **one existing macOS install with manual s
    node -e 'const p=require(process.env.AI_MEMORY_ADOPTION_STATE+"/cleanup-applied.json"); if(p.mode!=="apply" || p.maintenanceWarning) process.exit(1); console.log(JSON.stringify({totals:p.report.totals,kept:p.report.kept,sizesBefore:p.sizesBefore,sizesAfter:p.sizesAfter},null,2))'
    ```
 
-   Expected: healthy backup; apply totals match the unchanged reviewed plan; curated/lineage/contested rows remain. `VACUUM FULL` takes table locks. A `maintenanceWarning` means deletions **already committed**, even if the cleanup command exited 0; investigate maintenance rather than blindly reapplying. A failed `backup:check` must stop the procedure. Cleanup independently refuses an unhealthy/mismatched backup and refuses `--apply` without `--backup-id` before deletion. This is covered by [`corpus-cleanup.integration.test.ts`](../packages/ai-memory/src/db/corpus-cleanup.integration.test.ts) and the CLI argument tests. **Rollback:** restore this 0.3.0 backup with 0.3.0 into a new database and verify it before any switch; it cannot restore a pre-010 ledger.
+   Expected: healthy backup; apply totals match the unchanged reviewed plan; curated/lineage/contested rows remain. `VACUUM FULL` takes table locks. A `maintenanceWarning` means deletions **already committed**, even if the cleanup command exited 0; investigate maintenance rather than blindly reapplying. A failed `backup:check` must stop the procedure. Cleanup independently refuses an unhealthy/mismatched backup and refuses `--apply` without `--backup-id` before deletion. This is covered by [`corpus-cleanup.integration.test.ts`](../packages/ai-memory/src/db/corpus-cleanup.integration.test.ts) and the CLI argument tests. **Rollback:** restore this 0.3.1 backup with 0.3.1 into a new database and verify it before any switch; it cannot restore a pre-upgrade ledger.
 
-7. **Resume only compatible clients and the previously enabled ingestion job.** Restore the intended hook selections, reopen the three clients against the migrated 0.3.0 target, and, only if it was enabled before step 2:
+7. **Configure role, brief and any existing HTTP clients, then resume compatible clients.** Set `AI_MEMORY_ROLE` in the session/hook launch environment to the intended role (for example `lead`; the default is `default`). Use the same role for the hook and explicit brief command. Set `AI_MEMORY_PROJECT` below to the project's canonical identifier, such as `example/catalog`. After migration, generate a context file for a Codex client whose native hooks are disabled:
+
+   ```sh
+   export AI_MEMORY_ROLE=lead
+   node "$AI_MEMORY_TOOLS/pluginCli.js" brief --project "$AI_MEMORY_PROJECT" --host codex --role "$AI_MEMORY_ROLE" --out "$AI_MEMORY_ADOPTION_STATE/project-brief-codex.md"
+   ```
+
+   Expected: a Markdown brief for exactly that project, host and role. Include the file as client context when hooks are unavailable; regenerate it after relevant knowledge changes. A successful hook or CLI build also atomically refreshes a private JSON cache under `~/.cache/ai-memory/briefs` (or `AI_MEMORY_BRIEF_CACHE_DIR`), keyed separately by project, host and role. On database failure the hook reuses only that scope's cache with a generated-at warning; treat it as potentially stale. No matching cache means an availability warning. No pinned rules means an empty brief, not an upgrade failure. Brief generation does not seed knowledge or enable hooks. For a Claude hook/CLI use host `claude-code`; never substitute the Codex cache.
+
+   Existing manual **stdio** registrations need no HTTP settings. For an already configured HTTP client that sends an Origin header, set `AI_MEMORY_MCP_HTTP_ALLOWED_ORIGINS` in its server launch environment to the comma-separated exact serialized origins, such as `https://client.example,http://localhost:4000`. The default is empty, so Origin-bearing requests are denied until explicitly allowed; no-Origin loopback clients work by default. Wildcards, `null`, credentials, paths, trailing slashes and duplicate Origin headers are rejected. Retain loopback binding and Host checks; the allowlist grants no remote authentication. Review [HTTP setup](installation.md#local-http-mcp-transport) before restarting an existing HTTP server. This checklist does not switch stdio clients to HTTP.
+
+   Restore the intended hook selections, reopen the three clients against the migrated 0.3.1 target, and reload the ingestion job only if it was enabled before step 2:
 
    ```sh
    launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.aviaratech.ai-memory.codex-ingest.plist"
@@ -161,7 +174,7 @@ This checklist is for the operator of **one existing macOS install with manual s
    node "$AI_MEMORY_TOOLS/disaster-recovery.js" status
    ```
 
-   Expected: health JSON including `database.durableMemoriesCreated`, `durableMemoriesUpdated`, `ingestionFailures` and continuity readiness; backup remains healthy. Compare cleanup kept/deleted counts, table bytes and backfill pending/errors with the saved reports. Health reads its selected logs/transcripts/retros too; synthetic review supplies isolated empty paths with `--log-file`, `--transcripts-dir`, `--retros-dir`. A clean synthetic run does not establish a real seven-day error rate, corpus reduction or p95 latency. Measure those separately; existing #32–34 operational acceptance remains open. **Rollback:** stop writers and restore a verified, matching package/backup into a new database using [restore](#restore-into-a-new-database); promote it only after verification. Keep both pre-010 and 0.3.0 recovery assets until operational acceptance.
+   Expected: health JSON including `database.durableMemoriesCreated`, `durableMemoriesUpdated`, `ingestionFailures` and continuity readiness; backup remains healthy. Compare cleanup kept/deleted counts, table bytes and backfill pending/errors with the saved reports. Health reads its selected logs/transcripts/retros too; synthetic review supplies isolated empty paths with `--log-file`, `--transcripts-dir`, `--retros-dir`. A clean synthetic run does not establish a real seven-day error rate, corpus reduction or p95 latency. Measure those separately; existing #32–34 operational acceptance remains open. **Rollback:** stop writers and restore a verified, matching package/backup into a new database using [restore](#restore-into-a-new-database); promote it only after verification. Keep both pre-upgrade and 0.3.1 recovery assets until operational acceptance.
 
 ## Task workflow telemetry
 
