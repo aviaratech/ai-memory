@@ -1,4 +1,5 @@
 name: Quality checks
+run-name: am-ci-v1 ${{ github.event.pull_request.number }} ${{ github.event.pull_request.head.repo.id }} ${{ github.event.pull_request.base.repo.id }} ${{ github.event.pull_request.base.ref }} ${{ github.event.pull_request.head.sha }} ${{ github.event.pull_request.base.sha }} ${{ github.event.action }}
 
 on:
   pull_request:
@@ -11,16 +12,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.run_id || 'validation' }}-${{ github.event.action == 'edited' && github.run_attempt || 'shared' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'edited' }}
 
 jobs:
   selection:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.impact.outputs.run }}
       reason: ${{ steps.impact.outputs.reason }}
+      validation: ${{ steps.impact.outputs.validation }}
+      validation_run: ${{ steps.impact.outputs.validation_run }}
     steps:
       - name: Check out complete candidate history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -35,10 +41,13 @@ jobs:
         id: impact
         run: node scripts/ci-postgres-impact.mjs select
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
   linux:
+    needs: selection
+    if: ${{ needs.selection.outputs.validation != 'metadata' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -74,7 +83,7 @@ jobs:
 
   postgres:
     needs: selection
-    if: ${{ needs.selection.outputs.run == 'true' }}
+    if: ${{ needs.selection.outputs.validation != 'metadata' && needs.selection.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -127,6 +136,8 @@ jobs:
           AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci
 
   macos:
+    needs: selection
+    if: ${{ needs.selection.outputs.validation != 'metadata' }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -150,6 +161,8 @@ jobs:
           npm run test
 
   package:
+    needs: selection
+    if: ${{ needs.selection.outputs.validation != 'metadata' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -193,20 +206,27 @@ jobs:
           done
 
   checks:
+    name: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' && 'PR metadata (no source validation)' || 'checks' }}
     if: ${{ always() }}
     needs: [linux, macos, package, selection, postgres]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Preserve actual source validation
+        if: ${{ needs.selection.result == 'success' && needs.selection.outputs.validation == 'metadata' }}
+        run: echo "Metadata processing emits no source validation result."
       - name: Check out aggregation owner
+        if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Set up pinned Node
+        if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24.21.0'
       - name: Require every coverage lane
+        if: ${{ needs.selection.result != 'success' || needs.selection.outputs.validation != 'metadata' }}
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
