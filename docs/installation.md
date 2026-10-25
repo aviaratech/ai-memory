@@ -23,6 +23,10 @@ npx --no-install ai-memory --version
 
 The helper and native MCP server report the same package version. The matching GitHub release provides `aviaratech-ai-memory-plugin-X.Y.Z.tgz`; its files match `node_modules/@aviaratech/ai-memory/plugins/ai-memory`. Retain the exact package, plugin and migrations for recovery. Versions through 0.2.2 have no native helper; preserve existing manual configurations until you explicitly choose a migration.
 
+## ChatGPT directory compatibility
+
+Native installation targets Codex and Claude Code; it does not establish ChatGPT directory compatibility. OpenAI's [desktop-only local MCP route](https://developers.openai.com/plugins/deploy/desktop-only) requires an approved, allowlisted submitting organization and locally executing desktop threads. [Public directory packages cannot include lifecycle hooks](https://developers.openai.com/plugins/build/plugins#bundled-mcp-servers-and-lifecycle-hooks). The native package includes hooks, so it cannot be submitted unchanged. Removing hooks removes their automatic lifecycle behavior; manual actions do not establish equivalent automation. [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) supports private connections, not public distribution. Any directory edition still needs separate client, authorization, privacy and lifecycle qualification.
+
 ## Guided local database setup
 
 1. Check that the selected release includes guided setup, then preview its exact target. Preview reads no credentials, connects to no database and changes nothing:
