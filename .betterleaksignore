@@ -1,0 +1,4 @@
+# Public synthetic fixtures confirmed in failed CI 40371937193; no matched values stored here.
+# Commit-scoped fingerprints only; later commits and other locations remain subject to scanning.
+a62ca860dfc0563dbb54820fbd9b2ec425e98159:scripts/postgres-integration-output.mjs:generic-credential-uri:20
+a62ca860dfc0563dbb54820fbd9b2ec425e98159:scripts/postgres-integration-output.test.mjs:generic-password:157
