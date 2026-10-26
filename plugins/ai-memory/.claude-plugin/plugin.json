@@ -1,6 +1,6 @@
 {
   "name": "ai-memory",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Durable local memory for AI agents",
   "envKeys": [
     {
