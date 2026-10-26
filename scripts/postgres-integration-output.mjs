@@ -15,7 +15,7 @@ let bytes = 0, publicBytes = 0, failed = false, cleaning = false, begun = false,
 let cutoff = Infinity, observedSignal = 'none';
 let directory, capture, container, attached, executionTimer, cleanupTimer;
 const name = 'ai-memory-ci-' + randomUUID();
-const image = 'pgvector/pgvector:0.8.6-pg18-trixie@sha256:78bf48b801e792f99e3ac62b5036fd3876e9be48afda16c1e331af1c75ceb2ff';
+const image = 'pgvector/pgvector:0.8.6-pg18-trixie';
 const serviceEnvironment = "POSTGRES_USER=ci_memory\nPOSTGRES_PASSWORD=ci_only\nPOSTGRES_DB=ai_memory_ci\n";
 const integrationEnvironment = {"AI_MEMORY_DATABASE_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci", "AI_MEMORY_PROJECT_IDENTITY_TEST_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci"};
 
