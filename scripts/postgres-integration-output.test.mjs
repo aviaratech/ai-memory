@@ -79,7 +79,9 @@ function run(scenario, stale = false) {
     const flags = [];
     if (scenario === 'deadline') {
       const hook = join(root, 'clock.mjs');
-      writeFileSync(hook, `
+      writeFileSync(
+        hook,
+        `
         import {writeFileSync} from 'node:fs';
         let elapsed=0; const origin=Date.now(), timer=globalThis.setTimeout;
         Date.now=()=>origin+elapsed;
@@ -87,12 +89,15 @@ function run(scenario, stale = false) {
         globalThis.setTimeout=(callback,ms,...args)=>timer(()=>{elapsed+=ms;callback(...args)},
           ms===420000?1500:ms===10000?2000:ms>10000?300:ms);
         process.on('exit',()=>writeFileSync(${JSON.stringify(join(root, 'clock'))},String(elapsed)));
-      `);
+      `,
+      );
       flags.push('--import', hook);
     }
     if (scenario === 'partial' || scenario === 'environment') {
       const hook = join(root, 'writes.mjs');
-      writeFileSync(hook, `
+      writeFileSync(
+        hook,
+        `
         import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
         const original=fs.writeSync, paths=new Map(), open=fs.openSync; let total=0,max=0,short=false;
         fs.openSync=(path,...args)=>{const fd=open(path,...args);if(/memory-postgres-.*\\/(capture|environment)$/.test(String(path))) paths.set(fd,path);return fd};
@@ -102,31 +107,53 @@ function run(scenario, stale = false) {
           const written=original(fd,amount,...args); if(paths.has(fd)){total+=written;max=Math.max(max,total)} if(inject)short=true;return written;
         }; syncBuiltinESMExports();
         process.on('exit',()=>fs.writeFileSync(${JSON.stringify(join(root, 'quota'))},JSON.stringify({max,short})));
-      `);
+      `,
+      );
       flags.push('--import', hook);
     }
     result = spawnSync(process.execPath, [...flags, entry], {
       cwd: resolve(dirname(entry), '..'),
-      env: { PATH: bin, HOME: root, TMPDIR: root,
-        AI_MEMORY_POSTGRES_JOB_STARTED_MS: String(Date.now() - (stale ? 125000 : 0)) },
-      encoding: 'utf8', timeout: 20000, maxBuffer: 128 * 1024,
+      env: {
+        PATH: bin,
+        HOME: root,
+        TMPDIR: root,
+        AI_MEMORY_POSTGRES_JOB_STARTED_MS: String(Date.now() - (stale ? 125000 : 0)),
+      },
+      encoding: 'utf8',
+      timeout: 20000,
+      maxBuffer: 128 * 1024,
     });
     assert.equal(result.error, undefined, 'the synthetic process must finish');
     const output = result.stdout + result.stderr;
     assert.equal(output.includes('synthetic-marker-7d72'), false, 'private markers must never publish');
     assert.equal(Buffer.byteLength(output) <= 65536, true);
     assert.equal(result.stderr, '');
-    const records = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    const records = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
     assert.equal(records.length <= 512, true);
     assert.equal(records.length > 0, true);
-    assert.equal(readdirSync(root).some(name => name.startsWith('memory-postgres-')), false,
-      'owned raw artifacts must be removed');
-    return { status: result.status, records, calls: readFileSync(join(root, 'calls'), 'utf8'),
+    assert.equal(
+      readdirSync(root).some(name => name.startsWith('memory-postgres-')),
+      false,
+      'owned raw artifacts must be removed',
+    );
+    return {
+      status: result.status,
+      records,
+      calls: readFileSync(join(root, 'calls'), 'utf8'),
       elapsed: scenario === 'deadline' ? Number(readFileSync(join(root, 'clock'), 'utf8')) : 0,
-      quota: ['partial','environment'].includes(scenario) ? JSON.parse(readFileSync(join(root, 'quota'), 'utf8')) : null };
+      quota: ['partial', 'environment'].includes(scenario)
+        ? JSON.parse(readFileSync(join(root, 'quota'), 'utf8'))
+        : null,
+    };
   } finally {
     // Safety net for the fake service if a regression prevents the gate's cleanup.
-    try { process.kill(Number(readFileSync(join(root, 'attached'), 'utf8')), 'SIGTERM'); } catch {}
+    try {
+      process.kill(Number(readFileSync(join(root, 'attached'), 'utf8')), 'SIGTERM');
+    } catch {}
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -135,10 +162,21 @@ test('owned startup through teardown keeps nested non-URI markers private', () =
   const result = run('success');
   assert.equal(result.status, 0);
   assert.equal(result.calls.includes('docker rm'), true);
-  assert.equal(result.records.some(record => record.phase === 'complete'), true);
-  assert.deepEqual(result.records.filter(record => record.event === 'image'), [{
-    event: 'image', manifest: 'sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045', imageId: 'sha256:' + 'b'.repeat(64), platform: 'linux/amd64',
-  }]);
+  assert.equal(
+    result.records.some(record => record.phase === 'complete'),
+    true,
+  );
+  assert.deepEqual(
+    result.records.filter(record => record.event === 'image'),
+    [
+      {
+        event: 'image',
+        manifest: 'sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045',
+        imageId: 'sha256:' + 'b'.repeat(64),
+        platform: 'linux/amd64',
+      },
+    ],
+  );
 });
 for (const scenario of ['wrongimage', 'wrongconfig', 'missingimage', 'wrongplatform'])
   test(`${scenario} refuses startup while preserving owned cleanup`, () => {
@@ -162,15 +200,31 @@ test('short environment writes refuse dispatch', () => {
   assert.equal(result.quota.short, true);
   assert.equal(result.calls, '');
 });
-for (const scenario of ['assertion', 'unhandled', 'setup', 'cleanup', 'attachment', 'logging',
-  'overflow', 'records', 'publicbytes', 'malformed', 'missing', 'incomplete', 'forgedimage'])
+for (const scenario of [
+  'assertion',
+  'unhandled',
+  'setup',
+  'cleanup',
+  'attachment',
+  'logging',
+  'overflow',
+  'records',
+  'publicbytes',
+  'malformed',
+  'missing',
+  'incomplete',
+  'forgedimage',
+])
   test(`${scenario} retains failure without publishing private output`, () => {
     const result = run(scenario);
     assert.notEqual(result.status, 0);
     assert.equal(result.calls.includes('docker rm'), true, 'failed output must still permit owned service cleanup');
     if (scenario === 'logging') assert.equal(result.calls.includes('docker start'), false);
   });
-for (const [scenario, status, signal] of [['exit', 7, 'none'], ['signal', 143, 'SIGTERM']])
+for (const [scenario, status, signal] of [
+  ['exit', 7, 'none'],
+  ['signal', 143, 'SIGTERM'],
+])
   test(`${scenario} preserves the original integration exit and signal`, () => {
     const result = run(scenario);
     assert.equal(result.status, status);
@@ -189,19 +243,29 @@ test('execution timeout leaves cleanup inside the original eight-minute allowanc
 test('closed public output fails without an unstructured stderr report', async () => {
   const root = mkdtempSync(join(tmpdir(), 'memory-closed-output-'));
   try {
-    const child = spawn(process.execPath, [entry], {env:{PATH:root,HOME:root,TMPDIR:root,
-      AI_MEMORY_POSTGRES_JOB_STARTED_MS:'0'},stdio:['ignore','pipe','pipe']});
-    let errors = ''; child.stderr.on('data', chunk => { errors += chunk; });
+    const child = spawn(process.execPath, [entry], {
+      env: { PATH: root, HOME: root, TMPDIR: root, AI_MEMORY_POSTGRES_JOB_STARTED_MS: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let errors = '';
+    child.stderr.on('data', chunk => {
+      errors += chunk;
+    });
     child.stdout.destroy();
     const status = await new Promise(resolve => child.on('close', resolve));
-    assert.notEqual(status, 0); assert.equal(errors, '', 'publication failure must stay private');
-  } finally { rmSync(root,{recursive:true,force:true}); }
+    assert.notEqual(status, 0);
+    assert.equal(errors, '', 'publication failure must stay private');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('actual observer forwards the same unhandled Client and Pool error objects', () => {
   const root = mkdtempSync(join(tmpdir(), 'memory-observer-synthetic-'));
   try {
-    writeFileSync(join(root, 'hooks.mjs'), `
+    writeFileSync(
+      join(root, 'hooks.mjs'),
+      `
       import { registerHooks } from 'node:module';
       registerHooks({ resolve(specifier, context, next) {
         const source = specifier === 'pg' ? 'export default globalThis.fixturePg'
@@ -210,8 +274,11 @@ test('actual observer forwards the same unhandled Client and Pool error objects'
             ? 'export const parseSetupArguments=()=>{}; export const runLocalPostgresSetup=()=>{};' : null;
         return source ? {url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true} : next(specifier, context);
       }});
-    `);
-    const observed = pathToFileURL(resolve(dirname(entry), '../packages/ai-memory/src/tools/localPostgresSetup.integration.test.ts')).href;
+    `,
+    );
+    const observed = pathToFileURL(
+      resolve(dirname(entry), '../packages/ai-memory/src/tools/localPostgresSetup.integration.test.ts'),
+    ).href;
     const marker = randomUUID();
     const source = `
       import assert from 'node:assert/strict'; import { EventEmitter } from 'node:events';
@@ -226,15 +293,29 @@ test('actual observer forwards the same unhandled Client and Pool error objects'
       process.emit('uncaughtExceptionMonitor',original,'uncaughtException');
       globalThis.finish?.();
     `;
-    const result = spawnSync(process.execPath, ['--import', join(root, 'hooks.mjs'), '--input-type=module', '-e', source], {
-      env: { PATH: root, HOME: root, TMPDIR: root, AI_MEMORY_POSTGRES_TRACE: '1' },
-      encoding: 'utf8', timeout: 10000,
-    });
+    const result = spawnSync(
+      process.execPath,
+      ['--import', join(root, 'hooks.mjs'), '--input-type=module', '-e', source],
+      {
+        env: { PATH: root, HOME: root, TMPDIR: root, AI_MEMORY_POSTGRES_TRACE: '1' },
+        encoding: 'utf8',
+        timeout: 10000,
+      },
+    );
     assert.equal(result.status, 0, 'observer must leave original error identity and unhandled behavior intact');
     assert.equal((result.stdout + result.stderr).includes(marker), false);
-    const records = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line.slice(5)));
+    const records = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line.slice(5)));
     for (const event of ['client', 'pool', 'uncaught'])
-      assert.equal(records.some(record => record.event === event && record.code === '57P01'), true,
-        'observer must report only bounded error classifications');
-  } finally { rmSync(root, { recursive: true, force: true }); }
+      assert.equal(
+        records.some(record => record.event === event && record.code === '57P01'),
+        true,
+        'observer must report only bounded error classifications',
+      );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
