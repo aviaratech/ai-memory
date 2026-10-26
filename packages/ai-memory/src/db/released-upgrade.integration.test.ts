@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from 'pg';
 import { test } from 'vitest';
 
@@ -82,7 +83,7 @@ test(
         row => row.name,
       );
     const records = async () => {
-      const result = await db.query(`SELECT to_jsonb(entries)
+      const result = await db.query<{ record: unknown }>(`SELECT to_jsonb(entries)
       - ARRAY['last_accessed_at','audience','pinned','last_verified_at'] AS record
       FROM ai_memory_entries AS entries ORDER BY id`);
       return result.rows;
@@ -137,7 +138,7 @@ test(
       const after = await ledger();
       assert.deepEqual(after, expected);
       assert.deepEqual(await records(), prior);
-      const defaults = await db.query(`SELECT count(*)::int AS invalid FROM ai_memory_entries
+      const defaults = await db.query<{ invalid: number }>(`SELECT count(*)::int AS invalid FROM ai_memory_entries
         WHERE audience<>ARRAY['all']::text[] OR pinned OR last_verified_at<>updated_at
           OR last_accessed_at IS NOT NULL`);
       assert.equal(defaults.rows[0]?.invalid, 0);
@@ -155,7 +156,10 @@ test(
         'ai_memory_entries_search_vector_idx',
         'ai_memory_entries_brief_project_idx',
       ])
-        assert.ok((await db.query('SELECT to_regclass($1) AS relation', [`public.${relation}`])).rows[0]?.relation);
+        assert.ok(
+          (await db.query<{ relation: string | null }>('SELECT to_regclass($1) AS relation', [`public.${relation}`]))
+            .rows[0]?.relation,
+        );
       const config = join(home, '.config/ai-memory');
       mkdirSync(config, { recursive: true, mode: 0o700 });
       writeFileSync(join(config, 'plugin.env'), `AI_MEMORY_DATABASE_URL=${JSON.stringify(fixture.href)}\n`, {
@@ -165,11 +169,26 @@ test(
       for (const entry of [join(core, 'dist/tools/server.js'), join(plugin, 'dist/mcp-launcher.js')]) {
         const client = new McpClient({ name: 'released-upgrade-fixture', version: '1' });
         const transport = new StdioClientTransport({ command: process.execPath, args: [entry], env, stderr: 'pipe' });
-        transport.stderr?.resume();
+        transport.stderr?.on('data', () => {});
         try {
           await client.connect(transport, { timeout: 20_000 });
           const tools = (await client.listTools(undefined, { timeout: 20_000 })).tools;
           assert.ok(tools.some(tool => tool.name === 'memory_flush'));
+          const fetched = CallToolResultSchema.parse(
+            await client.callTool(
+              {
+                name: 'memory_get',
+                arguments: { project: 'fixture/released-upgrade', key: 'fixture-1' },
+              },
+              undefined,
+              { timeout: 20_000 },
+            ),
+          );
+          assert.notEqual(fetched.isError, true);
+          const text = fetched.content.find(block => block.type === 'text');
+          assert.ok(text?.type === 'text');
+          const readback = JSON.parse(text.text) as { memories: { content: string }[] };
+          assert.equal(readback.memories[0]?.content, 'Synthetic released migration preservation fixture 1');
           inventories.push(tools.length);
         } finally {
           await client.close();
