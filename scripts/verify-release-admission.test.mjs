@@ -422,6 +422,17 @@ test('0.3.1 release notes cover the direct 0.2.8 upgrade and every intervening c
   assert.notEqual(releaseState(`${notes.stdout}Unreviewed addition.`, 'v0.3.1').status, 0);
 });
 
+test('0.3.2 release generation and validation retain the loaded detailed notes', () => {
+  const details = readFileSync(new URL('../docs/releases/0.3.2.md', import.meta.url), 'utf8').trim();
+  const notes = spawnSync(process.execPath, [
+    new URL('./verify-release-state.mjs', import.meta.url).pathname, '--notes', 'v0.3.2', source,
+  ], { encoding: 'utf8' });
+  assert.equal(notes.status, 0, notes.stderr);
+  assert.equal(notes.stdout.trimEnd(), `Reviewed ai-memory release from ${source}.\n\n${details}`);
+  assert.equal(releaseState(notes.stdout, 'v0.3.2').status, 0);
+  assert.notEqual(releaseState(`Reviewed ai-memory release from ${source}.`, 'v0.3.2').status, 0);
+});
+
 test('workflow creates a draft from the same notes that its verifier accepts', () => {
   const reserve = releaseSteps(['Reserve reviewed tag and draft release']);
   assert.match(reserve, /node scripts\/verify-release-state\.mjs --notes "\$tag" "\$SOURCE_SHA"/);
