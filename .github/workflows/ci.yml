@@ -88,22 +88,10 @@ jobs:
     needs: selection
     if: ${{ needs.selection.outputs.validation != 'metadata' && needs.selection.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.6-pg18-trixie
-        env:
-          POSTGRES_USER: ci_memory
-          POSTGRES_PASSWORD: ci_only
-          POSTGRES_DB: ai_memory_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ci_memory -d ai_memory_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    timeout-minutes: 10
     steps:
+      - name: Record PostgreSQL job allowance before bootstrap
+        run: echo "AI_MEMORY_POSTGRES_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -121,22 +109,10 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Create separate disposable project identity database
+      - name: Check disposable PostgreSQL integration through the privacy boundary
         run: |
-          node --input-type=module <<'NODE'
-          import pg from 'pg';
-          const client = new pg.Client({ connectionString: process.env.AI_MEMORY_DATABASE_URL });
-          await client.connect();
-          try { await client.query('CREATE DATABASE ai_memory_project_identity_ci OWNER ci_memory'); }
-          finally { await client.end(); }
-          NODE
-        env:
-          AI_MEMORY_DATABASE_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
-      - name: Check disposable PostgreSQL integration
-        run: npm run test:integration
-        env:
-          AI_MEMORY_DATABASE_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci
-          AI_MEMORY_PROJECT_IDENTITY_TEST_URL: postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci
+          node --test scripts/postgres-integration-output.test.mjs
+          node scripts/postgres-integration-output.mjs
 
   macos:
     needs: selection
