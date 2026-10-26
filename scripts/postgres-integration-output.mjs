@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseEnv } from 'node:util';
 
 const limit = 32 * 1024 * 1024, prefix = 'AMPG ';
 const phases = new Set(['begin', 'connect', 'end', 'error', 'setup', 'check', 'close', 'drop',
@@ -27,7 +28,16 @@ const name = 'ai-memory-ci-' + randomUUID();
 const manifest = 'sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045';
 const image = 'pgvector/pgvector@' + manifest;
 const serviceEnvironment = "POSTGRES_USER=ci_memory\nPOSTGRES_PASSWORD=ci_only\nPOSTGRES_DB=ai_memory_ci\n";
-const integrationEnvironment = {"AI_MEMORY_DATABASE_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci", "AI_MEMORY_PROJECT_IDENTITY_TEST_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci"};
+const serviceConfiguration = parseEnv(serviceEnvironment);
+const integrationDatabaseUrl = new URL("postgresql://127.0.0.1:5432/ai_memory_ci");
+integrationDatabaseUrl.username = serviceConfiguration.POSTGRES_USER;
+integrationDatabaseUrl.password = serviceConfiguration.POSTGRES_PASSWORD;
+const projectIdentityDatabaseUrl = new URL(integrationDatabaseUrl);
+projectIdentityDatabaseUrl.pathname = "/ai_memory_project_identity_ci";
+const integrationEnvironment = {
+  AI_MEMORY_DATABASE_URL: integrationDatabaseUrl.href,
+  AI_MEMORY_PROJECT_IDENTITY_TEST_URL: projectIdentityDatabaseUrl.href,
+};
 
 function stop(child) {
   // The production job is Linux: discover descendants, then signal only exact owned PIDs.

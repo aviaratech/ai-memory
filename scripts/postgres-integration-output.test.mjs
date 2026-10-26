@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -211,11 +212,12 @@ test('actual observer forwards the same unhandled Client and Pool error objects'
       }});
     `);
     const observed = pathToFileURL(resolve(dirname(entry), '../packages/ai-memory/src/tools/localPostgresSetup.integration.test.ts')).href;
+    const marker = randomUUID();
     const source = `
       import assert from 'node:assert/strict'; import { EventEmitter } from 'node:events';
       globalThis.fixturePg={Client:class extends EventEmitter {processID=12345},Pool:class extends EventEmitter {}};
       await import(${JSON.stringify(observed)});
-      const original=new Error('synthetic-marker-7d72'); original.code='57P01'; original.cause={password:'synthetic-marker-7d72'};
+      const original=new Error(${JSON.stringify(marker)}); original.code='57P01'; original.cause={password:${JSON.stringify(marker)}};
       for(const Constructor of Object.values(globalThis.fixturePg)) {
         const emitter=new Constructor(); let caught;
         try { emitter.emit('error',original); } catch(error) {caught=error}
@@ -229,7 +231,7 @@ test('actual observer forwards the same unhandled Client and Pool error objects'
       encoding: 'utf8', timeout: 10000,
     });
     assert.equal(result.status, 0, 'observer must leave original error identity and unhandled behavior intact');
-    assert.equal((result.stdout + result.stderr).includes('synthetic-marker-7d72'), false);
+    assert.equal((result.stdout + result.stderr).includes(marker), false);
     const records = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line.slice(5)));
     for (const event of ['client', 'pool', 'uncaught'])
       assert.equal(records.some(record => record.event === event && record.code === '57P01'), true,
