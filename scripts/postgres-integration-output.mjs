@@ -24,7 +24,8 @@ let cutoff = Infinity;
 let observedSignal = 'none';
 let directory, capture, container, attached, executionTimer, cleanupTimer;
 const name = 'ai-memory-ci-' + randomUUID();
-const image = 'pgvector/pgvector:0.8.6-pg18-trixie';
+const manifest = 'sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045';
+const image = 'pgvector/pgvector@' + manifest;
 const serviceEnvironment = "POSTGRES_USER=ci_memory\nPOSTGRES_PASSWORD=ci_only\nPOSTGRES_DB=ai_memory_ci\n";
 const integrationEnvironment = {"AI_MEMORY_DATABASE_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_ci", "AI_MEMORY_PROJECT_IDENTITY_TEST_URL": "postgresql://ci_memory:ci_only@127.0.0.1:5432/ai_memory_project_identity_ci"};
 
@@ -56,10 +57,15 @@ function captureFault() {
   if (cleaning) failed = true;
   else fault();
 }
-function record(value) {
+function record(value, imageReceipt = false) {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw Error();
+  if ((value.event === 'image') !== imageReceipt || imageReceipt
+    && Object.keys(value).sort().join(',') !== 'event,imageId,manifest,platform') throw Error();
   for (const [key, item] of Object.entries(value)) {
-    const valid = key === 'event' ? ['phase', 'client', 'pool', 'uncaught', 'exit'].includes(item)
+    const valid = key === 'event' ? ['phase', 'client', 'pool', 'uncaught', 'exit', 'image'].includes(item)
+      : key === 'manifest' ? imageReceipt && item === manifest
+      : key === 'imageId' ? imageReceipt && typeof item === 'string' && /^sha256:[a-f0-9]{64}$/.test(item)
+      : key === 'platform' ? imageReceipt && item === 'linux/amd64'
       : key === 'phase' ? phases.has(item)
       : key === 'code' ? typeof item === 'string' && /^[0-9A-Z]{5}$/.test(item)
       : key === 'signal' ? signals.has(item)
@@ -162,6 +168,14 @@ async function main() {
     if (!/^[a-f0-9]{64}$/.test(container)) throw Error();
     if (await checked('docker', ['inspect', '--format', '{{.HostConfig.LogConfig.Type}}', container],
       undefined, true) !== 'none') throw Error();
+    const containerImage = await checked('docker', ['inspect', '--format', '{{.Image}}', container], undefined, true);
+    const identity = (await checked('docker', ['image', 'inspect', '--format',
+      '{{json .RepoDigests}}|{{.Id}}|{{.Os}}|{{.Architecture}}', image], undefined, true)).split('|');
+    if (identity.length !== 4 || !/^sha256:[a-f0-9]{64}$/.test(identity[1])
+      || containerImage !== identity[1] || identity[2] !== 'linux' || identity[3] !== 'amd64') throw Error();
+    const digests = JSON.parse(identity[0]);
+    if (!Array.isArray(digests) || !digests.includes(image)) throw Error();
+    record({ event: 'image', manifest, imageId: containerImage, platform: 'linux/amd64' }, true);
     phase('start');
     attached = command('docker', ['start', '--attach', container]);
     attached.done.then(() => { if (!stopping) fault(); });

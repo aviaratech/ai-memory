@@ -12,6 +12,7 @@ const fs = require('node:fs'), path = require('node:path');
 const root = path.dirname(__dirname), scenario = fs.readFileSync(path.join(root,'scenario'),'utf8');
 const args = process.argv.slice(2), name = path.basename(process.argv[1]);
 const id = 'a'.repeat(64), marker = 'synthetic-marker-7d72';
+const config = 'sha256:'+'b'.repeat(64), reference = 'pgvector/pgvector@sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045';
 const record = value => process.stdout.write('AMPG '+JSON.stringify(value)+'\n');
 fs.appendFileSync(path.join(root,'calls'),name+' '+(args[0]||'')+'\n');
 function noise() { console.error({cause:{connectionParameters:{password:marker},secretKey:marker}}); }
@@ -23,13 +24,16 @@ if(name==='docker') {
   }
   else if(args[0]==='inspect') {
     if(args.includes('{{.HostConfig.LogConfig.Type}}')) console.log(scenario==='logging'?'json-file':fs.readFileSync(path.join(root,'driver'),'utf8'));
-    else if(args.includes('{{.State.Health.Status}}')) console.log(scenario==='race'?'<no value>':scenario==='deadline'?'starting':'healthy');
+    else if(args.includes('{{.Image}}')) console.log(scenario==='wrongconfig'?'sha256:'+'d'.repeat(64):config);
     else if(args.includes('{{json .State}}')) {
       const early=scenario==='race'&&!fs.existsSync(path.join(root,'inspected'));
       fs.writeFileSync(path.join(root,'inspected'),'1');
       console.log(JSON.stringify(early?{Status:'created',Running:false}:{Status:'running',Running:true,Health:{Status:scenario==='deadline'?'starting':'healthy'}}));
     }
     else console.log(id);
+  } else if(args[0]==='image'&&args[1]==='inspect') {
+    const digest=scenario==='wrongimage'?'pgvector/pgvector@sha256:'+'c'.repeat(64):reference;
+    console.log(JSON.stringify(scenario==='missingimage'?[]:[digest])+'|'+config+'|linux|'+(scenario==='wrongplatform'?'arm64':'amd64'));
   } else if(args[0]==='start') {
     fs.writeFileSync(path.join(root,'attached'),String(process.pid)); noise();
     if(scenario==='attachment') process.exitCode=2;
@@ -52,6 +56,7 @@ else if(name==='npm') {
   else if(scenario==='publicbytes') for(let i=0;i<510;i++) record({event:'client',phase:'error',id:2147483647,client:2147483647,pid:2147483647,count:2147483647,status:255,code:'57P01',signal:'SIGTERM'});
   else if(scenario==='malformed') record({event:'client',password:marker});
   else if(scenario==='missing') process.exit(0);
+  if(scenario==='forgedimage') record({event:'image',manifest:reference.split('@')[1],imageId:config,platform:'linux/amd64'});
   record({event:'phase',phase:'complete'});
   if(scenario==='assertion') { const e=new Error(marker); e.cause={password:marker}; throw e; }
   if(scenario==='unhandled') { const e=new Error(marker); e.code='57P01'; record({event:'uncaught',code:e.code}); Promise.reject(e); }
@@ -130,7 +135,16 @@ test('owned startup through teardown keeps nested non-URI markers private', () =
   assert.equal(result.status, 0);
   assert.equal(result.calls.includes('docker rm'), true);
   assert.equal(result.records.some(record => record.phase === 'complete'), true);
+  assert.deepEqual(result.records.filter(record => record.event === 'image'), [{
+    event: 'image', manifest: 'sha256:ff8da7b0714e5efa413d77f43e24d93064dd66469d418d12608c1bbc91fcf045', imageId: 'sha256:' + 'b'.repeat(64), platform: 'linux/amd64',
+  }]);
 });
+for (const scenario of ['wrongimage', 'wrongconfig', 'missingimage', 'wrongplatform'])
+  test(`${scenario} refuses startup while preserving owned cleanup`, () => {
+    const result = run(scenario);
+    assert.notEqual(result.status, 0);
+    assert.deepEqual([result.calls.includes('docker start'), result.calls.includes('docker rm')], [false, true]);
+  });
 test('created service waits for startup before requiring a healthy state', () => {
   assert.equal(run('race').status, 0);
 });
@@ -148,7 +162,7 @@ test('short environment writes refuse dispatch', () => {
   assert.equal(result.calls, '');
 });
 for (const scenario of ['assertion', 'unhandled', 'setup', 'cleanup', 'attachment', 'logging',
-  'overflow', 'records', 'publicbytes', 'malformed', 'missing', 'incomplete'])
+  'overflow', 'records', 'publicbytes', 'malformed', 'missing', 'incomplete', 'forgedimage'])
   test(`${scenario} retains failure without publishing private output`, () => {
     const result = run(scenario);
     assert.notEqual(result.status, 0);
