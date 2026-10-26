@@ -28,20 +28,21 @@ const tracePhase = (() => {
     }
   };
   const state = (error: unknown): Record<string, string | number> => {
-    const code = error && typeof error === 'object' ? Object.getOwnPropertyDescriptor(error, 'code')?.value : undefined;
+    const code: unknown =
+      error && typeof error === 'object' ? Object.getOwnPropertyDescriptor(error, 'code')?.value : undefined;
     return typeof code === 'string' && /^[0-9A-Z]{5}$/u.test(code) ? { code } : {};
   };
   const observe = (prototype: EventEmitter, event: 'client' | 'pool') => {
-    const original = prototype.emit;
+    const original = Reflect.get(prototype, 'emit');
     prototype.emit = function (this: EventEmitter, type: string | symbol, ...args: unknown[]): boolean {
       if (type === 'connect' || type === 'end' || type === 'error') {
-        const pid = Object.getOwnPropertyDescriptor(this, 'processID')?.value;
+        const pid: unknown = Object.getOwnPropertyDescriptor(this, 'processID')?.value;
         trace({
           event,
           id: identify(this),
           phase: type,
           ...state(args[0]),
-          ...(Number.isSafeInteger(pid) && pid > 0 && pid <= 2147483647 ? { pid } : {}),
+          ...(typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 && pid <= 2147483647 ? { pid } : {}),
           ...(event === 'pool' && args[1] && typeof args[1] === 'object' ? { client: identify(args[1]) } : {}),
         });
       }
@@ -50,10 +51,16 @@ const tracePhase = (() => {
   };
   observe(pg.Client.prototype, 'client');
   observe(pg.Pool.prototype, 'pool');
-  process.on('uncaughtExceptionMonitor', error => trace({ event: 'uncaught', ...state(error) }));
+  process.on('uncaughtExceptionMonitor', error => {
+    trace({ event: 'uncaught', ...state(error) });
+  });
   trace({ event: 'phase', phase: 'begin' });
-  afterAll(() => trace({ event: 'phase', phase: 'complete' }));
-  return (phase: string) => trace({ event: 'phase', phase });
+  afterAll(() => {
+    trace({ event: 'phase', phase: 'complete' });
+  });
+  return (phase: string) => {
+    trace({ event: 'phase', phase });
+  };
 })();
 
 // These tests exercise real provisioning/migrations/MCP, independently of the
