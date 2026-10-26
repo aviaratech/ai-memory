@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -23,7 +23,12 @@ if(name==='docker') {
   }
   else if(args[0]==='inspect') {
     if(args.includes('{{.HostConfig.LogConfig.Type}}')) console.log(scenario==='logging'?'json-file':fs.readFileSync(path.join(root,'driver'),'utf8'));
-    else if(args.includes('{{.State.Health.Status}}')) console.log(scenario==='deadline'?'starting':'healthy');
+    else if(args.includes('{{.State.Health.Status}}')) console.log(scenario==='race'?'<no value>':scenario==='deadline'?'starting':'healthy');
+    else if(args.includes('{{json .State}}')) {
+      const early=scenario==='race'&&!fs.existsSync(path.join(root,'inspected'));
+      fs.writeFileSync(path.join(root,'inspected'),'1');
+      console.log(JSON.stringify(early?{Status:'created',Running:false}:{Status:'running',Running:true,Health:{Status:scenario==='deadline'?'starting':'healthy'}}));
+    }
     else console.log(id);
   } else if(args[0]==='start') {
     fs.writeFileSync(path.join(root,'attached'),String(process.pid)); noise();
@@ -31,14 +36,15 @@ if(name==='docker') {
     else { process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000); }
   } else if(args[0]==='rm') {
     noise();
-    try { process.kill(Number(fs.readFileSync(path.join(root,'attached'),'utf8')),'SIGTERM'); } catch {}
+    try { process.kill(Number(fs.readFileSync(path.join(root,'attached'),'utf8')),'SIGKILL'); } catch {}
+    if(scenario==='partial') process.stdout.write(Buffer.alloc(110000,120));
     if(scenario==='cleanup') process.exitCode=3;
     if(scenario==='deadline') setInterval(()=>{},1000);
   }
 } else if(name==='node') { noise(); if(scenario==='setup') process.exitCode=4; }
 else if(name==='npm') {
   if(scenario!=='incomplete') record({event:'phase',phase:'begin'}); noise();
-  if(scenario==='overflow') {
+  if(scenario==='overflow'||scenario==='partial') {
     const chunk=Buffer.alloc(65536,120); let count=0;
     function more() { while(count++<540) if(!process.stdout.write(chunk)) return process.stdout.once('drain',more); }
     more();
@@ -78,6 +84,21 @@ function run(scenario, stale = false) {
       `);
       flags.push('--import', hook);
     }
+    if (scenario === 'partial' || scenario === 'environment') {
+      const hook = join(root, 'writes.mjs');
+      writeFileSync(hook, `
+        import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+        const original=fs.writeSync, paths=new Map(), open=fs.openSync; let total=0,max=0,short=false;
+        fs.openSync=(path,...args)=>{const fd=open(path,...args);if(/memory-postgres-.*\\/(capture|environment)$/.test(String(path))) paths.set(fd,path);return fd};
+        fs.writeSync=(fd,value,...args)=>{
+          const inject=paths.has(fd)&&!short&&(${JSON.stringify(scenario)}==='environment'?typeof value==='string':Buffer.isBuffer(value)&&total>32*1024*1024-131072);
+          const amount=inject?value.subarray?.(0,Math.floor(value.length/2))??value.slice(0,1):value;
+          const written=original(fd,amount,...args); if(paths.has(fd)){total+=written;max=Math.max(max,total)} if(inject)short=true;return written;
+        }; syncBuiltinESMExports();
+        process.on('exit',()=>fs.writeFileSync(${JSON.stringify(join(root, 'quota'))},JSON.stringify({max,short})));
+      `);
+      flags.push('--import', hook);
+    }
     result = spawnSync(process.execPath, [...flags, entry], {
       cwd: resolve(dirname(entry), '..'),
       env: { PATH: bin, HOME: root, TMPDIR: root,
@@ -95,7 +116,8 @@ function run(scenario, stale = false) {
     assert.equal(readdirSync(root).some(name => name.startsWith('memory-postgres-')), false,
       'owned raw artifacts must be removed');
     return { status: result.status, records, calls: readFileSync(join(root, 'calls'), 'utf8'),
-      elapsed: scenario === 'deadline' ? Number(readFileSync(join(root, 'clock'), 'utf8')) : 0 };
+      elapsed: scenario === 'deadline' ? Number(readFileSync(join(root, 'clock'), 'utf8')) : 0,
+      quota: ['partial','environment'].includes(scenario) ? JSON.parse(readFileSync(join(root, 'quota'), 'utf8')) : null };
   } finally {
     // Safety net for the fake service if a regression prevents the gate's cleanup.
     try { process.kill(Number(readFileSync(join(root, 'attached'), 'utf8')), 'SIGTERM'); } catch {}
@@ -109,6 +131,22 @@ test('owned startup through teardown keeps nested non-URI markers private', () =
   assert.equal(result.calls.includes('docker rm'), true);
   assert.equal(result.records.some(record => record.phase === 'complete'), true);
 });
+test('created service waits for startup before requiring a healthy state', () => {
+  assert.equal(run('race').status, 0);
+});
+test('short capture writes remain within the aggregate cap through cleanup', () => {
+  const result = run('partial');
+  assert.notEqual(result.status, 0);
+  assert.equal(result.quota.short, true);
+  assert.equal(result.quota.max <= 32 * 1024 * 1024, true, 'cleanup must count bytes from short writes');
+  assert.equal(result.calls.includes('docker rm'), true);
+});
+test('short environment writes refuse dispatch', () => {
+  const result = run('environment');
+  assert.notEqual(result.status, 0);
+  assert.equal(result.quota.short, true);
+  assert.equal(result.calls, '');
+});
 for (const scenario of ['assertion', 'unhandled', 'setup', 'cleanup', 'attachment', 'logging',
   'overflow', 'records', 'publicbytes', 'malformed', 'missing', 'incomplete'])
   test(`${scenario} retains failure without publishing private output`, () => {
@@ -117,14 +155,12 @@ for (const scenario of ['assertion', 'unhandled', 'setup', 'cleanup', 'attachmen
     assert.equal(result.calls.includes('docker rm'), true, 'failed output must still permit owned service cleanup');
     if (scenario === 'logging') assert.equal(result.calls.includes('docker start'), false);
   });
-test('original nonzero integration status survives capture and cleanup', () => {
-  assert.equal(run('exit').status, 7);
-});
-test('original integration signal remains visible as a failing signal status', () => {
-  const result = run('signal');
-  assert.equal(result.status, 143);
-  assert.equal(result.records.at(-1).signal, 'SIGTERM');
-});
+for (const [scenario, status, signal] of [['exit', 7, 'none'], ['signal', 143, 'SIGTERM']])
+  test(`${scenario} preserves the original integration exit and signal`, () => {
+    const result = run(scenario);
+    assert.equal(result.status, status);
+    assert.equal(result.records.at(-1).signal, signal);
+  });
 test('insufficient job allowance refuses every owned command', () => {
   const result = run('success', true);
   assert.notEqual(result.status, 0);
@@ -134,6 +170,17 @@ test('execution timeout leaves cleanup inside the original eight-minute allowanc
   const result = run('deadline');
   assert.notEqual(result.status, 0);
   assert.equal(result.elapsed <= 480000, true, 'cleanup must not reset the admitted deadline');
+});
+test('closed public output fails without an unstructured stderr report', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'memory-closed-output-'));
+  try {
+    const child = spawn(process.execPath, [entry], {env:{PATH:root,HOME:root,TMPDIR:root,
+      AI_MEMORY_POSTGRES_JOB_STARTED_MS:'0'},stdio:['ignore','pipe','pipe']});
+    let errors = ''; child.stderr.on('data', chunk => { errors += chunk; });
+    child.stdout.destroy();
+    const status = await new Promise(resolve => child.on('close', resolve));
+    assert.notEqual(status, 0); assert.equal(errors, '', 'publication failure must stay private');
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });
 
 test('actual observer forwards the same unhandled Client and Pool error objects', () => {

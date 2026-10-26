@@ -7,12 +7,21 @@ import { join } from 'node:path';
 const limit = 32 * 1024 * 1024, prefix = 'AMPG ';
 const phases = new Set(['begin', 'connect', 'end', 'error', 'setup', 'check', 'close', 'drop',
   'complete', 'create', 'start', 'ready', 'cleanup']);
-const records = [], children = new Set();
+const records = [];
+const children = new Set();
 const abort = new AbortController();
 const signals = new Set(['none', 'SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGABRT', 'SIGKILL',
   'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGBUS', 'SIGXCPU', 'SIGXFSZ']);
-let bytes = 0, publicBytes = 0, failed = false, cleaning = false, begun = false, complete = false;
-let cutoff = Infinity, observedSignal = 'none';
+let bytes = 0;
+let publicBytes = 0;
+let failed = false;
+let cleaning = false;
+let begun = false;
+let complete = false;
+let createAttempted = false;
+let stopping = false;
+let cutoff = Infinity;
+let observedSignal = 'none';
 let directory, capture, container, attached, executionTimer, cleanupTimer;
 const name = 'ai-memory-ci-' + randomUUID();
 const image = 'pgvector/pgvector:0.8.6-pg18-trixie';
@@ -82,8 +91,9 @@ function command(executable, args, env = process.env, inspect = false) {
       try {
         const remaining = limit - bytes;
         if (chunk.length > remaining) { captureFault(); return; }
-        if (writeSync(capture, chunk) !== chunk.length) throw Error();
-        bytes += chunk.length;
+        const written = writeSync(capture, chunk);
+        bytes += written;
+        if (written !== chunk.length) throw Error();
         if (inspect && index === 0) {
           if (output.length + chunk.length > 4096) throw Error();
           output += chunk.toString();
@@ -138,8 +148,13 @@ async function main() {
   try {
     const envFile = join(directory, 'environment');
     const envFd = openSync(envFile, 'wx', 0o600);
-    try { bytes += writeSync(envFd, serviceEnvironment); } finally { closeSync(envFd); }
+    try {
+      const written = writeSync(envFd, serviceEnvironment);
+      bytes += written;
+      if (written !== Buffer.byteLength(serviceEnvironment) || bytes > limit) throw Error();
+    } finally { closeSync(envFd); }
     phase('create');
+    createAttempted = true;
     container = await checked('docker', ['create', '--name', name, '--log-driver', 'none',
       '--env-file', envFile, '-p', '5432:5432', '--health-cmd',
       'pg_isready -U ci_memory -d ai_memory_ci', '--health-interval', '10s',
@@ -149,7 +164,7 @@ async function main() {
       undefined, true) !== 'none') throw Error();
     phase('start');
     attached = command('docker', ['start', '--attach', container]);
-    attached.done.then(() => { if (!cleaning) fault(); });
+    attached.done.then(() => { if (!stopping) fault(); });
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt) await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { abort.signal.removeEventListener('abort', cancel); resolve(); }, 10000);
@@ -157,10 +172,12 @@ async function main() {
         abort.signal.addEventListener('abort', cancel, { once: true });
         if (abort.signal.aborted) cancel();
       });
-      const health = await checked('docker', ['inspect', '--format', '{{.State.Health.Status}}',
-        container], undefined, true);
-      if (health === 'healthy') break;
-      if (health !== 'starting' || attempt === 5) throw Error();
+      const state = JSON.parse(await checked('docker', ['inspect', '--format', '{{json .State}}',
+        container], undefined, true));
+      if (state.Status === 'running' && state.Running === true && state.Health?.Status === 'healthy') break;
+      const waiting = state.Status === 'created' && state.Running === false
+        || state.Status === 'running' && state.Running === true && state.Health?.Status === 'starting';
+      if (!waiting || attempt === 5) throw Error();
     }
     phase('ready');
     const env = { ...process.env, ...integrationEnvironment, AI_MEMORY_POSTGRES_TRACE: '1' };
@@ -179,17 +196,20 @@ async function main() {
     cleanupTimer = setTimeout(fault, Math.max(0, Math.min(60000, cutoff - performance.now())));
     try { phase('cleanup'); } catch { failed = true; }
     try {
-      // Reconcile an uncertain create acknowledgement through this exact owned name.
-      if (!/^[a-f0-9]{64}$/.test(container ?? '')) {
-        const result = await command('docker', ['inspect', '--format', '{{.Id}}', name], process.env, true).done;
-        if (result.status !== 0 || !/^[a-f0-9]{64}$/.test(result.output)) throw Error();
-        container = result.output;
-      }
-      const removal = await command('docker', ['rm', '--force', '--volumes', container]).done;
-      if (removal.status !== 0) throw Error();
-      if (attached) {
-        const result = await attached.done;
-        if (result.status !== 0) throw Error();
+      if (createAttempted) {
+        // Reconcile an uncertain create acknowledgement through this exact owned name.
+        if (!/^[a-f0-9]{64}$/.test(container ?? '')) {
+          const result = await command('docker', ['inspect', '--format', '{{.Id}}', name], process.env, true).done;
+          if (result.status !== 0 || !/^[a-f0-9]{64}$/.test(result.output)) throw Error();
+          container = result.output;
+        }
+        stopping = true;
+        const removal = await command('docker', ['rm', '--force', '--volumes', container]).done;
+        if (removal.status !== 0) throw Error();
+        if (attached) {
+          const result = await attached.done;
+          if (result.status !== 0 && result.status !== 137) throw Error();
+        }
       }
     } catch { failed = true; }
     finally {
@@ -210,5 +230,11 @@ finally {
 }
 if (failed && status === 0) status = 1;
 records.push(JSON.stringify({ event: 'exit', status, signal: observedSignal, count: records.length }) + '\n');
-process.stdout.write(records.join(''));
 process.exitCode = status;
+process.stdout.on('error', () => { process.exitCode = status || 1; });
+try {
+  await new Promise(resolve => process.stdout.write(records.join(''), error => {
+    if (error) process.exitCode = status || 1;
+    resolve();
+  }));
+} catch { process.exitCode = status || 1; }
