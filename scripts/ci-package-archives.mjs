@@ -21,7 +21,11 @@ try {
       if (records.length !== 1) throw new Error('Unexpected package count');
       return records[0];
     });
-    const paths = item => item.files.map(file => file.path).sort().join('\n');
+    const paths = item =>
+      item.files
+        .map(file => file.path)
+        .sort()
+        .join('\n');
     if (dry.name !== name || packed.name !== name || dry.version !== packed.version || paths(dry) !== paths(packed))
       throw new Error('Package inventory mismatch');
     const basename = `${name.slice(1).replace('/', '-')}-${packed.version}.tgz`;
@@ -36,13 +40,28 @@ try {
       sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
     });
   }
-  const actual = readdirSync(directory).filter(name => name.endsWith('.tgz')).sort();
-  if (actual.join('\n') !== archives.map(item => item.basename).sort().join('\n'))
+  const actual = readdirSync(directory)
+    .filter(name => name.endsWith('.tgz'))
+    .sort();
+  if (
+    actual.join('\n') !==
+    archives
+      .map(item => item.basename)
+      .sort()
+      .join('\n')
+  )
     throw new Error('Unexpected archive set');
   writeFileSync(
     join(directory, 'source-digests.json'),
     JSON.stringify(
-      { checkoutCommit, checkoutTree, pullRequestSourceHead: pullRequestSourceHead || null, runId, runAttempt, archives },
+      {
+        checkoutCommit,
+        checkoutTree,
+        pullRequestSourceHead: pullRequestSourceHead || null,
+        runId,
+        runAttempt,
+        archives,
+      },
       null,
       2,
     ) + '\n',
