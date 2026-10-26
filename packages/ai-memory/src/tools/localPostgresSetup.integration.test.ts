@@ -1,14 +1,60 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import pg from 'pg';
-import { test } from 'vitest';
+import { afterAll, test } from 'vitest';
 import { parseSetupArguments, runLocalPostgresSetup } from './localPostgresSetup.js';
 
 const administrator = process.env.AI_MEMORY_PROJECT_IDENTITY_TEST_URL;
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+
+// Observe without registering error handlers or replacing the emitted error.
+const tracePhase = (() => {
+  if (process.env.AI_MEMORY_POSTGRES_TRACE !== '1') return (_phase: string) => {};
+  const identities = new WeakMap<object, number>();
+  let next = 0;
+  const identify = (value: object) => {
+    if (!identities.has(value)) identities.set(value, ++next);
+    return identities.get(value)!;
+  };
+  const trace = (value: Record<string, string | number>) => {
+    try {
+      process.stdout.write('AMPG ' + JSON.stringify(value) + '\n');
+    } catch {
+      process.exitCode = 1;
+    }
+  };
+  const state = (error: unknown): Record<string, string | number> => {
+    const code = error && typeof error === 'object' ? Object.getOwnPropertyDescriptor(error, 'code')?.value : undefined;
+    return typeof code === 'string' && /^[0-9A-Z]{5}$/u.test(code) ? { code } : {};
+  };
+  const observe = (prototype: EventEmitter, event: 'client' | 'pool') => {
+    const original = prototype.emit;
+    prototype.emit = function (this: EventEmitter, type: string | symbol, ...args: unknown[]): boolean {
+      if (type === 'connect' || type === 'end' || type === 'error') {
+        const pid = Object.getOwnPropertyDescriptor(this, 'processID')?.value;
+        trace({
+          event,
+          id: identify(this),
+          phase: type,
+          ...state(args[0]),
+          ...(Number.isSafeInteger(pid) && pid > 0 && pid <= 2147483647 ? { pid } : {}),
+          ...(event === 'pool' && args[1] && typeof args[1] === 'object' ? { client: identify(args[1]) } : {}),
+        });
+      }
+      return original.call(this, type, ...args);
+    };
+  };
+  observe(pg.Client.prototype, 'client');
+  observe(pg.Pool.prototype, 'pool');
+  process.on('uncaughtExceptionMonitor', error => trace({ event: 'uncaught', ...state(error) }));
+  trace({ event: 'phase', phase: 'begin' });
+  afterAll(() => trace({ event: 'phase', phase: 'complete' }));
+  return (phase: string) => trace({ event: 'phase', phase });
+})();
 
 // These tests exercise real provisioning/migrations/MCP, independently of the
 // host runner's client packages. Client discovery has separate subprocess tests
@@ -132,6 +178,7 @@ test.skipIf(administrator === undefined)(
         targetUrl.pathname = `/${database}`;
         let check: pg.Client | undefined;
         try {
+          tracePhase('setup');
           const first = await runLocalPostgresSetup(options, {
             home,
             env,
@@ -165,6 +212,7 @@ test.skipIf(administrator === undefined)(
               roleIds,
             );
           } else assert.equal(first.ok, true, JSON.stringify(first));
+          tracePhase('check');
           check = new pg.Client({
             connectionString: targetUrl.href,
             connectionTimeoutMillis: 3000,
@@ -191,7 +239,9 @@ test.skipIf(administrator === undefined)(
           assert.deepEqual((await check.query('SELECT * FROM public.ai_memory_pgmigrations ORDER BY id')).rows, before);
           assert.equal(readFileSync(join(home, '.config/ai-memory/plugin.env'), 'utf8'), config);
         } finally {
+          tracePhase('close');
           await check?.end();
+          tracePhase('drop');
           await admin.query(`DROP DATABASE IF EXISTS ${quote(database)} WITH (FORCE)`);
           await admin.query(`DROP ROLE IF EXISTS ${quote(runtime)}`);
           await admin.query(`DROP ROLE IF EXISTS ${quote(owner)}`);
