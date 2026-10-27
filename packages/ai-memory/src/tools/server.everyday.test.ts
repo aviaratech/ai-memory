@@ -2,8 +2,21 @@ import * as memory from '@aviaratech/ai-memory/internal';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import assert from 'node:assert/strict';
+import type * as fs from 'node:fs';
 import { expect, test, vi } from 'vitest';
 import * as z from 'zod/v4';
+
+const manifest = vi.hoisted(() => ({ value: '{"name":"@aviaratech/ai-memory","version":"9.8.7"}' as string | Error }));
+vi.mock('node:fs', async importOriginal => ({
+  ...(await importOriginal<typeof fs>()),
+  readFileSync: (path: unknown) => {
+    if (!(path instanceof URL) || path.href !== new URL('../../package.json', import.meta.url).href) {
+      throw new Error('Unexpected fixture file read.');
+    }
+    if (manifest.value instanceof Error) throw manifest.value;
+    return manifest.value;
+  },
+}));
 
 let legacyRecalls = 0;
 let receivedTopic: unknown;
@@ -45,7 +58,7 @@ vi.doMock('./topic-recall.js', () => ({
     return Promise.resolve({ status: 'degraded', brief: 'Scoped fixture brief.', memories: [], count: 0 });
   },
 }));
-const { server, memoryGetInputSchema, memoryStoreInputSchema } = await import('./server.js');
+const { server, createAiMemoryMcpServer, memoryGetInputSchema, memoryStoreInputSchema } = await import('./server.js');
 
 test('registered everyday tool descriptions and one-call contracts', async () => {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -61,6 +74,10 @@ test('registered everyday tool descriptions and one-call contracts', async () =>
     return value;
   };
   try {
+    const diagnostics = payload(
+      await client.callTool({ name: 'memory_runtime_diagnostics', arguments: { packageVersion: '0.0.0' } }),
+    );
+    assert.equal(diagnostics.packageVersion, client.getServerVersion()?.version);
     const tools = await client.listTools();
     assert.deepEqual(
       tools.tools.find(tool => tool.name === 'memory_store')?.inputSchema,
@@ -185,5 +202,24 @@ test('discarded and rejected sensitive input never reaches logs or audit persist
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test('MCP server construction preserves invalid and missing manifest failures', () => {
+  const original = manifest.value;
+  const cases: [string | Error, RegExp][] = [
+    [
+      '{"name":"@aviaratech/ai-memory","version":"invalid"}',
+      /Restore the matching released ai-memory package manifest/u,
+    ],
+    [Object.assign(new Error('Synthetic missing manifest.'), { code: 'ENOENT' }), /Synthetic missing manifest/u],
+  ];
+  try {
+    for (const [value, error] of cases) {
+      manifest.value = value;
+      assert.throws(() => createAiMemoryMcpServer(), error);
+    }
+  } finally {
+    manifest.value = original;
   }
 });
