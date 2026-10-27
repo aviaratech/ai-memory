@@ -173,16 +173,20 @@ jobs:
             package="${item#*:}"
             npm pack --workspace "$package" --dry-run --json > "$package_dir/$label-dry-run.json"
             npm pack --workspace "$package" --pack-destination "$package_dir" --json > "$package_dir/$label-pack.json"
-            node -e '
-              const fs = require("node:fs");
-              const [dry, packed] = process.argv.slice(1).map(path => JSON.parse(fs.readFileSync(path, "utf8"))[0]);
-              const paths = item => item.files.map(file => file.path).sort();
-              if (dry.name !== packed.name || paths(dry).join("\n") !== paths(packed).join("\n")) {
-                throw new Error("npm pack inventory mismatch");
-              }
-              console.log(`${packed.name}: ${packed.files.length} files\n${paths(packed).join("\n")}`);
-            ' "$package_dir/$label-dry-run.json" "$package_dir/$label-pack.json"
           done
+          node scripts/ci-package-archives.mjs "$package_dir" \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            '${{ github.event.pull_request.head.sha }}' '${{ github.run_id }}' '${{ github.run_attempt }}'
+      - name: Retain public package archives and source digests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: public-package-archives-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ai-memory-packages/*.tgz
+            ${{ runner.temp }}/ai-memory-packages/source-digests.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   checks:
     name: checks
