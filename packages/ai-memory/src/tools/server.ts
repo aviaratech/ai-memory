@@ -577,7 +577,8 @@ export const memoryIngestDeltaInputSchema = z.object({
 });
 
 export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer {
-  const server = new McpServer({ name: 'ai-memory', version: getPackageVersion() });
+  const packageVersion = getPackageVersion();
+  const server = new McpServer({ name: 'ai-memory', version: packageVersion });
   const runTool = async (params: ToolInvocationParams): Promise<ToolResult> => {
     activity?.onToolStart();
     try {
@@ -704,14 +705,15 @@ export function createAiMemoryMcpServer(activity?: HttpToolActivity): McpServer 
     {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
       description:
-        'Inspect the ai-memory runtime credential resolution without revealing secrets. ' +
-        'Reports whether the database URL is present, which key won, which runtime source provided it, and the derived database host.',
+        'Inspect the ai-memory package version and runtime credential resolution without revealing secrets. ' +
+        'Reports the version used for MCP initialization, whether the database URL is present, ' +
+        'which key won, which runtime source provided it, and the derived database host.',
       inputSchema: memoryRuntimeDiagnosticsInputSchema.shape,
     },
     (args: unknown) =>
       runTool({
         args,
-        handler: () => Promise.resolve(toTextResult(getAiMemoryRuntimeDiagnostics())),
+        handler: () => Promise.resolve(toTextResult({ ...getAiMemoryRuntimeDiagnostics(), packageVersion })),
         toolName: 'memory_runtime_diagnostics',
       }),
   );
