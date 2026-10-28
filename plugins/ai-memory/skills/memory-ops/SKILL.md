@@ -7,83 +7,35 @@ description: Use when reviewing memory health, removing data ai-memory no longer
 
 ## Health Check
 
-Verify system health and key metrics:
+Full report: `npm run health -w @aviaratech/ai-memory`; quick connectivity: `/ai-memory:memory-health`.
 
-1. Run `npm run health -w @aviaratech/ai-memory` for a full report.
-2. Or use the `/ai-memory:memory-health` command for a quick connectivity check.
+| Metric | Target/meaning |
+|---|---|
+| `continuityStateModelPct` | >= 50% sessions include `stateModel` in flush |
+| Continuity packs materialized | >= 1 active project pack; bounded cross-chat startup read |
+| Continuity pack reads | > 0 after fresh starts; session-start hooks read pack |
+| Continuity pack read quality | >= 99% success, p95 <= 500ms |
+| Continuity pack budget pressure | <= 90% max payload/budget; context not near limit |
+| Continuity adoption readiness | Informational: availability, actionable completeness, flush-after-pack lifecycle evidence |
+| Auto derived/carry-forward continuity | Informational: hooks enrich snapshots without implying explicit flush |
+| Continuity source quality | Informational: split explicit flush from derived/carry-forward hints |
+| Writer mix | >= 20% per tool; deliberate agent writes |
+| Ingestion failure rate | Low recent errors |
 
-**Key metrics to review:**
-
-| Metric | Target | Meaning |
-|---|---|---|
-| `continuityStateModelPct` | >= 50% | Sessions including stateModel in flush |
-| Continuity packs materialized | >= 1 active project pack | Cross-chat startup context has a bounded read model |
-| Continuity pack reads | > 0 after fresh starts | Session-start hooks are reading the bounded pack |
-| Continuity pack read quality | >= 99% success, p95 <= 500ms | Startup continuity reads are reliable and cheap |
-| Continuity pack budget pressure | <= 90% max payload/budget | Startup context is not close to blowing agent context |
-| Continuity adoption readiness | Informational | Pack availability, actionable-field completeness, and flush-after-pack lifecycle evidence |
-| Auto derived/carry-forward continuity | Informational | Hook output is enriching snapshots without pretending to be an explicit flush |
-| Continuity source quality | Informational | Split explicit flush snapshots from auto-derived/carry-forward hints |
-| Writer mix | >= 20% per tool | Each agent tool contributing deliberate writes |
-| Ingestion failure rate | Low | Recent ingestion errors |
-
-When `continuityStateModelPct` is below 25%, the launch gate issues a warning. Below 50% is on-target but worth monitoring.
-If continuity packs stay at zero while `memory_flush` usage is non-zero, inspect `memory_flush` warnings and the `continuityPack` response field before adding new machinery.
-If continuity packs are materialized but continuity-pack reads stay at zero after a fresh Codex/Claude start, inspect session-start hook telemetry before assuming packs are unused.
-If continuity adoption readiness shows missing/degraded reads, debug hooks or MCP connectivity before changing pack content.
-If actionable-field completeness is low, improve explicit `memory_flush` handoffs (`nextActions`, `openQuestions`, `decisions`, `contextNeeded`) rather than adding vector startup retrieval. Treat flush-after-pack as a lifecycle readiness signal, not semantic consumption proof.
-If read quality is below target or budget pressure is high, call `memory_continuity_debug({ project })` once to inspect the exact startup payload, payload size, budget, truncation state, and source. Do not use it as routine recall.
-Auto-derived `next_actions`, `context_needed`, and `open_questions` are tagged as derived in snapshot provenance; carry-forward values are tagged separately. Do not count either as agent-writer `memory_flush` compliance.
+`continuityStateModelPct` <25% warns at launch; below 50% is on-target but worth monitoring. Zero packs with non-zero `memory_flush`: inspect warnings and `continuityPack` before adding machinery. Packs but no reads after fresh Codex/Claude start: inspect hook telemetry first. Missing/degraded adoption reads: debug hooks/MCP connectivity before pack changes. Low actionable-field completeness: improve explicit `memory_flush` handoffs (`nextActions`, `openQuestions`, `decisions`, `contextNeeded`), not vector startup retrieval; flush-after-pack means lifecycle readiness, not semantic consumption proof. Below-target read quality or high budget pressure: call `memory_continuity_debug({ project })` once for exact startup payload, size, budget, truncation, source; not routine recall. Auto-derived `next_actions`, `context_needed`, `open_questions` are tagged derived in snapshot provenance; carry-forward separately tagged. Neither counts as agent-writer `memory_flush` compliance.
 
 ## Removing Data ai-memory No Longer Keeps
 
-`ai-memory cleanup` (a dry run by default) counts memories written by `memory_flush`, automatically promoted or expired session summaries, superseded session snapshots and deltas, and events from removed features. `ai-memory cleanup --apply --backup-id <id>` deletes them only after a healthy backup of the same database, and keeps memories written with `memory_store` apart from expired session summaries. A person runs the apply; agents run only the dry run. See the operations guide for details.
+`ai-memory cleanup` dry-run counts `memory_flush` memories, auto-promoted/expired summaries, superseded session snapshots/deltas, removed-feature events. `ai-memory cleanup --apply --backup-id <id>` deletes these only after a healthy backup of the same DB; it retains `memory_store` memories except expired session summaries. Only people apply; agents only dry-run. See operations guide.
 
 ## Contested Memory Resolution
 
-When two memories conflict, use `memory_resolve_contested`:
-
-```jsonc
-memory_resolve_contested({
-  memoryIdA: 42,
-  memoryIdB: 87,
-  action: "merge"  // list | keep_first | keep_second | keep_both | merge
-})
-```
-
-**When to use each action:**
-
-- `list` -- review contested pairs before resolving (default when no memoryIdA/B given).
-- `keep_first` / `keep_second` -- one is clearly outdated or wrong.
-- `merge` -- both contain partial truths that combine into a complete picture. Requires `mergedContent`.
-- `keep_both` -- they cover distinct aspects that appear to conflict but are both valid in their respective contexts.
-
-Default to `merge` when in doubt. Prefer `keep_both` only when the memories address genuinely different scopes.
+`memory_resolve_contested` takes `memoryIdA`, `memoryIdB`, `action` (`list | keep_first | keep_second | keep_both | merge`); `merge` requires `mergedContent`. `list` reviews pairs and defaults without either ID. Keep first/second when one is clearly outdated/wrong. Merge partial truths into a complete picture; default if unsure. Keep both only for valid, genuinely different scopes.
 
 ## Search Quality Debugging
 
-When search results are poor or missing expected entries:
-
-1. Call `memory_orient` and check `capabilities` in the response:
-   - `embedding` -- embedding-based search available.
-   - `search` -- search pipeline is configured.
-   - `searchAvailable` -- search is operational (DB connected, indexes present).
-   - `sessionResume` -- session resume is available.
-   - `envProbe` -- environment probe mode (`none`, `local`, or `full`).
-2. If capabilities are missing, the hybrid search pipeline is degraded. Trigram support requires the `pg_trgm` extension.
-3. Test with `memory_search` using a known term from a recently stored memory to verify end-to-end.
-4. Check that the search query is not too broad -- use `activeGoal` and `memoryType` filters to narrow results.
-
-**Search ranking signals (for reference):** semantic (55%), keyword (33%), keyword-hint (4%), taxonomy (4%), confidence (4%).
+Call `memory_orient`; inspect `capabilities`: `embedding` (embedding search), `search` (configured pipeline), `searchAvailable` (DB/indexes operational), `sessionResume` (resume available), `envProbe` (mode: `none`, `local`, `full`). Missing capabilities mean degraded hybrid search; trigram requires the `pg_trgm` extension. Verify end-to-end with `memory_search` on a known recently stored term. Narrow broad queries using `activeGoal`, `memoryType`. Ranking: semantic 55%, keyword 33%, keyword-hint 4%, taxonomy 4%, confidence 4%.
 
 ## Ingestion Failure Triage
 
-When sessions are not being ingested or memory gaps appear:
-
-1. Use `memory_ingestion_failures` to list recent failures.
-2. Common causes:
-   - **Malformed payloads** -- missing required fields in context packs or deltas.
-   - **DB connectivity** -- PostgreSQL not running or connection pool exhausted.
-   - **Schema drift** -- migrations not applied after an update (`npm run init -w @aviaratech/ai-memory`).
-3. For DB connectivity issues, verify with `npm run pg:status -w @aviaratech/ai-memory`.
-4. For schema drift, run migrations and re-check: `npm run init -w @aviaratech/ai-memory`.
+`memory_ingestion_failures` lists recent failures. Causes: malformed payloads (required context-pack/delta fields missing); DB connectivity (PostgreSQL stopped or pool exhausted); schema drift (migrations unapplied after update). Connectivity: verify `npm run pg:status -w @aviaratech/ai-memory`. Schema drift: run migrations, re-check `npm run init -w @aviaratech/ai-memory`.
